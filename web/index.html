@@ -1,0 +1,878 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<link rel="apple-touch-icon" href="/logo.png">
+<title>PC Control — Remote</title>
+<script>
+  window.LOGO_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAABCGlDQ1BJQ0MgUHJvZmlsZQAAeJxjYGA8wQAELAYMDLl5JUVB7k4KEZFRCuwPGBiBEAwSk4sLGHADoKpv1yBqL+viUYcLcKakFicD6Q9ArFIEtBxopAiQLZIOYWuA2EkQtg2IXV5SUAJkB4DYRSFBzkB2CpCtkY7ETkJiJxcUgdT3ANk2uTmlyQh3M/Ck5oUGA2kOIJZhKGYIYnBncAL5H6IkfxEDg8VXBgbmCQixpJkMDNtbGRgkbiHEVBYwMPC3MDBsO48QQ4RJQWJRIliIBYiZ0tIYGD4tZ2DgjWRgEL7AwMAVDQsIHG5TALvNnSEfCNMZchhSgSKeDHkMyQx6QJYRgwGDIYMZAKbWPz9HbOBQAAAUj0lEQVR42u2dXYxlWVXHf2ufc29VV3XPTDfDTA/DADoZFIJEQH0whhgSBRUw0YSoGBDiB+Jo9MGgmBh9IL4oPExIIIBkjER9QiSZiBM/IgFkcIDgCAyDDz3t9AwM89VVXVX33rP334e9zrn7nnuruqq6q6aJ9yQnt25V3XP2WWvv9fFf/7WvAWJ5PGtHWIpgqYClApbHUgFLBSyPpQKWClgeSwUsFbA8lgpYKmB5LBWwVMDyWCrgSA5rT7s2xlMfyUMaWAFyB2Mh6G3++/ZPqfibrhJOHkqh+1iM6X3l901X8Z4HnRC6Ghepyof013LGUby2Arbi577QS8EcVDitoCvl16BZJfQfurxH6p3XtALMl1AoTuspgr4CzEByBUxv318FpdCnAjGiiaRdhF6cVe996E2MqfANIRIQe4qIQHPEq+LQCqhc+FXxwLMPba4I+av5w2vhelAniOlrQp1Q4oKZWq6k0BtHPs1/p25s1lt55WxvMGLvnuWZrhUFlMKvgYGfdU8RpeCt9/DM2fssyiyMWSE0fkZXiorVsUgBNcbAhT4dn82Mq1xdDTBB3X0ag0ZZIY2PpRzHs+qErRDyABgWr8NSCWYEzYZaXeSh7KVNUwHKhY//rE4w0CB/7a8E87WTV1yFXNhiiLHqV54gdvxa0Z2wSRhG7Z9Z82s0wLayMsZ+3/bebfQ00bOogMqdWzuzVjBqI5/Kv6usmG1F1FFq0bBuOchfk7KAovKsQ2K1EEyphMZXA93MzzN+iLGCsYN4HDEIxs1WcRvGrcAZxJoZUbBh8BjiYeDRJDZJDAQnFUiIbVfA2IyRlJ/Hn2PyrClAU9MzBIIZ7x0MeXGMRPNoSL0ZD5gJtb/QIiMECoER4gkzzpn4usSDJC5IWILrgEjozIVcg+2qXMHYRnzL4JYQ+LkQ+CkZL0twfWt01PdDRjTjvMHnreKTJr4QE0riejPGgi1pJnxtX5rj9gEGrPrMXzVYE9QWuKcecMck7vMq6t3ZFt8IAzOeMfFlMz6F+HSKjJIY9qKT1uk/gjhdBX4tVPyi4HQUaOphUv9WMgy5iWxtU+BLlfFBEv/URK6XMDM2ldgBdswYS4yBsa/GY1NA5QoYAmsYa4hhCPxtPeCl44ZkVye1Vi+0zG8CXwyBD5H4UmxY7/yHMUY8ZMZrBzV/loznxQjS1N7v4vz7SV/p0LHAP9SBP4kN2zGxhrGJ2EFsu4mbuBLScUERYcYJixpjuEfMfdizjKTUOl4lXtlE7pLx9npAY0btYv1fM353OOTuCM9rGhqEbDYau2ziVtwzAVGJN04ifxdqzlQVW4hTwAqwYtOAoz5OLKgL99zJthGP6WgTlU4wJqqY+PUofr+uiQbfMPjj4ZA/mERSjCTL47IrFErl0dcdTeRvQsXpqmIErFlgxaOsMuc4NgXgyVXokpzsYPdjVvZzIpuGRQsGKyBJvBp4PBjvHA542yTSpITtYQK1ILG6XHJVW1bCC5rIXaFiKwQCYlXG0MSgnYh2eIWHQ4FaonNeVRfX7wOFVPvZ8tTM74WI7jT7DrNVjIXA76XEj1YVfxhFkxLVLkOQGdHv3WbH+Qw5U9Y0u16ktdpD4Fc1id+uKr7jOcOK8jnwyDAcJxpqBkF5BYS+B9vl2LDAKOTPzdusnC0PSawDlbKHTb0ZEj3H+GsTn0V8VoaahmCGSXP3lydclRlPVsZnDL4u2JQ4YfBCC/yI4PYkSGlxEOGKS4h3JuNToeLhGFnFmCAm/lodMiI6VCaMprO3w5R3EX5yn/GhAPemyHXkJKjEYnI2a6wZ3IzxkhB4LcYLUiIlCCZkIsi4WBl3KfJHdc3pcSR6BrxQ+MClqua9Ae6JDY9HkRCV/3sCVkLgx0Pg3XXFrU0idZfyLMPU/e8wJX6jDvxOSpyVGAFjE7V8chxCCfVBA1br4TwzweweK2Ai2Ep5pkyA6MlU7BSQY/nzwBeAT4TAnVXF69qsmDyT71bi5hD45ZhR0cp2UTrweF3zZhIPjBtuRZw1x1+Lz6SUuDclvlhX/GVd8ZJx9EmzwP9IvC7B7VXFE03DimfItT+THaUP0J66sX1HFngSNTLYMdjB2CawTWDHsZqhwTiJv2gaPlObwx/GRoC/QvyKBWjSbFLbc/Y7VcU7SHxz0nCHZV+wCVzEuCi4KNgQjICzBhtNw50p8kwdHGGan3/JYDUl3mDGJYOhWp8yDaGPTAGm+YJKdwFpX05YGBNg28QlGZuCi4iN7oRNYAOIJoLEB1PkKQvI4F4DM+Onk1Cbwfb8SXI/8ecBPj9puM3gIrAl2BRsSGwiLgHbwA5ZEWfMeCg2fCjkeyTms/TWNP0ExtACKhDhsI+E7whrwkXJpVjfmgsDxcgyMrlFFsQG4qKfm4gtF8q2D+5cEv9sOfL5JOJnLbAaRcRybacvfODBOvCRJnKrwSU3DyPENvn9hsGGK2GHDCtcAp4j4+MpcakKVG3g1ReW4MVJPM+MkcMyexV8jkQBmkvxew6gCxltpuTSIppj5Qe/BGz5ecnPbcGOm4aR5dX138oA3dckfoZcUQuF7tVmJzKwwN0SMSWqVpmCbQfqtpG/h21X+DZi5CHlozFxv2NRs5U383qFsZLEHWZs90qxR+oDbBdzpF29RIvqzyZCjXKRowWz2rPF3cfmxRFlX1FjPC3xrwa1GS+RioGrGIeoEBvB+Jckbmyv69HKDq5UP1scp30/drsfJb7oK1nIV5l1hVN50nKH5fygX/Q+KNsiXFULhGazrbnit7pqV+MFmAhMrMD5lc1L7EyKuGjiXuAHLbCSZkM9FSElBvcZXFBi1SOvtto1KVZgUyi8KZQx9ms+4EBeIlfGoieH5RhvwWi8rtAlcnqWoqD9fb7vG7y0aOyxhvIAtwQPKPEqAKWpkueYFcZ9iNZ2zJYz25B36i/av2fhZ5sO8LiHvEPPhMtzKKOW8T3IK3UiFtQa6YjyADukdmxBwFoCbFVhzqbOTB3gF8yYSExS4vurGqSFyzwoB+9fVUYsc2VtFvNJC/KFWKzCHeV7Pyrx0cqmNQL3ayIXlYLBN5TxsBGisazzdIiJemgooqyr7Gf+B4+XrSuQ51psyXCoi3NQKGlHcCoYL5IW8ota5Y3NeFiJE4XpaEuXaZcV1ilAYsfryI/HyLti0wGOfTgkeuq4bjAyc7N5jApQseT2d8dceWoF2taSU+FAwXKlzTH32oGzoTvmNTPOaHEZqY3BvgM8IbHS0kv2MTNbMxTcEYOxijgzQ7vJN0ydScv4z46mAUQ8LiyIfthl+/1MtqEDy4X25EBZXfiEGjiBsWpZCUOHGl4wqNlKYkUehfTg6ray+ZTBjsQaYtIJXzOrbC8l0FFismmpfEwttykVvKHSoZd+5ni4oQWn8yBOp2UtrDpgUJkx8Rna+oWh5VVwymfk91Y1zxFcKJx52CUAe9LD12BTx7if4aWixpzcxIQixg/dGtaM30jFZ+NxwtFatBz2GXINXYgtq6J1YKHgGq0oL/HrqsCdIfDhGBkSQGkPgRrPEBBNhrxnUsDLH6VAI33QkRkKpXr/qyuIEg8FR5sOTmMee8Zbk6MTrI2CjNAFkdkvyOD7qprfJHBbk3gCcbayy1a/t4y50FQHEJB6BKw2ulpEIk5cHc5ofUWz/3IrwKYZyq0WeHkIrBX0kAwNZ1gtWK40PR/jhzBemaBKEZnRGNygy4jRxNjZbtYj/B7mGVvTmq61/gDtNdoFfwsYknhrSrx1oaZsAUc9TStgwLYZq9qLRTONUrhC4XOtN2hYn1e2SyikooBvXYqohdzoPj3dnLoYvAKUcCeRdunyWJAf7N/6893RoqRDhqr7/r1Xq6awrrq5PCjKmPMZ4SyLoSPV9QHEKyCqWMFz/a5oUeKw2d0uyhkosbPo6Xumb3WR0J2FfZApFBZEQdbzC/0+hSNXgB086rw6esE4acYlXYZJKTjV1gk0S3k5KCFrt44f9bp3Uos57WIdj3QFHFQJBw3bWo5QUOBmE+f3MZZTzvnBEyk7QK223/HTV8a0qWO2cye4e5occjXUh/UBOlIKXhbpxAIXgnEhiafc45u0K13j+uKBwoJmwb3GVnb81DPvczBgXcKmGZi7zBEmxwXG9QuRezmn9n/+swqcU0ZA22SuTVhNGV1MIbMknjHjcYlvCS7EyPkUeVGdURnTbORqhXBOS6ybEd0U9c+4x+wvex5WnPk98Iy9Lp63LcyMDbaVMSN67U7HmgdcDg+SRzj3SPx9jFzv0AMGKU07H9snsG5GGqvACcT1GBcElyxDwNql3fQM4rQZT3pEFDzL3qtYXvUg8FXnuj6JMZB3/nRZurxvLD/ZuglpCtCF43DC09i+COz24RDWgdPAKWVqSqNcyGg65rNbElPX7yWHfgeCRyQeC3C7ZqmoVviYAcZZxGOI9Q7LnzZhLHLhVWGC2p6ym0LNO8ywpCnhdzpHMODhKvCRpmFImoGjwwF9weGoiUVl6yBOuK08bUlefKcr6aUeF3PgPPyIOh7mOeD2HrZTKiBIvDQE7sOyPzCoHfKu2/sviHpqV96qN/O9yOBXky/R8iltetcvyfgAYo1pkf/YeEGHSUisoyiKkWVayKYTZVtS1kUnZm0iNqGjrUxMpCS+7DfXgsdss+0fdkZ0VXRuDmzW1FQLWm1XECe8ZnHWq1wjp6e3JiY6XaZBfNNEJWPofqLqweRHXBHr84A0BwvM/MmmkO8YGDkvZ8vpKRMvhJSzcoiIMmQwUH5/PwksEEjuwadNrq2ZeIXghmDEmIU6In9+MPPfs9HPsLD/28APYNRubGory3/W1TEe84JNdQWsuMOvgMIEhXJJ9IXfw9piYQZGvty3e+dW73VH+ed14EGJJ4IRUinMaQYdDU6TeHWo2PB21NqsK/KseIlz2EU70xJoW4NeCxmNpcS5rI/DGw/Ku0S7yqB26ys5el7Qbtlmi++wYP+FSXGWBKmRTTk6I9QpamDw7ZT4nEdB6pEWOl0n8RYMheA9B7nMuYZxgtwX0Ar+hMGa5b+vWw4ObgmBlyUhZ0gsipomlifDqitdU6zxGtsvSJphBU0rSZprFeoqTZonTI08/BsIPo6w0CZkNsfdjMDLUuQnq8A5j7zWgJOeKZ8UnDI4abCuvLLWgDPA0wY/b4GVmLxmXXSSC5K/fyjAI86+mPR3WDlqZpz1EqzLFea1SxDb0v0WQRT9PSImbopuAD4bI+eqgMlIC24dgJTEuzCeXwWeAm50CsmawUkzTuKnGesYzwWeFLyirnmLF/LDgsynfZZ/A0YSFZYplHZ4dtwhm/R6H9zHTXVACCPNbKSRV8IA41JK3E1untaCDLDdEuc5TeKjVvHcquKcO9vrfEXcCNyo/POq4ALGTYOa92GsNmlX8DoATTA+kcS6PITuNhE5HBYUDpsFz5o827Xr3RYKXpeNGPr+YuxN0jcCH0uR83UgyNws2Ex8HLw69sJJ5GME3lhXPB0Cj5rxJMbTGE8bfBvjmRB4/aDmYzJum6SODjnD9C4K9fcG42spsW6Z8Nugbm+LYyNmzaWUHRlXu1SrVKRwmtmoicu0lU4VkOng1xvsxMR7KvGBKhBjmm41IBWlUJEMbmgS7zHjzlBxf4BHEBcFp8y4DXil4JYmLWwK7EdzkyrwfiWuU+YdTQpmd7uh1EFVcAVYkF2+6CfNNVAEy3mEDmiGxj7YTcFZ4JOTCa8ZDHlTygIYLGDLlX3Ft8TE6ylKZpryJaLhNMS2V3aW1tIEY2DwfoOveOPHRse6LgMJHU8UlKSOpKQDYEjlZ7QPGElFwWPiSVXL9b9R8O6m4SuDigGa28PHep328utEtdvhZLPRbmlgtrjNahJyjvAfVcX7YsNNnqGP1JogDm1+DlYT7tHI50py2lsN6vZnYyYKutygo/ohKV1nyiAl3h4bHhrUDLz5Y767Tp3PqUy9Lc12mQBOf5+44/9GVfHOGDmV8hzfceGPHRk9LC/0YAoo0MBks9Tu/Wh+lkMpkmlfCpjNoDOINzJ12fFGTLwpRu4bVNTW8jdtzhd1BsemXS7TjY1mx9E2ZwyA++uKX0iRnRhZtdyrMPKAYFJUxjgOVkQqkqWmmJGN5rd77HMoR+YJle/Flg7K3XToeiz5DMwA3klgJ0be3DR8uA5Y22AniJ4rqOe5rJ+XKK/IiCH51gOh4iN14JeahnGMWdnK/WQ7PWJuPC5WxGxomNv0AVbCFHvvS7QqNmDa6Up3Bw/bovqAlxNXzFgHlBJ/KnFPVfFbdeA1CaqUOts5fy+bpZy0UVsV+Pdg3KXE55qGm31Lhksu+B1nTk+ugvAPrAAVJqGNzZHxVYxJZXnLMs3myo2gDsa3rN1mbDr4gyig3CJMRYFcXs5cBW6ReKBpeJsZL68Cb6iMH8O4XbA609Qwq4exGf9j8GmDf1Tiv2KiSuL5vjHTZud7vCOmmP067i3LpmhifuhVYGDWQbp1cdFY7Co1csbzjmM7ZZPcQWsRdbFp4LCo464AJ3zVbQBbZqyZcZMZt1netO+0YBByJ/5FM76NOC84L7EtsS5xyjPbLQcDc/Rl3S6KTTGBjn3f0HKf0JUC1h0We3NaMWPblTLGHOW88ocICxgMQzMGUjc5Wog5Fb4qlom7ppFQq8DKxzbqxtz+3N+x8eqRdg+sgDDXy2W+T+e0Zb+99EwnialrG71am6DObyCb9wEdFi1Og+Jvoc3C2x1QZF3PV+wKRt7O6s2BpblpvPFP18LOuYvKel026ZdORV9Vf5eqq7Uns+1aZiy3FMvIZR9EVNe73AYYVkwQdTM9Fo0kV1P4h1ZAywVqd4oqz/5F+90k6So2N+xGK6wWUgxtjp6iQgmLxhl7XTBcS5t3W++7AhZRAOe4lL3vCziqB1pEylrEa9UuO7XrCCfKkXx/AAsogAfF/4/62zKC5seZFnxngY5hkhyJAvgu+gqTa6mDxpbfqM3yS3yWClgeSwUsFbA8lgpYKmB5LBWwVMDyWCpgqYDlsVTAUgHLY6mA/w/H/wEevarIDyyUdwAAAABJRU5ErkJggg==";
+  window.onLogoImgError = function(img) {
+    if (!img || img.dataset.logoFailed) return;
+    img.dataset.logoFailed = '1';
+    img.src = window.LOGO_DATA_URI;
+  };
+</script>
+<link rel="stylesheet" href="css/styles.css">
+<script>
+// Server injected network defaults
+const DEFAULT_APP_TOKEN = '';
+const DEFAULT_LAN_HOST = '';
+const DEFAULT_VPN_HOST = '';
+const DEFAULT_WOL_RELAY = '';
+const PC_MAC_ADDRESS = '';
+</script>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand" onclick="openSettingsModal()" role="button" tabindex="0" title="Настройки приложения" data-i18n-title="brand_tip">
+      <div class="brand-icon">
+        <img src="data:image/png;base64,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" alt="PC Control" width="32" height="32" onerror="onLogoImgError(this);">
+      </div>
+      <div class="brand-text">
+        <h1 data-i18n="brand_title">PC Control</h1>
+        <span class="brand-sub" data-i18n="brand_sub">Настройки</span>
+      </div>
+    </div>
+    <div class="status-pill" id="statusPill">
+      <span class="dot" id="dot"></span>
+      <span id="pctext" data-i18n="status_checking">Проверка...</span>
+    </div>
+  </header>
+
+  <!-- Баннер состояния офлайн с быстрой кнопкой включения по Wi-Fi -->
+  <div class="offline-banner" id="offlineBanner">
+    <div class="offline-info">
+      <div style="font-weight:600; font-size:12.5px; color:#fca5a5;" data-i18n="offline_title">ПК не отвечает (выключен или в режиме ожидания)</div>
+      <div style="font-size:11px; color:rgba(255,255,255,0.6);" data-i18n="offline_sub">Если телефон подключён к домашней сети Wi‑Fi, нажмите для включения</div>
+    </div>
+    <button class="offline-wol-quick" onclick="triggerWakeOnLan()" data-i18n="offline_btn">Включить</button>
+  </div>
+
+  <!-- Баннер скачивания независимого Android-приложения (.apk) — виден только в браузере -->
+  <div class="apk-banner" id="apkBanner">
+    <button class="apk-banner-close" onclick="dismissApkBanner()" title="Скрыть баннер" aria-label="Закрыть" data-i18n-title="apk_tip_close">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+    <div class="apk-banner-info">
+      <div class="apk-banner-title" data-i18n="apk_title">Приложение PC Control для Android</div>
+      <div class="apk-banner-sub" data-i18n="apk_sub">Установите на телефон по QR-коду через домашнюю сеть Wi‑Fi</div>
+    </div>
+    <div class="apk-actions">
+      <button class="apk-dl-btn" style="background:#ff0033;" onclick="toggleQrModal(true)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 3h8v8H3zm2 2v4h4V5zm8-2h8v8h-8zm2 2v4h4V5zM3 13h8v8H3zm2 2v4h4v-4zm13-2h3v2h-3zm-5 0h2v3h-2zm2 3h3v2h-3zm-2 2h2v3h-2zm5 1h3v2h-3zm-3 2h3v1h-3z"/></svg>
+        <span data-i18n="apk_btn_qr">QR-код</span>
+      </button>
+      <a class="apk-dl-btn" href="/download/apk" download="PC_Control.apk">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+        <span data-i18n="apk_btn_dl">Скачать APK</span>
+      </a>
+    </div>
+  </div>
+
+  <!-- 1. Медиаплеер YouTube Music -->
+  <div class="ytm-player">
+    <div id="mediaEmpty" class="ytm-empty">
+      <div class="ytm-empty-art">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+      </div>
+      <div>
+        <div style="font-weight:600; color:#fff; margin-bottom:2px;" data-i18n="media_empty_title">Воспроизведение остановлено</div>
+        <div style="font-size:12px; color:var(--muted);" data-i18n="media_empty_sub">Запустите трек в YouTube Music на компьютере</div>
+      </div>
+    </div>
+
+    <div id="mediaBody" style="display:none;">
+      <div class="ytm-header">
+        <div class="ytm-art">
+          <img id="mediaThumb" style="display:none;" alt="">
+          <div id="mediaArtFallback" class="ytm-art-fallback">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+          </div>
+        </div>
+        <div class="ytm-info">
+          <div id="mediaTitle" class="ytm-title">—</div>
+          <div id="mediaArtist" class="ytm-artist"></div>
+        </div>
+        <button class="ytm-icon-btn" id="historyQuickBtn" onclick="openQueueTab('history')" title="История воспроизведения" data-i18n-title="media_history_tip" style="flex-shrink:0; color:var(--subtext);">
+          <svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+        </button>
+      </div>
+
+      <div id="mediaProgressWrap" class="ytm-timeline" style="display:none;">
+        <div class="slider-zone" id="mediaSeekZone">
+          <input type="range" id="mediaSeek" class="safe-range ytm-red-range" min="0" max="100" step="0.5" value="0">
+        </div>
+        <div class="ytm-times">
+          <span id="mediaCurTime">0:00</span>
+          <span id="mediaDurTime">0:00</span>
+        </div>
+      </div>
+
+      <div class="ytm-transport">
+        <div class="ytm-mode-wrap" id="modePicker">
+          <button class="ytm-icon-btn" id="modeBtn" onclick="toggleModeMenu()" title="Режим воспроизведения" data-i18n-title="media_mode_tip">
+            <svg id="modeBtnIcon" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+          </button>
+          <div class="ytm-mode-menu" id="modeMenu">
+            <button class="ytm-mode-item" id="modeItemNormal" onclick="setPlaybackMode('normal')">
+              <svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+              <span data-i18n="mode_normal">Обычный порядок</span>
+              <span class="m-check" id="modeCheckNormal">✓</span>
+            </button>
+            <button class="ytm-mode-item" id="modeItemRepeat" onclick="setPlaybackMode('repeat')">
+              <svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z"/></svg>
+              <span data-i18n="mode_repeat">Повтор трека</span>
+              <span class="m-check" id="modeCheckRepeat"></span>
+            </button>
+            <button class="ytm-mode-item" id="modeItemShuffle" onclick="setPlaybackMode('shuffle')">
+              <svg viewBox="0 0 24 24"><path d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+              <span data-i18n="mode_shuffle">Случайный порядок</span>
+              <span class="m-check" id="modeCheckShuffle"></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="ytm-main-btns">
+          <button class="ytm-icon-btn" onclick="mediaControl('prev')" title="Предыдущий трек" data-i18n-title="media_prev_tip">
+            <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+          </button>
+          <button class="ytm-play-btn" id="mediaPlayBtn" onclick="mediaControl('playpause')" title="Воспроизведение / Пауза" data-i18n-title="media_playpause_tip">
+            <svg id="mediaPlayIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </button>
+          <button class="ytm-icon-btn" onclick="mediaControl('next')" title="Следующий трек" data-i18n-title="media_next_tip">
+            <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+        </div>
+
+        <button class="ytm-queue-pill" id="queueBtn" onclick="toggleQueuePanel()">
+          <svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+          <span data-i18n="media_queue_btn">Очередь</span>
+        </button>
+      </div>
+
+      <!-- Громкость плеера -->
+      <div class="ytm-vol-row">
+        <button class="ytm-vol-btn" id="playerMuteBtn" onclick="togglePlayerMute()" title="Громкость плеера" data-i18n-title="media_vol_tip">
+          <svg id="playerVolIcon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+        </button>
+        <div class="slider-zone" id="playerVolZone">
+          <input type="range" id="playerVolSlider" class="safe-range" min="0" max="100" value="100">
+        </div>
+        <div class="ytm-vol-val" id="playerVolVal">100%</div>
+      </div>
+
+      <!-- Панель «Очередь YouTube Music» и «История прослушивания» -->
+      <div class="ytm-queue-panel" id="queuePanel">
+        <div class="ytm-queue-head">
+          <div class="ytm-q-tabs">
+            <button class="ytm-q-tab active" id="qTabQueue" onclick="switchQueueTab('queue')" data-i18n="tab_queue">Далее в очереди</button>
+            <button class="ytm-q-tab" id="qTabHistory" onclick="switchQueueTab('history')" data-i18n="tab_history">История</button>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span id="queueCount" style="font-family:var(--font-mono); font-size:11px; color:var(--subtext);"></span>
+            <button class="btn-icon" id="queueScrollActiveBtn" onclick="scrollQueueToActive(true)" title="К текущему треку" style="width:24px; height:24px; padding:0; display:flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--subtext); cursor:pointer;">
+              <svg width="14" height="14" viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0 0 13 3.06V1h-2v2.06A8.994 8.994 0 0 0 3.06 11H1v2h2.06A8.994 8.994 0 0 0 11 20.94V23h2v-2.06A8.994 8.994 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>
+            </button>
+            <button class="btn-icon" id="queueRefreshBtn" onclick="refreshQueueExplicit()" title="Обновить список очереди" data-i18n-title="queue_refresh_tip" style="width:24px; height:24px; padding:0; display:flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--subtext); cursor:pointer;">
+              <svg width="13" height="13" viewBox="0 0 24 24" style="fill:none; stroke:currentColor;" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path style="fill:none;" d="M23 4v6h-6"/><path style="fill:none;" d="M1 20v-6h6"/><path style="fill:none;" d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="ytm-queue-list" id="queueList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Звук системы и трансляция -->
+  <div class="card">
+    <div class="card-title" data-i18n="card_audio_streaming">Аудио и трансляция</div>
+    <div class="grid2">
+      <button id="pcAudioBtn" onclick="togglePcAudio()">
+        <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0-9 9v7c0 1.1.9 2 2 2h4v-8H5v-1c0-3.87 3.13-7 7-7s7 3.13 7 7v1h-4v8h4c1.1 0 2-.9 2-2v-7a9 9 0 0 0-9-9z"/></svg>
+        <span id="pcAudioText" data-i18n="btn_pc_audio">Звук ПК</span>
+      </button>
+      <button id="micBtn" onclick="toggleMic()">
+        <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15a.998.998 0 0 0-.98-.85c-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20H8v2h8v-2h-3v-2.08c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z"/></svg>
+        <span id="micText" data-i18n="btn_mic">Микрофон</span>
+      </button>
+    </div>
+    <div style="margin-top:8px;">
+      <button id="bgModeBtn" class="bg-mode-btn" onclick="toggleBackgroundMode()">
+        <span class="bg-mode-indicator" id="bgModeDot"></span>
+        <svg viewBox="0 0 24 24"><path d="M12 1a9 9 0 0 0-9 9v7c0 1.66 1.34 3 3 3h3v-8H5v-2c0-3.87 3.13-7 7-7s7 3.13 7 7v2h-4v8h3c1.66 0 3-1.34 3-3v-7a9 9 0 0 0-9-9zm-1 11h2v1.17c.59.34 1 .98 1 1.83 0 1.1-.9 2-2 2s-2-.9-2-2c0-.85.41-1.49 1-1.83V12z"/></svg>
+        <span id="bgModeText" data-i18n="btn_bg_mode_off">Фоновый режим · ВЫКЛ</span>
+      </button>
+    </div>
+    <div style="margin-top:8px;">
+      <button id="screenPanelBtn" onclick="toggleScreenPanel()">
+        <svg viewBox="0 0 24 24"><path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z"/></svg>
+        <span id="screenPanelBtnText" data-i18n="btn_screen_share">Демонстрация экрана</span>
+      </button>
+    </div>
+
+    <!-- Панель настроек и просмотра демонстрации экрана -->
+    <div class="screen-panel" id="screenPanel">
+      <div class="seg-row">
+        <span class="seg-lbl" data-i18n="screen_lbl_monitor">Экран</span>
+        <div class="seg-group" id="screenMonGroup">
+          <button class="seg-btn active" onclick="setScreenOpt('monitor', 1)" data-i18n="screen_mon_1">Экран 1</button>
+          <button class="seg-btn" onclick="setScreenOpt('monitor', 2)" data-i18n="screen_mon_2">Экран 2</button>
+          <button class="seg-btn" onclick="setScreenOpt('monitor', 0)" data-i18n="screen_mon_all">Все экраны</button>
+        </div>
+      </div>
+      <div class="seg-row">
+        <span class="seg-lbl" data-i18n="screen_lbl_quality">Качество</span>
+        <div class="seg-group" id="screenResGroup">
+          <button class="seg-btn" data-val="720" onclick="setScreenOpt('height', 720)">720p</button>
+          <button class="seg-btn active" data-val="1080" onclick="setScreenOpt('height', 1080)">1080p</button>
+          <button class="seg-btn" data-val="0" onclick="setScreenOpt('height', 0)" data-i18n="screen_res_source">Исходное</button>
+        </div>
+      </div>
+      <div class="seg-row">
+        <span class="seg-lbl" data-i18n="screen_lbl_fps">Частота</span>
+        <div class="seg-group" id="screenFpsGroup">
+          <button class="seg-btn" data-val="30" onclick="setScreenOpt('fps', 30)">30 FPS</button>
+          <button class="seg-btn active" data-val="60" onclick="setScreenOpt('fps', 60)">60 FPS</button>
+        </div>
+      </div>
+
+      <!-- Локальная громкость потока демонстрации на телефоне -->
+      <div class="sys-vol-row" style="margin-top:10px;">
+        <button class="ytm-vol-btn" id="screenMuteBtn" onclick="toggleStreamMute()" title="Громкость потока на телефоне" data-i18n-title="screen_stream_vol_tip">
+          <svg id="screenVolIcon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+        </button>
+        <div class="slider-zone" id="screenVolZone">
+          <input type="range" id="screenVolSlider" class="safe-range" min="0" max="100" step="1" value="50">
+        </div>
+        <div class="ytm-vol-val" id="screenVolVal">50%</div>
+      </div>
+
+      <div class="screen-actions">
+        <button id="screenStartBtn" class="btn-ytm-red" onclick="toggleScreenStream()">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <span id="screenStartText" data-i18n="btn_start_screen">Запустить трансляцию</span>
+        </button>
+      </div>
+
+      <div class="screen-stage" id="screenStage" ondblclick="fullscreenScreen()">
+        <div class="screen-badge">
+          <span class="screen-badge-dot"></span>
+          <span id="screenBadgeText">LIVE · Экран 1 · 1080p · 60 FPS</span>
+        </div>
+        <video id="screenVideo" autoplay playsinline muted></video>
+        <img id="screenImg" alt="Экран ПК" style="display:none;">
+        <button class="screen-fs-btn" onclick="fullscreenScreen(event)" title="Полноэкранный режим" data-i18n-title="screen_fs_tip">
+          <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <audio id="screenRtcAudio" autoplay playsinline style="display:none;"></audio>
+    <audio id="pcRtcAudio" autoplay playsinline style="display:none;"></audio>
+    <audio id="micAudio" autoplay playsinline style="display:none;"></audio>
+
+    <div class="sys-vol-row">
+      <button class="ytm-vol-btn" id="muteBtn" onclick="toggleMute()" title="Общая системная громкость" data-i18n-title="sys_vol_tip">
+        <svg id="sysVolIcon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+      </button>
+      <div class="slider-zone" id="sysVolZone">
+        <input type="range" id="volSlider" class="safe-range" min="0" max="100" value="50">
+      </div>
+      <div class="ytm-vol-val" id="volValue">—</div>
+    </div>
+
+    <div style="margin-top:8px;">
+      <button id="appVolumesBtn" onclick="showAppVolumes()" style="padding:9px 12px; font-size:12.5px; color:var(--subtext);">
+        <span data-i18n="btn_app_mixer">Микшер громкости приложений</span>
+      </button>
+      <div class="drawer" id="appVolumesBox"></div>
+    </div>
+  </div>
+
+  <!-- 3. Клавиатура и быстрые инструменты -->
+  <div class="card">
+    <div class="card-title" data-i18n="card_input_system">Ввод и система</div>
+    <div class="lang-picker" id="langPicker">
+      <button class="lang-btn" onclick="toggleLangMenu()">
+        <svg viewBox="0 0 24 24"><path d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/></svg>
+        <span data-i18n="btn_kb_lang">Язык ввода Windows</span>
+        <span class="lang-badge" id="langBadge">—</span>
+      </button>
+      <div class="lang-menu" id="langMenu"></div>
+    </div>
+
+    <div class="grid2">
+      <button onclick="showScreenshot()">
+        <svg viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+        <span data-i18n="btn_screenshot">Снимок экрана</span>
+      </button>
+      <button id="processesBtn" onclick="showProcesses()">
+        <svg viewBox="0 0 24 24"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+        <span data-i18n="btn_processes">Процессы</span>
+      </button>
+    </div>
+
+    <!-- Блок процессов с поиском: открывается сразу под кнопкой "Процессы", сдвигая сценарии вниз -->
+    <div class="drawer" id="processesBox" style="display:none; max-height:none; overflow:visible;">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid var(--border);">
+        <div style="position:relative; flex:1; display:flex; align-items:center;">
+          <svg viewBox="0 0 24 24" style="position:absolute; left:9px; width:14px; height:14px; fill:var(--muted); pointer-events:none;"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+          <input type="text" id="procSearchInput" oninput="renderProcessesList()" style="width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:10px; color:var(--text); padding:7px 28px 7px 30px; font-size:12.5px; font-family:var(--font-sans); outline:none;" placeholder="Поиск процесса..." data-i18n-placeholder="proc_search_ph">
+          <button type="button" id="procSearchClearBtn" onclick="clearProcSearch()" style="position:absolute; right:6px; width:20px; height:20px; padding:0; background:none; border:none; color:var(--muted); font-size:11px; display:none; align-items:center; justify-content:center; cursor:pointer;" title="Очистить">✕</button>
+        </div>
+        <span id="procCountBadge" style="font-family:var(--font-mono); font-size:11px; color:var(--muted); flex-shrink:0;">—</span>
+        <button type="button" onclick="loadProcessesList()" style="width:auto; padding:6px 10px; font-size:11.5px; border-radius:8px; flex-shrink:0;" title="Обновить" data-i18n-title="proc_refresh_tip">
+          <svg viewBox="0 0 24 24" style="width:13px; height:13px;"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+        </button>
+      </div>
+      <div id="processesList" style="max-height:220px; overflow-y:auto;"></div>
+    </div>
+
+    <!-- Кнопка сценариев запуска (находится под процессами) -->
+    <div style="margin-top:8px;">
+      <button onclick="openPresetsModal()" style="border-color:rgba(255,0,51,0.35); background:rgba(255,0,51,0.08);">
+        <svg viewBox="0 0 24 24" style="width:17px; height:17px; fill:currentColor;"><path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5z"/></svg>
+        <span data-i18n="btn_presets">Сценарии запуска</span>
+      </button>
+    </div>
+
+    <!-- Динамические кнопки пользовательских сценариев -->
+    <div class="presets-flow" id="presetsButtonsContainer"></div>
+  </div>
+
+  <!-- 4. Питание и таймер -->
+  <div class="card">
+    <div class="card-title" data-i18n="card_power">Управление питанием</div>
+    <button class="wol-btn" id="btnWakeOnLan" onclick="triggerWakeOnLan()">
+      <svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42A6.92 6.92 0 0 1 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.58 1.4-4.83 3.49-6.04L7.07 4.54C4.6 6.07 3 8.84 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-3.16-1.6-5.93-4.17-7.83z"/></svg>
+      <span data-i18n="btn_wol">Включить ПК (Wake-on-LAN)</span>
+    </button>
+    <div class="grid2">
+      <button onclick="send('sleep')" data-i18n="btn_sleep">Спящий режим</button>
+      <button onclick="send('lock')" data-i18n="btn_lock">Блокировка</button>
+      <button class="danger-soft" onclick="send('reboot')" data-i18n="btn_reboot">Перезагрузка</button>
+      <button class="danger-soft" onclick="send('shutdown')" data-i18n="btn_shutdown">Выключение</button>
+    </div>
+    <div class="timer-row">
+      <input type="number" class="timer-input" id="timerMinutes" placeholder="Таймер (мин)" data-i18n-placeholder="timer_placeholder">
+      <button onclick="startTimer()" style="flex:1;" data-i18n="btn_timer_start">Старт</button>
+      <button class="danger-soft" onclick="cancelTimer()" style="flex:0 0 auto; width:auto; padding:10px 14px;" data-i18n="btn_timer_cancel">Сброс</button>
+    </div>
+    <div id="timerCountdown"></div>
+  </div>
+
+  <div id="statusMsg"></div>
+</div>
+
+<!-- Модальное окно управления сценариями запуска -->
+<div class="conn-modal-backdrop" id="presetsModalBackdrop" onclick="if(event.target===this) closePresetsModal()">
+  <div class="conn-modal" style="max-width:440px;">
+    <!-- Заголовок модального окна -->
+    <div class="settings-modal-header">
+      <div class="settings-modal-title-row">
+        <div class="settings-modal-icon">
+          <svg viewBox="0 0 24 24" style="width:17px; height:17px; fill:currentColor;"><path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5z"/></svg>
+        </div>
+        <div>
+          <div class="settings-modal-title" data-i18n="presets_modal_title">Сценарии запуска</div>
+          <div style="font-size:11px; color:var(--subtext);" data-i18n="presets_modal_sub">Цепочки автозапуска программ, сайтов и пауз</div>
+        </div>
+      </div>
+      <button class="settings-modal-close" onclick="closePresetsModal()" title="Закрыть">✕</button>
+    </div>
+
+    <!-- Режим 1: Список сценариев -->
+    <div id="presetsListView">
+      <div id="presetsListCards" style="margin-bottom:12px; display:flex; flex-direction:column; gap:8px;"></div>
+      <button type="button" class="btn-ytm-red" onclick="startNewPreset()" style="width:100%; padding:12px;" data-i18n="preset_btn_add">
+        + Добавить сценарий
+      </button>
+    </div>
+
+    <!-- Режим 2: Редактор сценария -->
+    <div id="presetsEditorView" style="display:none;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+        <span id="presetEditorTitle" style="font-weight:700; font-size:14px; color:#fff;" data-i18n="preset_editor_new_title">Новый сценарий</span>
+        <button type="button" onclick="backToPresetsList()" style="background:none; border:none; color:var(--subtext); font-size:12px; cursor:pointer;" data-i18n="preset_btn_back">← К списку</button>
+      </div>
+
+      <div class="settings-field-label" data-i18n="preset_lbl_name">Название сценария (для кнопки):</div>
+      <input type="text" class="conn-field" id="presetNameInput" placeholder="Например: Игровой режим" data-i18n-placeholder="preset_name_placeholder">
+
+      <div class="settings-field-label" style="margin-top:6px;" data-i18n="preset_lbl_icon">Иконка сценария:</div>
+      <div class="preset-icon-picker" id="presetIconPicker"></div>
+
+      <div class="settings-field-label" style="margin-top:6px;" data-i18n="preset_steps_heading">Шаги выполнения (по очереди):</div>
+      <div id="presetStepsContainer" style="margin-bottom:10px;"></div>
+
+      <!-- Вкладки добавления действия -->
+      <div style="background:var(--surface2); border:1px solid var(--border); border-radius:14px; padding:10px; margin-bottom:12px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+          <div id="stepActionBoxHeading" style="font-size:11.5px; font-weight:600; color:var(--subtext);" data-i18n="preset_add_action_lbl">Добавить действие в цепочку:</div>
+          <button type="button" id="btnCancelEditStep" onclick="requestCancelEditingStep()" style="display:none; background:none; border:none; color:#ef4444; font-size:11.5px; cursor:pointer; font-weight:600; padding:2px 6px;" data-i18n="preset_btn_cancel_step">Отмена</button>
+        </div>
+        
+        <div style="display:flex; gap:5px; margin-bottom:10px;">
+          <button type="button" id="stepTabBtnApp" class="settings-tab active" onclick="switchStepTab('app')" style="padding:6px 8px; font-size:11.5px; display:flex; align-items:center; justify-content:center; gap:5px;">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+            <span data-i18n="preset_tab_app">Программа</span>
+          </button>
+          <button type="button" id="stepTabBtnUrl" class="settings-tab" onclick="switchStepTab('url')" style="padding:6px 8px; font-size:11.5px; display:flex; align-items:center; justify-content:center; gap:5px;">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+            <span data-i18n="preset_tab_url">Ссылка</span>
+          </button>
+          <button type="button" id="stepTabBtnDelay" class="settings-tab" onclick="switchStepTab('delay')" style="padding:6px 8px; font-size:11.5px; display:flex; align-items:center; justify-content:center; gap:5px;">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span data-i18n="preset_tab_delay">Пауза</span>
+          </button>
+        </div>
+
+        <!-- Подпанель: Программа -->
+        <div id="stepPaneApp">
+          <input type="text" class="conn-field" id="progSearchInput" placeholder="Введите название (напр. Counter-Strike, Discord)..." data-i18n-placeholder="preset_search_placeholder" oninput="onProgramSearchInput(this.value)" style="margin-bottom:4px;">
+          <div id="progSuggestBox" class="prog-suggest-box" style="display:none;"></div>
+          <div style="margin-top:6px; font-size:11px; color:var(--muted);" data-i18n="preset_manual_path_lbl">Или точный путь к файлу:</div>
+          <input type="text" class="conn-field" id="progManualPathInput" placeholder="C:\Games\game.exe" data-i18n-placeholder="preset_manual_path_placeholder" style="margin-top:3px; margin-bottom:8px; font-size:12px;">
+          <button type="button" class="settings-sec-btn" id="btnSubmitAppStep" onclick="addAppStepFromInputs()" style="width:100%; padding:8px 10px;" data-i18n="preset_btn_add_step">+ Добавить в цепочку</button>
+        </div>
+
+        <!-- Подпанель: Ссылка -->
+        <div id="stepPaneUrl" style="display:none;">
+          <input type="url" class="conn-field" id="stepUrlInput" placeholder="https://youtube.com" data-i18n-placeholder="preset_url_placeholder" style="margin-bottom:6px;">
+          <input type="text" class="conn-field" id="stepUrlNameInput" placeholder="Название (напр. YouTube)" data-i18n-placeholder="preset_url_name_placeholder" style="margin-bottom:8px;">
+          <button type="button" class="settings-sec-btn" id="btnSubmitUrlStep" onclick="addUrlStepFromInputs()" style="width:100%; padding:8px 10px;" data-i18n="preset_btn_add_step">+ Добавить в цепочку</button>
+        </div>
+
+        <!-- Подпанель: Пауза -->
+        <div id="stepPaneDelay" style="display:none;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+            <input type="number" class="conn-field" id="stepDelaySecInput" value="3" min="1" max="120" style="width:90px; margin-bottom:0; text-align:center;">
+            <span style="font-size:12.5px; color:var(--subtext);" data-i18n="preset_delay_lbl">секунд задержки</span>
+          </div>
+          <div style="display:flex; gap:6px; margin-bottom:8px;">
+            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=1" style="flex:1; padding:5px;">1 сек</button>
+            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=3" style="flex:1; padding:5px;">3 сек</button>
+            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=5" style="flex:1; padding:5px;">5 сек</button>
+            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=10" style="flex:1; padding:5px;">10 сек</button>
+          </div>
+          <button type="button" class="settings-sec-btn" id="btnSubmitDelayStep" onclick="addDelayStepFromInputs()" style="width:100%; padding:8px 10px;" data-i18n="preset_btn_add_step">+ Добавить в цепочку</button>
+        </div>
+
+      </div>
+
+      <div style="display:flex; gap:8px;">
+        <button type="button" id="btnDeletePreset" class="danger-soft" onclick="deleteCurrentEditingPreset()" style="display:none; padding:10px 14px; border-radius:12px; font-weight:600; font-size:12.5px;" data-i18n="preset_btn_delete">Удалить</button>
+        <button type="button" class="btn-ytm-red" onclick="saveCurrentEditingPreset()" style="flex:1; padding:10px 14px;" data-i18n="preset_btn_save">Сохранить сценарий</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Универсальное модальное окно подтверждений (Несохранённые изменения / Удаление) -->
+<div class="custom-modal-backdrop" id="customConfirmModal" style="display:none;" onclick="if(event.target===this && window.closeCustomConfirmDefault) window.closeCustomConfirmDefault()">
+  <div class="custom-modal-box">
+    <div class="custom-modal-title" id="customConfirmTitle">Заголовок</div>
+    <div class="custom-modal-desc" id="customConfirmDesc">Описание</div>
+    <div class="custom-modal-actions" id="customConfirmActions"></div>
+  </div>
+</div>
+
+<!-- Модальное окно безопасного входа (Авторизация по паролю) -->
+<div class="settings-modal-backdrop conn-modal-backdrop" id="loginModalBackdrop" style="z-index: 99999;">
+  <div class="settings-modal conn-modal" style="max-width: 380px; text-align: center; padding: 28px 24px;">
+    <div style="margin-bottom: 16px;">
+      <img src="/logo.png" alt="PC Control" style="width: 56px; height: 56px; object-fit: contain; margin: 0 auto; display: block; border-radius: 12px; box-shadow: 0 4px 16px rgba(255, 0, 51, 0.25);" onerror="onLogoImgError(this);">
+    </div>
+    <div style="font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 6px;" data-i18n="login_title">Вход в PC Control</div>
+    <div style="font-size: 13px; color: var(--muted); margin-bottom: 20px; line-height: 1.4;" id="loginModalSubtitle" data-i18n="login_subtitle">Введите пароль доступа к вашему компьютеру</div>
+    
+    <div id="loginErrorBox" style="display:none; padding: 10px 14px; margin-bottom: 16px; border: 1px solid rgba(255, 51, 51, 0.5); background: rgba(255, 51, 51, 0.1); border-radius: 8px; color: #ff5555; font-size: 13px; text-align: left;"></div>
+
+    <form onsubmit="event.preventDefault(); submitLoginForm();" style="width: 100%;">
+      <div class="conn-field-wrap" style="margin-bottom: 14px;">
+        <input type="password" class="conn-field" id="loginPasswordInput" placeholder="Пароль доступа" data-i18n-placeholder="login_pwd_placeholder" autocomplete="current-password" autofocus style="font-size: 15px; padding-right: 42px;">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeLoginPwd" onclick="toggleLoginPwdVisibility()" title="Показать / скрыть">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+            <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          </span>
+        </button>
+      </div>
+
+      <div style="display: flex; align-items: center; justify-content: flex-start; margin-bottom: 18px; font-size: 13px; color: var(--muted); cursor: pointer;" onclick="toggleLoginRemember()">
+        <input type="checkbox" id="loginRememberCheck" checked style="accent-color: #ff0033; margin-right: 8px; cursor: pointer;">
+        <label for="loginRememberCheck" style="cursor: pointer;" data-i18n="login_remember">Запомнить на этом устройстве</label>
+      </div>
+
+      <button type="submit" class="btn-ytm-red" id="btnLoginSubmit" style="width: 100%; padding: 12px; font-size: 15px; font-weight: 600;" data-i18n="login_btn">Войти</button>
+    </form>
+  </div>
+</div>
+
+<!-- Единое модальное окно настроек (Язык / Сервер / О приложении) -->
+<div class="settings-modal-backdrop conn-modal-backdrop" id="settingsModalBackdrop" onclick="if(event.target===this) closeSettingsModal()">
+  <div class="settings-modal conn-modal">
+    <div class="settings-modal-header">
+      <div class="settings-modal-title-row">
+        <div class="settings-modal-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </div>
+        <span class="settings-modal-title" data-i18n="settings_title">Настройки</span>
+      </div>
+      <button class="settings-modal-close" onclick="closeSettingsModal()" aria-label="Закрыть" data-i18n-title="btn_close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!-- Табы настроек: Язык, Сервер, О приложении -->
+    <div class="settings-tabs">
+      <button class="settings-tab active" id="tabBtnLang" onclick="switchSettingsTab('lang')">
+        <span data-i18n="tab_settings_lang">Язык</span>
+      </button>
+      <button class="settings-tab" id="tabBtnServer" onclick="switchSettingsTab('server')">
+        <span data-i18n="tab_settings_server">Сервер</span>
+      </button>
+      <button class="settings-tab" id="tabBtnAbout" onclick="switchSettingsTab('about')">
+        <span data-i18n="tab_settings_about">О приложении</span>
+      </button>
+    </div>
+
+    <!-- Вкладка: ЯЗЫК -->
+    <div class="settings-pane" id="paneSettingsLang">
+      <div class="settings-pane-sub" data-i18n="lang_select_heading">Язык интерфейса приложения</div>
+      <div class="lang-opt-list">
+        <button class="lang-opt-card" id="langOptUa" onclick="selectAppLanguage('uk')">
+          <div class="lang-opt-meta">
+            <span class="lang-opt-flag" style="font-size:11px; font-weight:700; color:var(--text); background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:3px 6px; width:auto; height:auto;">UA</span>
+            <div class="lang-opt-names">
+              <span class="lang-opt-title" data-i18n="lang_ua_name">Українська</span>
+              <span class="lang-opt-subtitle">Повна локалізація</span>
+            </div>
+          </div>
+          <span class="lang-opt-check" id="langCheckUa"></span>
+        </button>
+        <button class="lang-opt-card" id="langOptRu" onclick="selectAppLanguage('ru')">
+          <div class="lang-opt-meta">
+            <span class="lang-opt-flag" style="font-size:11px; font-weight:700; color:var(--text); background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:3px 6px; width:auto; height:auto;">RU</span>
+            <div class="lang-opt-names">
+              <span class="lang-opt-title" data-i18n="lang_ru_name">Русский</span>
+              <span class="lang-opt-subtitle">Полная локализация</span>
+            </div>
+          </div>
+          <span class="lang-opt-check" id="langCheckRu"></span>
+        </button>
+        <button class="lang-opt-card" id="langOptEn" onclick="selectAppLanguage('en')">
+          <div class="lang-opt-meta">
+            <span class="lang-opt-flag" style="font-size:11px; font-weight:700; color:var(--text); background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:3px 6px; width:auto; height:auto;">EN</span>
+            <div class="lang-opt-names">
+              <span class="lang-opt-title" data-i18n="lang_en_name">English</span>
+              <span class="lang-opt-subtitle">Full localization</span>
+            </div>
+          </div>
+          <span class="lang-opt-check" id="langCheckEn"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Вкладка: СЕРВЕР -->
+    <div class="settings-pane" id="paneSettingsServer" style="display:none;">
+      <div class="settings-pane-sub" id="connActiveInfo" data-i18n="server_heading">Маршрут подключения к серверу</div>
+      <div class="conn-opt-list">
+        <button class="conn-opt active" id="connOptAuto" onclick="selectConnMode('auto')">
+          <div class="conn-opt-meta">
+            <span class="conn-opt-name" data-i18n="server_mode_auto">Автоматически (Рекомендуется)</span>
+            <span class="conn-opt-url" id="connAutoUrlText" data-i18n="server_mode_auto_sub">Дом (••••••••••••) ↔ Интернет (••••••••••••)</span>
+          </div>
+          <div class="conn-opt-right">
+            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnAuto" onclick="event.stopPropagation(); toggleConnSecret('autoCard')" title="Показать / скрыть">
+              <span class="conn-sec-stack">
+                <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+              </span>
+            </span>
+            <span id="connBadgeAuto">✓</span>
+          </div>
+        </button>
+        <button class="conn-opt" id="connOptLan" onclick="selectConnMode('lan')">
+          <div class="conn-opt-meta">
+            <span class="conn-opt-name" data-i18n="server_mode_lan">Домашняя сеть (Wi‑Fi / LAN)</span>
+            <span class="conn-opt-url" id="connLanUrlText">••••••••••••</span>
+          </div>
+          <div class="conn-opt-right">
+            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnLan" onclick="event.stopPropagation(); toggleConnSecret('lanCard')" title="Показать / скрыть">
+              <span class="conn-sec-stack">
+                <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+              </span>
+            </span>
+            <span role="button" tabindex="0" class="conn-sec-btn compact copy-btn" id="btnCopyConnLan" onclick="event.stopPropagation(); copyConnSecret('lanCard', this)" title="Скопировать">
+              <span class="conn-sec-stack">
+                <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              </span>
+            </span>
+            <span id="connBadgeLan"></span>
+          </div>
+        </button>
+        <button class="conn-opt" id="connOptVpn" onclick="selectConnMode('vpn')">
+          <div class="conn-opt-meta">
+            <span class="conn-opt-name" data-i18n="server_mode_vpn">Tailscale (Интернет / Другой город)</span>
+            <span class="conn-opt-url" id="connVpnUrlText">••••••••••••</span>
+          </div>
+          <div class="conn-opt-right">
+            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnVpn" onclick="event.stopPropagation(); toggleConnSecret('vpnCard')" title="Показать / скрыть">
+              <span class="conn-sec-stack">
+                <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+              </span>
+            </span>
+            <span role="button" tabindex="0" class="conn-sec-btn compact copy-btn" id="btnCopyConnVpn" onclick="event.stopPropagation(); copyConnSecret('vpnCard', this)" title="Скопировать">
+              <span class="conn-sec-stack">
+                <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              </span>
+            </span>
+            <span id="connBadgeVpn"></span>
+          </div>
+        </button>
+        <button class="conn-opt" id="connOptCustom" onclick="selectConnMode('custom')">
+          <div class="conn-opt-meta">
+            <span class="conn-opt-name" data-i18n="server_mode_custom">Свой адрес (Пользовательский)</span>
+            <span class="conn-opt-url" id="connCustomUrlText">••••••••••••</span>
+          </div>
+          <div class="conn-opt-right">
+            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnCustom" onclick="event.stopPropagation(); toggleConnSecret('customCard')" title="Показать / скрыть">
+              <span class="conn-sec-stack">
+                <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+              </span>
+            </span>
+            <span role="button" tabindex="0" class="conn-sec-btn compact copy-btn" id="btnCopyConnCustom" onclick="event.stopPropagation(); copyConnSecret('customCard', this)" title="Скопировать">
+              <span class="conn-sec-stack">
+                <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              </span>
+            </span>
+            <span id="connBadgeCustom"></span>
+          </div>
+        </button>
+      </div>
+
+      <div class="settings-field-label" data-i18n="server_lan_lbl">IP-адрес домашней сети (Wi-Fi):</div>
+      <div class="conn-field-wrap">
+        <input type="password" class="conn-field" id="connLanHostInput" placeholder="http://192.168.0.100:5000" data-i18n-placeholder="server_lan_placeholder" oninput="onLanHostInputChange(this.value)">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeLanInp" onclick="toggleConnSecret('lanInp')" title="Показать / скрыть">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+            <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          </span>
+        </button>
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyLanInp" onclick="copyConnSecret('lanInp', this)" title="Скопировать">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          </span>
+        </button>
+      </div>
+
+      <div class="settings-field-label" data-i18n="server_vpn_lbl">IP-адрес Tailscale (VPN):</div>
+      <div class="conn-field-wrap">
+        <input type="password" class="conn-field" id="connVpnHostInput" placeholder="http://100.64.0.1:5000" data-i18n-placeholder="server_vpn_placeholder">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeVpnInp" onclick="toggleConnSecret('vpnInp')" title="Показать / скрыть">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+            <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          </span>
+        </button>
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyVpnInp" onclick="copyConnSecret('vpnInp', this)" title="Скопировать">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          </span>
+        </button>
+      </div>
+
+      <div class="settings-field-label" data-i18n="server_custom_lbl">Свой IP-адрес или домен сервера:</div>
+      <div class="conn-field-wrap">
+        <input type="password" class="conn-field" id="connCustomHostInput" placeholder="например, http://192.168.0.100:5000" data-i18n-placeholder="server_custom_placeholder">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeCustomInp" onclick="toggleConnSecret('customInp')" title="Показать / скрыть">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+            <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          </span>
+        </button>
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyCustomInp" onclick="copyConnSecret('customInp', this)" title="Скопировать">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          </span>
+        </button>
+      </div>
+
+      <div class="settings-field-label" data-i18n="server_mac_lbl">MAC-адрес ПК для Wake-on-LAN:</div>
+      <div class="conn-field-wrap">
+        <input type="password" class="conn-field" id="connMacInput" placeholder="например, AA-BB-CC-DD-EE-FF" data-i18n-placeholder="server_mac_placeholder">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeMacInp" onclick="toggleConnSecret('macInp')" title="Показать / скрыть">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+            <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          </span>
+        </button>
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyMacInp" onclick="copyConnSecret('macInp', this)" title="Скопировать">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          </span>
+        </button>
+      </div>
+
+      <div class="settings-field-label" data-i18n="server_token_lbl">Пароль доступа к серверу:</div>
+      <div class="conn-field-wrap">
+        <input type="password" class="conn-field" id="connTokenInput" placeholder="Пароль (по умолчанию вшит)" data-i18n-placeholder="server_token_placeholder">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeTokenInp" onclick="toggleConnSecret('tokenInp')" title="Показать / скрыть">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+            <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          </span>
+        </button>
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyTokenInp" onclick="copyConnSecret('tokenInp', this)" title="Скопировать">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          </span>
+        </button>
+      </div>
+
+      <div style="display:flex; gap:8px; margin-top:6px; margin-bottom:12px;">
+        <button type="button" class="settings-sec-btn" id="btnRotateTokenRemote" onclick="rotateTokenFromRemote(this)" style="flex:1; padding:8px 10px; font-size:12px;" data-i18n="btn_rotate_token">Сменить токен (ротация)</button>
+      </div>
+
+      <div class="settings-field-label" data-i18n="server_relay_lbl">Ретранслятор включения (WOL в Tailscale):</div>
+      <div class="conn-field-wrap">
+        <input type="password" class="conn-field" id="connRelayInput" placeholder="http://100.64.0.2:5050" data-i18n-placeholder="server_relay_placeholder">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeRelayInp" onclick="toggleConnSecret('relayInp')" title="Показать / скрыть">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+            <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          </span>
+        </button>
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyRelayInp" onclick="copyConnSecret('relayInp', this)" title="Скопировать">
+          <span class="conn-sec-stack">
+            <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          </span>
+        </button>
+      </div>
+
+      <div id="serverTestResult" class="server-test-box" style="display:none;"></div>
+
+      <div class="settings-btn-grid" style="margin-top:12px;">
+        <button type="button" class="settings-sec-btn" onclick="testServerConnection()" data-i18n="btn_server_test">Проверить связь</button>
+        <button type="button" class="btn-ytm-red" onclick="saveCustomConn()" data-i18n="btn_server_save">Сохранить</button>
+      </div>
+      <button type="button" class="settings-sec-btn" style="margin-top:8px; width:100%; border-color:var(--border);" onclick="logoutApp()" data-i18n="btn_logout">Выйти из системы</button>
+
+      <div style="margin-top:20px; padding-top:16px; border-top:1px solid var(--border);">
+        <div class="settings-field-label" style="color:#ff5555; font-weight:600;" data-i18n="server_stop_heading">Управление процессом:</div>
+        <button type="button" class="danger-soft" style="width:100%; padding:10px; font-weight:600; margin-top:4px;" onclick="manualStopServer()" data-i18n="btn_server_stop">Остановить сервер и автоперезапуск</button>
+        <div style="font-size:11px; color:var(--muted); margin-top:6px; line-height:1.4;" data-i18n="server_stop_tip">Сервер завершит работу, а сторожевой процесс (watchdog) будет отключён до следующего запуска через start_server.bat.</div>
+      </div>
+    </div>
+
+    <!-- Вкладка: О ПРИЛОЖЕНИИ -->
+    <div class="settings-pane" id="paneSettingsAbout" style="display:none;">
+      <div class="about-card">
+        <div class="about-hero">
+          <div class="about-logo-wrap">
+            <img src="data:image/png;base64,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" alt="PC Control" width="40" height="40" onerror="onLogoImgError(this);">
+          </div>
+          <div class="about-hero-text">
+            <div class="about-title">PC Control</div>
+            <div class="about-version"><span data-i18n="about_version_lbl">Версия</span> 2.3.0 · Build 2026.10</div>
+          </div>
+        </div>
+
+        <p class="about-desc-text" data-i18n="about_desc">
+          Интеллектуальная панель удалённого управления персональным компьютером. Поддерживает потоковую трансляцию рабочего стола и системного звука через WebRTC, двусторонний микрофон, детальное управление медиаплеером YouTube Music, контроль процессов и дистанционное включение компьютера через локальную сеть и Tailscale.
+        </p>
+
+        <div class="about-info-list">
+          <div class="about-info-row">
+            <span class="about-info-key" data-i18n="about_dev_lbl">Разработчик:</span>
+            <span class="about-info-val" data-i18n="about_dev_val">Lavi</span>
+          </div>
+          <div class="about-info-row">
+            <span class="about-info-key" data-i18n="about_platform_lbl">Платформа:</span>
+            <span class="about-info-val" data-i18n="about_platform_val">Windows 11 · Android Client</span>
+          </div>
+        </div>
+
+        <div class="about-notes-box">
+          <div class="about-notes-title" data-i18n="about_notes_lbl">Пользовательские заметки:</div>
+          <div class="about-notes-body" data-i18n="about_notes_val">
+            Система полностью автономна, работает без сторонних облачных сервисов. Поддерживает защищённое подключение по сквозному протоколу Tailscale.
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Модальное окно QR-кода для телефона -->
+<div class="conn-modal-backdrop" id="qrModalBackdrop" onclick="if(event.target===this)toggleQrModal(false)">
+  <div class="conn-modal" style="text-align:center;">
+    <div class="conn-title" style="font-size:16px;" data-i18n="qr_title">Подключение телефона</div>
+    <div class="conn-sub" data-i18n="qr_sub">Наведите камеру смартфона на экран монитора</div>
+    
+    <div style="display:flex; gap:6px; margin-bottom:8px; background:var(--surface2); padding:3px; border-radius:10px; border:1px solid var(--border);">
+      <button id="qrNetLan" onclick="switchQrNetwork('lan')" style="flex:1; padding:6px 8px; font-size:11.5px; font-weight:600; border-radius:7px; border:none; background:#2563eb; color:#fff; cursor:pointer;" data-i18n="qr_net_lan">Домашний Wi-Fi</button>
+      <button id="qrNetVpn" onclick="switchQrNetwork('vpn')" style="flex:1; padding:6px 8px; font-size:11.5px; font-weight:600; border-radius:7px; border:none; background:transparent; color:var(--muted); cursor:pointer;" data-i18n="qr_net_vpn">Tailscale (VPN)</button>
+    </div>
+
+    <div style="display:flex; gap:6px; margin-bottom:12px; background:var(--surface2); padding:4px; border-radius:12px; border:1px solid var(--border);">
+      <button id="qrTabWeb" onclick="switchQrMode('web')" style="flex:1; padding:7px 10px; font-size:12px; font-weight:600; border-radius:8px; border:none; background:#ff0033; color:#fff; cursor:pointer;" data-i18n="qr_tab_web">1. Открыть веб-пульт</button>
+      <button id="qrTabApk" onclick="switchQrMode('apk')" style="flex:1; padding:7px 10px; font-size:12px; font-weight:600; border-radius:8px; border:none; background:transparent; color:var(--muted); cursor:pointer;" data-i18n="qr_tab_apk">2. Скачать APK</button>
+    </div>
+
+    <div style="background:#fff; border-radius:14px; padding:12px; display:inline-block; margin-bottom:12px; box-shadow:0 4px 20px rgba(0,0,0,0.5);">
+      <img id="qrModalImg" src="" alt="QR-код" style="width:200px; height:200px; display:block; border-radius:6px; background:#fff; object-fit:contain;">
+    </div>
+    
+    <div id="qrHintText" style="font-size:12px; color:var(--subtext); margin-bottom:6px;">Камера откроет пульт на телефоне (вверху будет кнопка APK):</div>
+    <div style="display:flex; align-items:center; gap:6px; margin-bottom:14px;">
+      <div id="qrModalUrl" style="flex:1; min-width:0; font-size:11.5px; font-family:var(--font-mono); background:var(--surface2); border:1px solid var(--border); padding:8px 10px; border-radius:10px; word-break:break-all; user-select:all; color:#60a5fa; text-align:left;">••••••••••••</div>
+      <button type="button" class="conn-sec-btn eye-btn" id="btnEyeQrUrl" onclick="toggleConnSecret('qrUrl')" title="Показать / скрыть">
+        <span class="conn-sec-stack">
+          <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+          <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+        </span>
+      </button>
+      <button type="button" class="conn-sec-btn copy-btn" id="btnCopyQrUrlIcon" onclick="copyConnSecret('qrUrl', this)" title="Скопировать">
+        <span class="conn-sec-stack">
+          <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </span>
+      </button>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button class="conn-save-btn" id="qrCopyBtn" onclick="copyQrLink()" style="flex:1;" data-i18n="btn_copy">Скопировать</button>
+      <button class="conn-cancel-btn" onclick="toggleQrModal(false)" style="flex:1;" data-i18n="btn_close">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/i18n.js"></script>
+<script src="js/app.js"></script>
+<script src="js/stream.js"></script>
+<script src="js/media.js"></script>
+<script src="js/presets.js"></script>
+</body>
+</html>

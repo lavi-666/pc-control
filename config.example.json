@@ -1,0 +1,17 @@
+{
+  "token": "CHANGE_ME_SECURE_PASSWORD",
+  "lan_ip": "192.168.0.100",
+  "vpn_ip": "",
+  "wol_relay_ip": "",
+  "mac_address": "AA-BB-CC-DD-EE-FF",
+  "port": 5000,
+  "relay_port": 5050,
+  "language": "ru",
+  "cors_allowed_origins": [
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+    "http://192.168.*",
+    "http://100.*",
+    "http://10.*"
+  ]
+}

@@ -1,0 +1,54 @@
+# PC Control - Git Ignore
+
+# Backups
+бекап*
+backup*
+*.bak
+
+# User Configuration & Secrets
+config.json
+
+# Logs & Runtime Data
+logs/
+*.log
+*.jsonl
+error_log.txt
+actions_log.jsonl
+listening_history.json
+setup_autologon.log
+
+# Temporary test images & scratch directory
+monitor*.png
+chrome*.png
+pc_control_window.png
+tabs*.png
+/screenshots/
+scratch/
+
+# Python cache & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Android Build Intermediates (keep PC_Control.apk and source assets in web/)
+android_app/classes/
+android_app/compiled_res/
+android_app/compiled_res.zip
+android_app/unsigned.apk
+android_app/aligned.apk
+android_app/src/com/pccontrol/remote/R.java
+android_app/assets/
+.android_sdk/
+
+# Large third-party installers
+tailscale-setup*.exe
+tools/cloudflared.exe
+
+# Rust build artifacts
+target/
+streamer_rs/target/
+*.pdb
+
+push.bat

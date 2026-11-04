@@ -1,0 +1,74 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-verify:
+    name: Regression Tests & Build Verification
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate Python Syntax (py_compile)
+        run: |
+          python -m py_compile server.py
+          Get-ChildItem -Path core, modules, scripts -Filter "*.py" | ForEach-Object {
+            python -m py_compile $_.FullName
+          }
+
+      - name: Verify C# Launcher Compilation
+        run: |
+          $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) {
+            $csc = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          }
+          & $csc /nologo /target:winexe /win32icon:pc_control.ico /out:Launcher_ci.exe scripts\Launcher.cs
+          if (-not (Test-Path Launcher_ci.exe)) {
+            throw "C# Launcher compilation failed"
+          }
+          Remove-Item Launcher_ci.exe -Force
+
+      - name: Set up Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust Streaming Engine (cargo check)
+        run: |
+          cargo check --manifest-path streamer_rs/Cargo.toml
+
+      - name: Run Full 650-Cycle Test Suite
+        env:
+          PC_CONTROL_TEST_MODE: "1"
+          SAFE_TEST_MODE: "1"
+          PYTHONPATH: "."
+        run: |
+          # Start background server for network tests
+          $server = Start-Process -FilePath "python" -ArgumentList "server.py" -PassThru -NoNewWindow
+          Start-Sleep -Seconds 3
+
+          try {
+            python tests/run_all_650_tests.py
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
