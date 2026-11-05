@@ -20,12 +20,16 @@
 <br/>
 
 <p align="center">
+  <a href="https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control_Windows.zip">
+    <img src="https://img.shields.io/badge/DOWNLOAD_WINDOWS_PACKAGE-(PC__Control__Windows.zip)-0078D6?style=for-the-badge&logo=windows&logoColor=white" height="40" alt="Download Windows Package">
+  </a>
+  &nbsp;&nbsp;
   <a href="https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control.apk">
-    <img src="https://img.shields.io/badge/DOWNLOAD_ANDROID_APP-(PC__Control.apk)-0078D6?style=for-the-badge&logo=android&logoColor=white" height="40" alt="Download APK">
+    <img src="https://img.shields.io/badge/DOWNLOAD_ANDROID_APP-(PC__Control.apk)-3DDC84?style=for-the-badge&logo=android&logoColor=white" height="40" alt="Download APK">
   </a>
   &nbsp;&nbsp;
   <a href="https://github.com/lavi-666/pc-control/releases/latest/download/Launcher.exe">
-    <img src="https://img.shields.io/badge/DOWNLOAD_DESKTOP_LAUNCHER-(Launcher.exe)-282828?style=for-the-badge&logo=windows&logoColor=white" height="40" alt="Download Launcher">
+    <img src="https://img.shields.io/badge/DOWNLOAD_LAUNCHER-(Launcher.exe)-282828?style=for-the-badge&logo=windows&logoColor=white" height="40" alt="Download Launcher">
   </a>
 </p>
 
@@ -507,8 +511,11 @@ All state-altering requests require authentication via the `X-Auth-Token` HTTP h
 - **Fine-Grained CORS Whitelisting**:
   - Inbound HTTP `Origin` headers are strictly validated against `cors_allowed_origins` in `config.json`.
   - Supports wildcard subnet patterns (`http://localhost:*`, `http://192.168.*`, `http://100.*`, `http://10.*`) for local LAN and Tailscale access. Requests from unauthorized origins are rejected with HTTP 403 Forbidden.
-- **PE Header Binary Integrity Verification**:
-  - Updates downloaded via the GitHub updater undergo strict validation of Portable Executable (PE) headers (`MZ` magic bytes and `PE\0\0` signature offset) before replacing running binaries.
+- **Two-Point SHA-256 Release Integrity Verification**:
+  - Updates for `Launcher.exe` are sourced strictly from official GitHub Releases (`releases/latest/download/`) rather than mutable branches.
+  - An official `SHA256SUMS.txt` manifest is parsed and validated in memory before any binary touches the file system (implemented across both Python `control_panel.py` and C# `Launcher.cs`).
+  - Strict Portable Executable (PE) validation (`MZ` magic bytes, `PE\0\0` offset) and file size sanity checks (20 KB – 50 MB) are enforced.
+  - Unauthenticated `git pull origin main` execution has been eliminated.
 - **Network Profile Isolation**:
   - Windows Defender Firewall rules explicitly bind TCP port 5000 access to `Private` network profiles, permitting only `LocalSubnet` and `100.64.0.0/10`. Inbound packets from arbitrary public IP addresses are blocked at the packet filter.
 - **Transport Encryption**:

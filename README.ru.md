@@ -20,12 +20,16 @@
 <br/>
 
 <p align="center">
+  <a href="https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control_Windows.zip">
+    <img src="https://img.shields.io/badge/СКАЧАТЬ_ДИСТРИБУТИВ_ДЛЯ_WINDOWS-(PC__Control__Windows.zip)-0078D6?style=for-the-badge&logo=windows&logoColor=white" height="40" alt="Скачать дистрибутив Windows">
+  </a>
+  &nbsp;&nbsp;
   <a href="https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control.apk">
-    <img src="https://img.shields.io/badge/СКАЧАТЬ_КЛИЕНТ_ДЛЯ_ANDROID-(PC__Control.apk)-0078D6?style=for-the-badge&logo=android&logoColor=white" height="40" alt="Скачать APK">
+    <img src="https://img.shields.io/badge/СКАЧАТЬ_КЛИЕНТ_ANDROID-(PC__Control.apk)-3DDC84?style=for-the-badge&logo=android&logoColor=white" height="40" alt="Скачать APK">
   </a>
   &nbsp;&nbsp;
   <a href="https://github.com/lavi-666/pc-control/releases/latest/download/Launcher.exe">
-    <img src="https://img.shields.io/badge/СКАЧАТЬ_ПАНЕЛЬ_УПРАВЛЕНИЯ-(Launcher.exe)-282828?style=for-the-badge&logo=windows&logoColor=white" height="40" alt="Скачать Launcher">
+    <img src="https://img.shields.io/badge/СКАЧАТЬ_ЛАУНЧЕР-(Launcher.exe)-282828?style=for-the-badge&logo=windows&logoColor=white" height="40" alt="Скачать Launcher">
   </a>
 </p>
 
@@ -507,8 +511,11 @@ change_password.exe
 - **Контроль источников CORS с поддержкой масок подсетей**:
   - Все входящие HTTP-заголовки `Origin` валидируются по списку `cors_allowed_origins` из `config.json`.
   - Поддерживаются шаблоны подсетей (например, `http://localhost:*`, `http://192.168.*`, `http://100.*`), что позволяет безопасно работать веб-интерфейсу в локальной и VPN-сетях и блокировать любые сторонние сайты кодом 403 Forbidden.
-- **Проверка целостности исполняемых файлов (PE Header)**:
-  - Загружаемые при автообновлении бинарники проходят обязательную проверку заголовков Portable Executable (`MZ` и сигнатура `PE\0\0`) перед заменой существующего файла.
+- **Двухточечная проверка целостности по контрольным суммам SHA-256 (SHA256SUMS.txt)**:
+  - Обновления `Launcher.exe` загружаются строго из официальных GitHub Releases (`releases/latest/download/`), исключая загрузку непроверенных бинарников из веток репозитория.
+  - Манифест контрольных сумм `SHA256SUMS.txt` проверяется в оперативной памяти до записи любых файлов на диск (в `control_panel.py` и `Launcher.cs`).
+  - Сохраняются строгие проверки PE-заголовков (`MZ` и сигнатура `PE\0\0`) и допустимого диапазона размера файлов (от 20 КБ до 50 МБ).
+  - Устаревший небезопасный автоматический вызов `git pull origin main` полностью удалён.
 - **Ограничение сетевого профиля Windows Defender**:
   - Правило брандмауэра привязывает доступ к порту 5000 исключительно к частным профилям сети (`Private`), разрешая трафик только из `LocalSubnet` и подсети Tailscale `100.64.0.0/10`. Любые пакеты из публичного интернета отбрасываются брандмауэром.
 - **Шифрование транспортного уровня**:
