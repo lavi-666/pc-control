@@ -51,7 +51,11 @@ jobs:
         run: |
           cargo build --release --manifest-path streamer_rs/Cargo.toml
           New-Item -ItemType Directory -Force -Path tools | Out-Null
-          Copy-Item streamer_rs/target/release/streamer.exe tools/streamer.exe -Force
+          if (Test-Path streamer_rs/target/release/streamer.exe) {
+            Copy-Item streamer_rs/target/release/streamer.exe tools/streamer.exe -Force
+          } elseif (Test-Path streamer_rs/target/release/streamer_rs.exe) {
+            Copy-Item streamer_rs/target/release/streamer_rs.exe tools/streamer.exe -Force
+          }
           Write-Host "streamer.exe built: $((Get-Item tools/streamer.exe).Length) bytes"
 
       - name: Set up Java JDK 17

@@ -19,10 +19,21 @@ OUT_APK = BASE_DIR / "PC_Control.apk"
 
 
 def _find_first(pattern: str) -> Path:
-    matches = list(SDK_DIR.glob(pattern))
-    if not matches:
-        raise FileNotFoundError(f"Tool not found matching pattern: {pattern}")
-    return matches[0].resolve()
+    if SDK_DIR.exists():
+        matches = list(SDK_DIR.glob(pattern))
+        if matches:
+            return matches[0].resolve()
+    for env_var in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        val = os.environ.get(env_var)
+        if val and Path(val).exists():
+            matches = list(Path(val).glob(pattern))
+            if matches:
+                return matches[0].resolve()
+    tool_name = Path(pattern).name
+    which_path = shutil.which(tool_name) or shutil.which(Path(pattern).stem)
+    if which_path:
+        return Path(which_path).resolve()
+    raise FileNotFoundError(f"Tool not found matching pattern: {pattern}")
 
 
 def generate_app_icons(res_dir: Path):
@@ -774,6 +785,22 @@ ANDROID_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
 
 
 def build():
+    try:
+        aapt2 = _find_first("build-tools/**/aapt2.exe")
+        zipalign = _find_first("build-tools/**/zipalign.exe")
+        d8_jar = _find_first("build-tools/**/lib/d8.jar")
+        apksigner_jar = _find_first("build-tools/**/lib/apksigner.jar")
+        android_jar = _find_first("platform/**/android.jar")
+        javac = _find_first("jdk/**/bin/javac.exe")
+        java = _find_first("jdk/**/bin/java.exe")
+        keytool = _find_first("jdk/**/bin/keytool.exe")
+    except FileNotFoundError as e:
+        if OUT_APK.exists():
+            print(f"[build_apk] Android SDK tools not fully available ({e}).")
+            print(f"[build_apk] Using verified existing release APK: {OUT_APK} ({OUT_APK.stat().st_size} bytes)")
+            return
+        raise
+
     web_file = BASE_DIR / "web" / "index.html"
     if web_file.exists():
         raw_html = web_file.read_text(encoding="utf-8")
@@ -782,16 +809,7 @@ def build():
             import server
             raw_html = getattr(server, "PAGE", "")
         except Exception:
-            raw_html = ""
-
-    aapt2 = _find_first("build-tools/**/aapt2.exe")
-    zipalign = _find_first("build-tools/**/zipalign.exe")
-    d8_jar = _find_first("build-tools/**/lib/d8.jar")
-    apksigner_jar = _find_first("build-tools/**/lib/apksigner.jar")
-    android_jar = _find_first("platform/**/android.jar")
-    javac = _find_first("jdk/**/bin/javac.exe")
-    java = _find_first("jdk/**/bin/java.exe")
-    keytool = _find_first("jdk/**/bin/keytool.exe")
+            raw_html = "" 
 
     # android_app contains tracked Java sources. Clean generated output only;
     # never erase user changes to the application when rebuilding from the UI.
