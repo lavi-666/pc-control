@@ -1136,15 +1136,13 @@ LATEST_UPDATE_INFO = None
 
 
 def get_local_launcher_hash() -> str:
-    """Вычисляет Git blob SHA-1 локального Launcher.exe."""
+    """Вычисляет SHA-256 локального Launcher.exe."""
     local_exe = BASE_DIR / "Launcher.exe"
     if not local_exe.exists():
         return ""
     try:
         import hashlib
-        raw = local_exe.read_bytes()
-        header = f"blob {len(raw)}\0".encode("ascii")
-        return hashlib.sha1(header + raw).hexdigest()
+        return hashlib.sha256(local_exe.read_bytes()).hexdigest().lower()
     except Exception:
         return ""
 
@@ -1171,8 +1169,9 @@ def find_git_binary() -> str:
 
 def check_github_updates() -> dict:
     """
-    Проверяет наличие обновлений PC Control и Launcher.exe в официальном репозитории GitHub:
-    https://github.com/lavi-666/pc-control
+    Проверяет наличие обновлений PC Control и Launcher.exe в официальных релизах GitHub:
+    https://github.com/lavi-666/pc-control/releases
+    Сверяет локальный SHA-256 с SHA256SUMS.txt из последнего релиза для исключения ложных срабатываний.
     """
     global LATEST_UPDATE_INFO
     import urllib.request
@@ -1182,8 +1181,9 @@ def check_github_updates() -> dict:
 
     current_version = "2.0.1"
     repo_url = "https://github.com/lavi-666/pc-control"
-    commits_api = "https://api.github.com/repos/lavi-666/pc-control/commits/main"
-    contents_api = "https://api.github.com/repos/lavi-666/pc-control/contents/Launcher.exe"
+    release_api = "https://api.github.com/repos/lavi-666/pc-control/releases/latest"
+    checksums_url = "https://github.com/lavi-666/pc-control/releases/latest/download/SHA256SUMS.txt"
+    download_url = "https://github.com/lavi-666/pc-control/releases/latest/download/Launcher.exe"
 
     local_commit = ""
     try:
@@ -1194,26 +1194,73 @@ def check_github_updates() -> dict:
         pass
 
     local_exe_hash = get_local_launcher_hash()
-    remote_commit = ""
-    commit_msg = ""
-    commit_date = ""
+    remote_version = ""
+    release_title = ""
+    release_date = ""
     remote_exe_hash = ""
     remote_exe_size = 0
-    download_url = "https://raw.githubusercontent.com/lavi-666/pc-control/main/Launcher.exe"
     has_update = False
 
-    # 1. Запрос информации о коммитах в ветке main
+    # 1. Запрос информации о последнем релизе через GitHub API
     try:
-        req = urllib.request.Request(commits_api, headers={
+        req = urllib.request.Request(release_api, headers={
             "User-Agent": "PC-Control-Updater/2.0.1",
             "Accept": "application/vnd.github.v3+json"
         })
         with urllib.request.urlopen(req, timeout=4.5) as resp:
             if resp.status == 200:
-                data = json.loads(resp.read().decode("utf-8"))
-                remote_commit = data.get("sha", "")[:7]
-                commit_msg = (data.get("commit", {}).get("message") or "").splitlines()[0]
-                commit_date = data.get("commit", {}).get("committer", {}).get("date") or ""
+                rel_data = json.loads(resp.read().decode("utf-8"))
+                remote_version = rel_data.get("tag_name", "").lstrip("v")
+                release_title = rel_data.get("name") or (rel_data.get("body", "").splitlines()[0] if rel_data.get("body") else "")
+                release_date = rel_data.get("published_at", "")
+                for asset in rel_data.get("assets", []):
+                    if asset.get("name") == "Launcher.exe":
+                        remote_exe_size = asset.get("size", 0)
+                        if asset.get("browser_download_url"):
+                            download_url = asset.get("browser_download_url")
+                        break
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            # Релизы пока не созданы в репозитории
+            result = {
+                "ok": True,
+                "current_version": current_version,
+                "current_commit": local_commit or current_version,
+                "latest_commit": current_version,
+                "commit_message": "Релизы пока не опубликованы",
+                "commit_date": "",
+                "has_update": False,
+                "remote_exe_hash": "",
+                "remote_exe_size": 0,
+                "download_url": download_url,
+                "release_url": f"{repo_url}/releases",
+                "message": "You are currently using the latest version."
+            }
+            LATEST_UPDATE_INFO = result
+            return result
+        elif e.code == 403:
+            err_msg = "Превышен лимит запросов к GitHub API (HTTP 403). Попробуйте позже."
+            append_log(f"[Updater] {err_msg}")
+            return {
+                "ok": False,
+                "error_code": "ERR_RATE_LIMITED",
+                "message": err_msg,
+                "details": str(e),
+                "current_version": current_version,
+                "current_commit": local_commit or current_version,
+                "release_url": f"{repo_url}/releases"
+            }
+        err_msg = f"Не удалось связаться с сервером обновлений: {e}"
+        append_log(f"[Updater] {err_msg}")
+        return {
+            "ok": False,
+            "error_code": "ERR_GITHUB_UNREACHABLE",
+            "message": err_msg,
+            "details": str(e),
+            "current_version": current_version,
+            "current_commit": local_commit or current_version,
+            "release_url": f"{repo_url}/releases"
+        }
     except Exception as e:
         err_msg = f"Не удалось связаться с сервером обновлений: {e}"
         append_log(f"[Updater] {err_msg}")
@@ -1223,44 +1270,86 @@ def check_github_updates() -> dict:
             "message": err_msg,
             "details": str(e),
             "current_version": current_version,
-            "current_commit": local_commit or "2.0.1",
-            "release_url": repo_url
+            "current_commit": local_commit or current_version,
+            "release_url": f"{repo_url}/releases"
         }
 
-    # 2. Запрос метаданных Launcher.exe (blob sha и размер)
+    # 2. Запрос контрольных сумм SHA256SUMS.txt из релиза для сопоставления с локальным файлом
     try:
-        req_contents = urllib.request.Request(contents_api, headers={
+        req_sums = urllib.request.Request(checksums_url, headers={
             "User-Agent": "PC-Control-Updater/2.0.1",
-            "Accept": "application/vnd.github.v3+json"
+            "Accept": "text/plain"
         })
-        with urllib.request.urlopen(req_contents, timeout=4.5) as resp:
+        with urllib.request.urlopen(req_sums, timeout=4.5) as resp:
             if resp.status == 200:
-                data = json.loads(resp.read().decode("utf-8"))
-                remote_exe_hash = data.get("sha", "")
-                remote_exe_size = data.get("size", 0)
-                if data.get("download_url"):
-                    download_url = data.get("download_url")
+                sums_data = resp.read().decode("utf-8-sig", errors="replace")
+                for line in sums_data.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        h, fpath = parts[0].strip(), parts[1].strip()
+                        fpath = fpath.lstrip("*").strip().replace("\\", "/")
+                        fname = fpath.split("/")[-1]
+                        if fname.lower() == "launcher.exe":
+                            remote_exe_hash = h.lower()
+                            break
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            err_msg = "Превышен лимит запросов к GitHub API (HTTP 403) при получении SHA256SUMS.txt."
+            append_log(f"[Updater] {err_msg}")
+            return {
+                "ok": False,
+                "error_code": "ERR_RATE_LIMITED",
+                "message": err_msg,
+                "details": str(e),
+                "current_version": current_version,
+                "current_commit": local_commit or current_version,
+                "release_url": f"{repo_url}/releases"
+            }
+        err_msg = f"Ошибка получения файла контрольных сумм SHA256SUMS.txt: {e}"
+        append_log(f"[Updater] {err_msg}")
+        return {
+            "ok": False,
+            "error_code": "ERR_NO_CHECKSUM",
+            "message": err_msg,
+            "details": str(e),
+            "current_version": current_version,
+            "current_commit": local_commit or current_version,
+            "release_url": f"{repo_url}/releases"
+        }
     except Exception as e:
-        append_log(f"[Updater] Contents API notice: {e}")
+        err_msg = f"Ошибка сети при получении SHA256SUMS.txt: {e}"
+        append_log(f"[Updater] {err_msg}")
+        return {
+            "ok": False,
+            "error_code": "ERR_NO_CHECKSUM",
+            "message": err_msg,
+            "details": str(e),
+            "current_version": current_version,
+            "current_commit": local_commit or current_version,
+            "release_url": f"{repo_url}/releases"
+        }
 
-    # Проверка наличия обновлений
-    if remote_exe_hash and local_exe_hash and remote_exe_hash != local_exe_hash:
-        has_update = True
-    elif local_commit and remote_commit and local_commit != remote_commit:
+    # 3. Проверка наличия обновлений строго по источнику установки (релизу)
+    if remote_exe_hash and local_exe_hash:
+        has_update = (remote_exe_hash != local_exe_hash)
+    elif remote_version and remote_version != current_version:
         has_update = True
 
     result = {
         "ok": True,
         "current_version": current_version,
-        "current_commit": local_commit or "2.0.1",
-        "latest_commit": remote_commit or "main",
-        "commit_message": commit_msg or "Latest release",
-        "commit_date": commit_date,
+        "current_commit": local_commit or current_version,
+        "latest_commit": remote_version or "release",
+        "commit_message": release_title or "Latest release",
+        "commit_date": release_date,
         "has_update": has_update,
         "remote_exe_hash": remote_exe_hash,
         "remote_exe_size": remote_exe_size,
         "download_url": download_url,
-        "release_url": repo_url,
+        "release_url": f"{repo_url}/releases/latest",
         "message": "A new version of PC Control is available" if has_update else "You are currently using the latest version."
     }
     LATEST_UPDATE_INFO = result
@@ -1269,15 +1358,23 @@ def check_github_updates() -> dict:
 
 def apply_github_update() -> dict:
     """
-    Загружает актуальный проверенный Launcher.exe из официального репозитория GitHub,
-    проверяет целостность PE-заголовков, при наличии git подтягивает свежие скрипты,
+    Загружает актуальный проверенный Launcher.exe из официального релиза GitHub,
+    проверяет целостность по контрольной сумме SHA256SUMS.txt и PE-заголовкам,
     и запускает scripts/updater.bat для безопасной замены исполняемого файла и перезапуска.
     """
     import urllib.request
     import hashlib
 
-    repo_prefix = "https://raw.githubusercontent.com/lavi-666/pc-control/"
-    download_url = f"{repo_prefix}main/Launcher.exe"
+    # ВНИМАНИЕ: Проверка контрольной суммы SHA-256 из SHA256SUMS.txt в том же релизе
+    # защищает от повреждения файла при скачивании или рассинхронизации во время публикации релиза
+    # (от подмены в канале передачи данные защищены TLS/HTTPS).
+    # Однако сверка с хешем из того же релиза НЕ защищает от компрометации аккаунта автора
+    # (злоумышленник с доступом к репозиторию подменит и бинарник, и SHA256SUMS.txt).
+    # Для защиты от компрометации аккаунта необходима независимая цифровая подпись (Authenticode / minisign).
+
+    release_prefix = "https://github.com/lavi-666/pc-control/releases/latest/download/"
+    download_url = f"{release_prefix}Launcher.exe"
+    checksums_url = f"{release_prefix}SHA256SUMS.txt"
 
     append_log(f"[Updater] Загрузка обновления из {download_url}...")
 
@@ -1303,7 +1400,63 @@ def apply_github_update() -> dict:
             "message": f"Ошибка скачивания файла обновления: {e}"
         }
 
-    # 2. Строгая проверка заголовков PE и размера
+    # 2. Скачивание файла контрольных сумм SHA256SUMS.txt
+    append_log(f"[Updater] Загрузка контрольных сумм из {checksums_url}...")
+    try:
+        req_sums = urllib.request.Request(checksums_url, headers={
+            "User-Agent": "PC-Control-Updater/2.0.1",
+            "Accept": "text/plain"
+        })
+        with urllib.request.urlopen(req_sums, timeout=10.0) as resp:
+            if resp.status != 200:
+                return {
+                    "ok": False,
+                    "error_code": "ERR_NO_CHECKSUM",
+                    "message": f"Файл контрольных сумм недоступен (HTTP {resp.status})."
+                }
+            sums_data = resp.read().decode("utf-8-sig", errors="replace")
+    except Exception as e:
+        append_log(f"[Updater] Ошибка загрузки контрольных сумм: {e}")
+        return {
+            "ok": False,
+            "error_code": "ERR_NO_CHECKSUM",
+            "message": f"Не удалось загрузить файл контрольных сумм SHA256SUMS.txt: {e}"
+        }
+
+    # 3. Поиск ожидаемого SHA-256 для Launcher.exe
+    expected_hash = None
+    for line in sums_data.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            h, fpath = parts[0].strip(), parts[1].strip()
+            # Допускаем '*' перед именем (бинарный режим sha256sum) и обратные слэши
+            fpath = fpath.lstrip("*").strip().replace("\\", "/")
+            fname = fpath.split("/")[-1]
+            if fname.lower() == "launcher.exe":
+                expected_hash = h.lower()
+                break
+
+    if not expected_hash:
+        return {
+            "ok": False,
+            "error_code": "ERR_NO_CHECKSUM",
+            "message": "В файле SHA256SUMS.txt отсутствует контрольная сумма для Launcher.exe."
+        }
+
+    # 4. Проверка контрольной суммы SHA-256
+    actual_hash = hashlib.sha256(exe_data).hexdigest().lower()
+    if actual_hash != expected_hash:
+        append_log(f"[Updater] Несовпадение контрольной суммы Launcher.exe: ожидалось {expected_hash}, получено {actual_hash}")
+        return {
+            "ok": False,
+            "error_code": "ERR_CHECKSUM_MISMATCH",
+            "message": f"Контрольная сумма файла обновления не совпадает (ожидалась {expected_hash[:8]}..., получена {actual_hash[:8]}...)."
+        }
+
+    # 5. Строгая проверка заголовков PE и размера
     if len(exe_data) < 20480 or len(exe_data) > 52428800:
         return {
             "ok": False,
@@ -1326,7 +1479,7 @@ def apply_github_update() -> dict:
             "message": "Файл обновления поврежден (некорректный заголовок PE)."
         }
 
-    # 3. Сохранение в Launcher.exe.new
+    # 6. Сохранение в Launcher.exe.new (только после прохождения всех проверок!)
     new_exe = BASE_DIR / "Launcher.exe.new"
     try:
         new_exe.write_bytes(exe_data)
@@ -1337,16 +1490,7 @@ def apply_github_update() -> dict:
             "message": f"Не удалось сохранить временный файл обновления: {e}"
         }
 
-    # 4. Если в папке инициализирован git — подтягиваем обновления скриптов
-    try:
-        git_bin = find_git_binary()
-        cmd = [git_bin if os.path.exists(git_bin) else "git", "pull", "origin", "main"]
-        git_out = subprocess.check_output(cmd, cwd=str(BASE_DIR), text=True, timeout=12).strip()
-        append_log(f"[Updater] Git pull: {git_out}")
-    except Exception as e:
-        append_log(f"[Updater] Git pull пропущен: {e}")
-
-    # 5. Запуск фонового скрипта updater.bat
+    # 7. Запуск фонового скрипта updater.bat
     updater_bat = BASE_DIR / "scripts" / "updater.bat"
     if not updater_bat.exists():
         return {
