@@ -42,6 +42,7 @@ jobs:
             $csc = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
           }
           & $csc /nologo /optimize+ /target:winexe /win32icon:pc_control.ico /out:Launcher.exe scripts\Launcher.cs
+          if ($LASTEXITCODE -ne 0) { throw "Launcher build failed" }
           Write-Host "Launcher.exe built: $((Get-Item Launcher.exe).Length) bytes"
 
       - name: Set up Rust Toolchain
@@ -50,8 +51,15 @@ jobs:
       - name: Build Native Rust Streamer (streamer.exe)
         run: |
           cargo build --release --manifest-path streamer_rs/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "Streamer build failed" }
           New-Item -ItemType Directory -Force -Path tools | Out-Null
-          Copy-Item streamer_rs/target/release/streamer.exe tools/streamer.exe -Force
+          if (Test-Path streamer_rs/target/release/streamer.exe) {
+            Copy-Item streamer_rs/target/release/streamer.exe tools/streamer.exe -Force
+          } elseif (Test-Path streamer_rs/target/release/streamer_rs.exe) {
+            Copy-Item streamer_rs/target/release/streamer_rs.exe tools/streamer.exe -Force
+          } else {
+            throw "Compiled streamer binary not found"
+          }
           Write-Host "streamer.exe built: $((Get-Item tools/streamer.exe).Length) bytes"
 
       - name: Set up Java JDK 17
@@ -63,11 +71,18 @@ jobs:
       - name: Build Android Client (PC_Control.apk)
         run: |
           python scripts/build_apk.py
+          if ($LASTEXITCODE -ne 0) { throw "APK build failed" }
           Write-Host "PC_Control.apk built: $((Get-Item PC_Control.apk).Length) bytes"
 
-      - name: Generate Checksums (SHA256SUMS.txt)
+      - name: Build complete Windows package
         run: |
-          $files = @("Launcher.exe", "tools/streamer.exe", "PC_Control.apk")
+          python scripts/package_windows.py
+          if ($LASTEXITCODE -ne 0) { throw "Windows packaging failed" }
+          Copy-Item dist/PC_Control_Windows.zip PC_Control_Windows.zip
+
+      - name: Generate release checksums
+        run: |
+          $files = @("Launcher.exe", "tools/streamer.exe", "PC_Control.apk", "PC_Control_Windows.zip")
           $lines = foreach ($f in $files) {
             if (Test-Path $f) {
               $hash = (Get-FileHash -Path $f -Algorithm SHA256).Hash.ToLower()
@@ -80,11 +95,13 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           files: |
             Launcher.exe
             tools/streamer.exe
             PC_Control.apk
             SHA256SUMS.txt
+            PC_Control_Windows.zip
           generate_release_notes: true
           draft: false
           prerelease: false
