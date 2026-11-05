@@ -6,7 +6,7 @@ import zipfile
 BASE_DIR = Path(__file__).resolve().parent.parent
 ROOT_FILES = (
     "Launcher.exe", "PC_Control.apk", "pc_control.ico", "server.py", "open_app.pyw",
-    "requirements.txt", "config.example.json", "README.md", "README.ru.md", "LICENSE",
+    "requirements.txt", "requirements-runtime.lock", "runtime-source.json", "config.example.json", "README.md", "README.ru.md", "LICENSE",
     "launcher.bat", "start_server.bat", "stop_server.bat", "change_password.bat", "uninstall.bat",
 )
 SOURCE_EXTENSIONS = {".py", ".pyw", ".cs", ".bat", ".cmd", ".ps1", ".vbs", ".html", ".css", ".js", ".png", ".ico"}
@@ -16,6 +16,9 @@ def package(base_dir=BASE_DIR):
     base_dir = Path(base_dir)
     paths = [base_dir / name for name in ROOT_FILES]
     paths.append(base_dir / "tools" / "streamer.exe")
+    paths.extend(base_dir / 'runtime' / name for name in ('python.exe', 'pythonw.exe', 'pccontrol-runtime.json'))
+    paths.extend(p for p in (base_dir / 'runtime').rglob('*') if p.is_file()
+                 and '__pycache__' not in p.parts and p.suffix not in ('.pyc', '.pyo'))
     for folder in ("core", "modules", "scripts", "web"):
         paths.extend(p for p in (base_dir / folder).rglob("*")
                      if p.is_file() and p.suffix.lower() in SOURCE_EXTENSIONS
@@ -36,7 +39,7 @@ def package(base_dir=BASE_DIR):
         zf.writestr("PC_Control/START_HERE.txt", (
             "Extract the complete PC_Control folder, then run Launcher.exe.\n"
             "Keep the scripts, core, modules, tools and web folders next to Launcher.exe.\n"
-            "The launcher will guide you through Python/dependency setup. Python 3.12 x64 is recommended.\n"
+            "Python and all application libraries are included. No system Python or pip installation is needed.\n"
             "Use Network settings and Change password in the launcher; no config.json editing is required.\n"
             "Install PC_Control.apk on Android, then set the PC address and password in the app.\n"
             "\nРаспакуйте папку PC_Control целиком и запустите Launcher.exe.\n"

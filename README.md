@@ -221,9 +221,7 @@ pc-control/
 
 ### Host PC
 - **Operating System**: Windows 10 (version 1809 or later) or Windows 11 (64-bit).
-- **Python**: 3.10 or newer (64-bit); Python 3.12 is recommended and was used for the integration audit. Python 3.8/3.9 cannot load the project's evaluated type annotations.
-  > [!NOTE]
-  > The `winsdk` package provides official pre-built wheels up to Python 3.12. If running on Python 3.13, create a Python 3.11/3.12 virtual environment (`py -3.12 -m venv venv`), which `start_server.bat` detects automatically.
+- **Python**: included with application libraries in the full Windows ZIP. No system Python or manual pip commands are needed. A source ZIP downloads a private runtime automatically on first launch (internet required).
 - **Network Adapter**: Ethernet connection recommended for Wake-on-LAN support.
 
 ### Clients
@@ -237,7 +235,7 @@ pc-control/
 The project is designed to be fully automated out of the box. You do not need to manually configure virtual environments, run pip commands, or edit configuration files by hand.
 
 ### 1. Download the Project
-For a normal installation, use **PC_Control_Windows.zip** from the release when available and extract the entire `PC_Control` folder. `Launcher.exe` alone is not a standalone installation: it requires the `scripts`, `core`, `modules`, and `web` folders. Build a complete archive locally with `python scripts/package_windows.py`.
+Download **PC_Control_Windows.zip** from Releases and extract the complete `PC_Control` folder into a writable location. Python and libraries are included in `runtime`; initial preparation needs no dependency downloads. Keep `Launcher.exe` with the other files. GitHub “Code → Download ZIP” is also supported: the launcher downloads and verifies a private Python runtime and its libraries automatically, with setup progress. That variant requires internet on first launch.
 
 Download the repository as a ZIP archive from GitHub and extract it, or clone via git:
 ```cmd
@@ -252,10 +250,10 @@ Launcher.exe
 ```
 
 On first launch, **Launcher.exe automatically performs all setup steps**:
-1. **Environment Check**: Detects installed Python interpreters (or offers automatic one-click installation via Windows Package Manager `winget` if Python is not yet installed).
-2. **Configuration & Random Token Generation**: Automatically detects your local Wi-Fi IP, Tailscale IP, and physical network adapter MAC address, generating a unique, cryptographically random authentication token (`secrets.token_hex`) and saving it into `config.json`. There are **no static default passwords** (such as `123456789`).
-3. **Dependency Installation**: Detects required Python packages and installs them automatically from `requirements.txt` in the background with real-time console progress.
-4. **Service Startup & Update Check**: Automatically starts the core API server (`server.py`) on port 5000, launches the watchdog supervisor (`scripts/watchdog.pyw`), and checks GitHub for updates.
+1. **Private runtime**: uses `runtime` independently of system Python and virtual environments. If absent, downloads it automatically without administrator privileges.
+2. **Configuration**: creates `config.json`, detects addresses and generates a random password. Change addresses, ports, password and CORS through the launcher.
+3. **Library check**: verifies imports using the same interpreter that runs the server. Logs and dependency repair are available on failure.
+4. **Startup**: review settings and click Start. Success requires an HTTP health response from this installation's server; restart and stop are then available.
 
 > [!IMPORTANT]
 > **No Default Credentials**: PC Control does not use static or insecure default passwords. A fresh installation generates a cryptographically random token saved in `config.json`. You can inspect, copy, or change your password anytime directly in the Launcher GUI or via `change_password.exe`.

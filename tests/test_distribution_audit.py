@@ -39,7 +39,7 @@ class DistributionAudit(unittest.TestCase):
     def test_package_contains_runtime_but_no_user_secrets(self):
         for name in package_windows.ROOT_FILES:
             (self.root / name).write_text('fixture', encoding='utf-8')
-        for name in ('tools/streamer.exe', 'scripts/control_panel.py', 'core/config.py', 'web/index.html', 'modules/power.py'):
+        for name in ('runtime/python.exe', 'runtime/pythonw.exe', 'runtime/pccontrol-runtime.json', 'tools/streamer.exe', 'scripts/control_panel.py', 'core/config.py', 'web/index.html', 'modules/power.py'):
             path = self.root / name
             path.parent.mkdir(exist_ok=True)
             path.write_text('fixture', encoding='utf-8')
@@ -52,6 +52,7 @@ class DistributionAudit(unittest.TestCase):
             names = zf.namelist()
             self.assertIn('PC_Control/scripts/control_panel.py', names)
             self.assertIn('PC_Control/tools/streamer.exe', names)
+            self.assertIn('PC_Control/runtime/python.exe', names)
             self.assertNotIn('PC_Control/config.json', names)
             self.assertFalse(any('.jks' in name for name in names))
             self.assertEqual(zf.read('PC_Control/launch_presets.json'), b'[]\n')

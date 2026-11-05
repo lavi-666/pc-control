@@ -6,6 +6,7 @@ Respects manual server stops.
 """
 
 import ctypes
+import hashlib
 import datetime
 import http.client
 import json
@@ -28,7 +29,7 @@ MAX_CONSECUTIVE_FAILURES = 2
 MAX_CRASHES_WINDOW_SEC = 150  # 2.5 minutes
 MAX_CRASHES_LIMIT = 5
 
-MUTEX_NAME = "Local\\PCControlWatchdogMutex"
+MUTEX_NAME = "Local\\PCControlWatchdog_" + hashlib.sha256(str(BASE_DIR).lower().encode("utf-8")).hexdigest()
 
 
 def _read_server_port() -> int:
@@ -79,7 +80,7 @@ def ping_server() -> tuple[bool, str]:
         if resp.status == 200:
             try:
                 data = json.loads(raw.decode("utf-8", errors="ignore"))
-                if data.get("status") == "online":
+                if data.get("status") == "online" and data.get("instance") == hashlib.sha256(str(BASE_DIR.resolve()).lower().rstrip("\\/").encode("utf-8")).hexdigest():
                     return True, "ok"
             except Exception:
                 pass
@@ -154,7 +155,9 @@ def wait_for_port_free(port: int | None = None, max_wait: float = 5.0) -> bool:
 
 
 def spawn_server():
-    pythonw = BASE_DIR / "venv" / "Scripts" / "pythonw.exe"
+    pythonw = BASE_DIR / "runtime" / "pythonw.exe"
+    if not pythonw.exists():
+        pythonw = BASE_DIR / "venv" / "Scripts" / "pythonw.exe"
     if not pythonw.exists():
         pythonw = Path(sys.executable).parent / "pythonw.exe"
     if not pythonw.exists():

@@ -4,6 +4,7 @@ PC Control — Сервер дистанционного управления П
 """
 
 import json
+import hashlib
 import os
 import platform
 import secrets
@@ -517,6 +518,8 @@ def api_safe_mode():
 @app.route("/status")
 def status():
     data = {"status": "online"}
+    if request.remote_addr in ("127.0.0.1", "::1"):
+        data["instance"] = hashlib.sha256(str(BASE_DIR.resolve()).lower().rstrip("\\/").encode("utf-8")).hexdigest()
     if is_private_ip(request.remote_addr) or check_token() or is_safe_test_mode():
         data["hostname"] = platform.node()
     return jsonify(data)

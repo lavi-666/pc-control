@@ -8,6 +8,7 @@ PC Control - Панель управления и запуска (Control Center
 """
 
 import http.server
+import hashlib
 import ipaddress
 import json
 import os
@@ -47,7 +48,9 @@ SCRIPTS_DIR = BASE_DIR / "scripts"
 LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
 
-CONTROL_PORT = 5055
+CONTROL_PORT = int(os.environ.get("PC_CONTROL_PANEL_PORT", "5055"))
+if not 1 <= CONTROL_PORT <= 65535:
+    raise ValueError("Invalid PC_CONTROL_PANEL_PORT")
 _settings_lock = threading.RLock()
 
 
@@ -126,6 +129,9 @@ def get_local_ip() -> str:
 
 
 def get_pythonw_path() -> str:
+    bundled = BASE_DIR / "runtime" / "pythonw.exe"
+    if bundled.is_file():
+        return str(bundled)
     venv_pyw = BASE_DIR / "venv" / "Scripts" / "pythonw.exe"
     if venv_pyw.exists():
         return str(venv_pyw)
@@ -141,7 +147,7 @@ def get_pythonw_path() -> str:
 def get_python_cli_path() -> str:
     pyw = get_pythonw_path()
     if pyw.lower().endswith("pythonw.exe"):
-        cli = pyw[:-9] + "python.exe"
+        cli = str(Path(pyw).with_name("python.exe"))
         if Path(cli).is_file():
             return cli
     if Path(sys.executable).is_file():
@@ -164,14 +170,15 @@ def _idle_watchdog():
             os._exit(0)
 
 def is_already_serving() -> bool:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(0.3)
     try:
-        return s.connect_ex(("127.0.0.1", CONTROL_PORT)) == 0
+        with urllib.request.urlopen(f"http://127.0.0.1:{CONTROL_PORT}/api/identity", timeout=1) as response:
+            return json.load(response).get("instance") == instance_id()
     except Exception:
         return False
-    finally:
-        s.close()
+
+
+def instance_id():
+    return hashlib.sha256(str(BASE_DIR.resolve()).lower().rstrip("\\/").encode("utf-8")).hexdigest()
 
 
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
@@ -547,8 +554,8 @@ def is_server_running(port: int | None = None) -> bool:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/status", headers={"User-Agent": "PC-Control-Launcher"})
         with urllib.request.urlopen(req, timeout=0.45) as resp:
             if resp.status == 200:
-                body = resp.read().decode("utf-8", errors="ignore")
-                return '"online"' in body
+                body = json.load(resp)
+                return body.get("status") == "online" and body.get("instance") == instance_id()
     except Exception:
         pass
     return False
@@ -614,24 +621,34 @@ def check_python_deps() -> dict:
     if _cached_deps is not None and (now - _cached_deps_time < 3.0):
         return _cached_deps
 
-    import importlib
-    importlib.invalidate_caches()
-    venv_site = BASE_DIR / "venv" / "Lib" / "site-packages"
-    if venv_site.is_dir() and str(venv_site) not in sys.path:
-        sys.path.insert(0, str(venv_site))
-
-    has_venv = (BASE_DIR / "venv" / "Scripts" / "python.exe").exists()
-    missing = []
-    installed_list = []
-    for display_name, mod_name in REQUIRED_PACKAGES:
-        try:
-            __import__(mod_name)
-            installed_list.append(display_name)
-        except ImportError:
-            # winsdk wheel is optional on Python 3.13+ where media_uia falls back gracefully
-            if mod_name == "winsdk" and sys.version_info >= (3, 13):
-                continue
-            missing.append(display_name)
+    # Probe the interpreter that actually runs the server. Importing into this
+    # long-lived panel would cache obsolete modules and mix virtual environments.
+    probe = """
+import importlib, json, sys
+result = {'installed_list': [], 'errors': {}, 'python_version': sys.version.split()[0]}
+for name, module in json.loads(sys.argv[1]):
+    try:
+        importlib.import_module(module)
+        if module == 'winsdk':
+            importlib.import_module('winsdk.windows.media.control')
+        result['installed_list'].append(name)
+    except Exception as exc:
+        result['errors'][name] = str(exc)
+print(json.dumps(result))
+"""
+    try:
+        process = subprocess.run([get_python_cli_path(), "-I", "-c", probe, json.dumps(REQUIRED_PACKAGES)],
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                 timeout=30, creationflags=NO_WINDOW)
+        if process.returncode:
+            raise RuntimeError(process.stderr.strip() or f"Python exit code {process.returncode}")
+        result = json.loads(process.stdout.strip().splitlines()[-1])
+    except Exception as exc:
+        result = {"installed_list": [], "errors": {name: str(exc) for name, _ in REQUIRED_PACKAGES},
+                  "python_version": "unavailable"}
+    has_venv = (BASE_DIR / "runtime" / "python.exe").exists() or (BASE_DIR / "venv" / "Scripts" / "python.exe").exists()
+    missing = list(result["errors"])
+    installed_list = result["installed_list"]
 
     is_all_installed = len(missing) == 0
 
@@ -647,13 +664,20 @@ def check_python_deps() -> dict:
         "missing_count": len(missing),
         "installed_list": installed_list,
         "details": details,
-        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        "python_version": result["python_version"],
+        "errors": result["errors"],
+        "interpreter": get_python_cli_path()
     }
     _cached_deps_time = now
     return _cached_deps
 
 
 def load_config_data() -> dict:
+    with _settings_lock:
+        return _load_config_data()
+
+
+def _load_config_data() -> dict:
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -737,7 +761,7 @@ def run_install_dependencies_task(auto_start_server: bool = False):
     def _worker():
         global _is_busy, _busy_action, _cached_deps_time
         try:
-            req_file = BASE_DIR / "requirements.txt"
+            req_file = BASE_DIR / "requirements-runtime.lock"
             if not req_file.exists():
                 append_log("[ERROR] requirements.txt not found in project root directory.")
                 return
@@ -746,7 +770,7 @@ def run_install_dependencies_task(auto_start_server: bool = False):
             append_log(f"Using Python interpreter: {py_cli}")
             append_log(f"Running: {py_cli} -m pip install -r {req_file.name}")
 
-            cmd = [py_cli, "-m", "pip", "install", "-r", str(req_file)]
+            cmd = [py_cli, "-I", "-m", "pip", "install", "--only-binary=:all:", "-r", str(req_file)]
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(BASE_DIR),
@@ -765,23 +789,8 @@ def run_install_dependencies_task(auto_start_server: bool = False):
             proc.wait()
             _cached_deps_time = 0.0
 
-            if proc.returncode != 0:
-                append_log("[INFO] Retrying individual package installation...")
-                for raw_line in req_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                    pkg_spec = raw_line.strip()
-                    if not pkg_spec or pkg_spec.startswith("#"):
-                        continue
-                    subprocess.run(
-                        [py_cli, "-m", "pip", "install", pkg_spec],
-                        cwd=str(BASE_DIR),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=NO_WINDOW
-                    )
-                _cached_deps_time = 0.0
-
             deps_after = check_python_deps()
-            if proc.returncode == 0 or deps_after.get("installed", False):
+            if proc.returncode == 0 and deps_after.get("installed", False):
                 append_log("[SUCCESS] All required Python libraries installed successfully!")
                 if auto_start_server:
                     append_log("[FIRST RUN] Automatically starting PC Control server and watchdog supervisor...")
@@ -792,7 +801,7 @@ def run_install_dependencies_task(auto_start_server: bool = False):
                     else:
                         append_log(f"[WARNING] Automatic server start: {title} - {msg}")
             else:
-                append_log(f"[ERROR] Pip installation failed with exit code {proc.returncode}.")
+                append_log(f"[ERROR] Dependency preparation failed (pip exit {proc.returncode}): {deps_after['details']}")
         except Exception as e:
             append_log(f"[ERROR] Exception during dependency installation: {e}")
         finally:
@@ -819,6 +828,8 @@ def check_first_run_setup():
     if not deps.get("installed", False):
         append_log("[FIRST RUN] Missing Python dependencies detected. Starting automated environment preparation...")
         run_install_dependencies_task(auto_start_server=True)
+    else:
+        append_log("[READY] Components verified. Use Start server when ready.")
 
 
 def start_server_process() -> tuple:
@@ -921,9 +932,9 @@ def start_server_process() -> tuple:
             f"Не удалось запустить процесс server.py через {pyw_bin}:\n{e}"
         )
 
-    # Ожидание инициализации процесса и открытия порта (до 2.5 сек)
+    # Success means the HTTP health endpoint answered, not merely a live PID.
     start_t = time.time()
-    while time.time() - start_t < 2.5:
+    while time.time() - start_t < 20:
         ret = proc.poll()
         if ret is not None:
             # Процесс упал сразу после запуска!
@@ -945,8 +956,6 @@ def start_server_process() -> tuple:
             return (True, "", "", f"Сервер успешно запущен на порту {port}.")
         time.sleep(0.25)
 
-    if proc.poll() is None:
-        return (True, "", "", "Процесс сервера запущен и инициализируется.")
     return (
         False,
         "ERR_STARTUP_TIMEOUT",
@@ -1035,6 +1044,8 @@ def stop_server_process() -> tuple:
     token = cfg.get("token", "")
     port = int(cfg.get("port", 5000))
     try:
+        if not is_server_running(port):
+            raise ConnectionError("No server belonging to this installation on this port")
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/server/stop",
             data=b"{}",
@@ -1826,7 +1837,10 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
         url_parsed = urllib.parse.urlparse(self.path)
         path = url_parsed.path
 
-        if path == "/api/status":
+        if path == "/api/identity":
+            self.send_json({"application": "PCControl", "instance": instance_id()})
+            return
+        elif path == "/api/status":
             cfg = load_config_data()
             port = int(cfg.get("port", 5000))
             server_up = is_server_running(port)

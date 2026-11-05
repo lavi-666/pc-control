@@ -76,6 +76,8 @@ jobs:
 
       - name: Build complete Windows package
         run: |
+          python scripts/build_runtime.py
+          if ($LASTEXITCODE -ne 0) { throw "Portable runtime build failed" }
           python scripts/package_windows.py
           if ($LASTEXITCODE -ne 0) { throw "Windows packaging failed" }
           Copy-Item dist/PC_Control_Windows.zip PC_Control_Windows.zip

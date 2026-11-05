@@ -139,6 +139,26 @@ class LauncherAudit(unittest.TestCase):
     def test_unknown_action(self):
         self.assertEqual(self.request({'action': 'not_an_action'})[0], 400)
 
+    def test_identity_is_specific_to_installation(self):
+        status, identity, _ = self.request(method='GET', path='/api/identity')
+        self.assertEqual(status, 200)
+        self.assertEqual(identity['instance'], panel.instance_id())
+        with patch.object(panel, 'BASE_DIR', Path(self.temp.name)):
+            self.assertNotEqual(identity['instance'], panel.instance_id())
+
+    def test_foreign_online_server_is_not_our_server(self):
+        import io
+        response = io.BytesIO(json.dumps({'status': 'online', 'instance': 'another-copy'}).encode())
+        response.status = 200
+        with patch.object(panel.urllib.request, 'urlopen', return_value=response):
+            self.assertFalse(panel.is_server_running(12345))
+
+    def test_pythonw_cli_path_is_not_truncated(self):
+        runtime = Path(self.temp.name)
+        (runtime / 'python.exe').touch()
+        with patch.object(panel, 'get_pythonw_path', return_value=str(runtime / 'pythonw.exe')):
+            self.assertEqual(panel.get_python_cli_path(), str(runtime / 'python.exe'))
+
 
 if __name__ == '__main__':
     unittest.main()
