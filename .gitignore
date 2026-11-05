@@ -52,3 +52,4 @@ streamer_rs/target/
 *.pdb
 
 push.bat
+/dist/

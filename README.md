@@ -237,6 +237,8 @@ pc-control/
 The project is designed to be fully automated out of the box. You do not need to manually configure virtual environments, run pip commands, or edit configuration files by hand.
 
 ### 1. Download the Project
+For a normal installation, use **PC_Control_Windows.zip** from the release when available and extract the entire `PC_Control` folder. `Launcher.exe` alone is not a standalone installation: it requires the `scripts`, `core`, `modules`, and `web` folders. Build a complete archive locally with `python scripts/package_windows.py`.
+
 Download the repository as a ZIP archive from GitHub and extract it, or clone via git:
 ```cmd
 git clone https://github.com/lavi-666/pc-control.git

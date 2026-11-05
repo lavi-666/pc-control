@@ -119,13 +119,26 @@ def run_batch_13():
     r = make_req("/api/wol", method="POST", data={"mac": "A1 - B2 - CD - 34 - EF - 56"})
     results.append({"cycle": 316, "name": "WOL Spaced Delimiters MAC", "category": "WOL", "passed": r["status"] == 200, "detail": f"status={r['status']}"})
 
-    # 317. Скачивание wol_relay.py совпадает с локальным файлом
-    import os
+    # 317. Downloaded relay must be valid Python with this installation's settings.
+    import ast
+    from core.config import load_app_config
     r_relay = make_req("/download/wol_relay.py")
-    relay_file = "scripts/wol_relay.py" if os.path.exists("scripts/wol_relay.py") else "wol_relay.py"
-    with open(relay_file, "rb") as f:
-        disk_relay = f.read()
-    results.append({"cycle": 317, "name": "WOL Relay Binary Byte Match", "category": "WOL", "passed": r_relay["data"] == disk_relay, "detail": f"match={r_relay['data'] == disk_relay}"})
+    relay_settings = {}
+    relay_valid = False
+    try:
+        tree = ast.parse(r_relay["data"].decode("utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in ("DEFAULT_MAC", "PORT"):
+                        relay_settings[target.id] = node.value.value
+        cfg = load_app_config()
+        relay_valid = (r_relay["status"] == 200 and
+                       relay_settings.get("DEFAULT_MAC") == cfg.get("mac_address", "AA-BB-CC-DD-EE-FF") and
+                       relay_settings.get("PORT") == int(cfg.get("relay_port", 5050)))
+    except (ValueError, SyntaxError, UnicodeError):
+        pass
+    results.append({"cycle": 317, "name": "WOL Relay Configured Download", "category": "WOL", "passed": relay_valid, "detail": f"configured={relay_valid}"})
 
     # 318. /api/wol OPTIONS preflight
     req_opt = urllib.request.Request(BASE_URL + "/api/wol", method="OPTIONS")

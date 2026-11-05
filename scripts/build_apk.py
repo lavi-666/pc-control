@@ -26,9 +26,16 @@ def _find_first(pattern: str) -> Path:
     for env_var in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
         val = os.environ.get(env_var)
         if val and Path(val).exists():
-            matches = list(Path(val).glob(pattern))
+            # Bundled SDK uses platform/, the standard Android SDK uses platforms/.
+            sdk_pattern = pattern.replace("platform/", "platforms/", 1) if pattern.startswith("platform/") else pattern
+            matches = list(Path(val).glob(sdk_pattern))
             if matches:
                 return matches[0].resolve()
+    java_home = os.environ.get("JAVA_HOME")
+    if pattern.startswith("jdk/") and java_home:
+        candidate = Path(java_home) / "bin" / Path(pattern).name
+        if candidate.is_file():
+            return candidate.resolve()
     tool_name = Path(pattern).name
     which_path = shutil.which(tool_name) or shutil.which(Path(pattern).stem)
     if which_path:
@@ -795,11 +802,10 @@ def build():
         java = _find_first("jdk/**/bin/java.exe")
         keytool = _find_first("jdk/**/bin/keytool.exe")
     except FileNotFoundError as e:
-        if OUT_APK.exists():
-            print(f"[build_apk] Android SDK tools not fully available ({e}).")
-            print(f"[build_apk] Using verified existing release APK: {OUT_APK} ({OUT_APK.stat().st_size} bytes)")
-            return
-        raise
+        raise FileNotFoundError(
+            f"Cannot rebuild APK: {e}. Install Android build-tools/platforms and JDK 17 "
+            "or configure ANDROID_HOME and JAVA_HOME. The existing APK was not rebuilt."
+        ) from e
 
     web_file = BASE_DIR / "web" / "index.html"
     if web_file.exists():
@@ -976,6 +982,7 @@ def build():
     # 10. Generate signing key (if missing) and sign APK (v1 + v2 + v3)
     keystore = BASE_DIR / ".android_sdk" / "pccontrol_release.jks"
     if not keystore.exists():
+        keystore.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             [
                 str(keytool), "-genkeypair",
