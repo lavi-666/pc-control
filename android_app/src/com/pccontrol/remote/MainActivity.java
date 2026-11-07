@@ -299,13 +299,14 @@ public class MainActivity extends Activity {
         ws.setDomStorageEnabled(true);
         ws.setDatabaseEnabled(true);
         ws.setMediaPlaybackRequiresUserGesture(false);
-        ws.setAllowFileAccess(true);
+        // Защита: отключаем небезопасный доступ к локальным файлам через file:// и универсальный кросс-доменный доступ
+        ws.setAllowFileAccess(false);
         ws.setAllowContentAccess(true);
-        ws.setAllowFileAccessFromFileURLs(true);
-        ws.setAllowUniversalAccessFromFileURLs(true);
+        ws.setAllowFileAccessFromFileURLs(false);
+        ws.setAllowUniversalAccessFromFileURLs(false);
         ws.setCacheMode(WebSettings.LOAD_DEFAULT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            ws.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+            ws.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         }
 
         webView.addJavascriptInterface(new AndroidBridge(), "AndroidBridge");
@@ -313,6 +314,19 @@ public class MainActivity extends Activity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                if (request != null && request.getUrl() != null) {
+                    Uri uri = request.getUrl();
+                    String host = uri.getHost();
+                    if ("pccontrol.local".equalsIgnoreCase(host) || "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host)) {
+                        return false;
+                    }
+                    // Внешние ссылки открываются во внешнем системном браузере, а не внутри привилегированного WebView
+                    try {
+                        android.content.Intent browserIntent = new android.content.Intent(android.content.Intent.ACTION_VIEW, uri);
+                        startActivity(browserIntent);
+                    } catch (Exception ignored) {}
+                    return true;
+                }
                 return false;
             }
 
@@ -386,7 +400,35 @@ public class MainActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        request.grant(request.getResources());
+                        if (request == null) return;
+                        Uri origin = request.getOrigin();
+                        if (origin == null) {
+                            request.deny();
+                            return;
+                        }
+                        String host = origin.getHost();
+                        // Разрешаем только доверенные локальные источники
+                        boolean isTrustedOrigin = "pccontrol.local".equalsIgnoreCase(host)
+                                || "127.0.0.1".equals(host)
+                                || "localhost".equalsIgnoreCase(host);
+
+                        if (!isTrustedOrigin) {
+                            request.deny();
+                            return;
+                        }
+
+                        // Проверяем типы ресурсов: разрешаем только аудио захват для WebRTC аудио, камеру и остальное отклоняем
+                        List<String> allowed = new ArrayList<>();
+                        for (String r : request.getResources()) {
+                            if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) {
+                                allowed.add(r);
+                            }
+                        }
+                        if (!allowed.isEmpty()) {
+                            request.grant(allowed.toArray(new String[0]));
+                        } else {
+                            request.deny();
+                        }
                     }
                 });
             }

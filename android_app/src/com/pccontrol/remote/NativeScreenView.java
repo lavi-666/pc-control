@@ -17,6 +17,7 @@ import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
@@ -88,12 +89,21 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     // Состояние декодера и потока
     private MediaCodec decoder;
+    private final Object decoderLock = new Object();
     private Thread workerThread;
     private volatile HttpURLConnection activeConn;
     private final AtomicBoolean isStreaming = new AtomicBoolean(false);
     private final Object surfaceLock = new Object();
     private boolean surfaceReady = false;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    // Диалог ошибок воспроизведения
+    private FrameLayout errorOverlay;
+    private TextView errorTitleView;
+    private TextView errorMsgView;
+    private TextView errorRetryBtn;
+    private TextView errorCloseBtn;
+    private boolean isErrorVisible = false;
 
     // Параметры стрима
     private String serverUrl = "";
@@ -183,7 +193,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         // 3. Отдельная скрытая панель диагностики
         buildDiagnosticsDialog(context);
 
-        // 4. Настройка сенсорного ввода
+        // 4. Оверлей сообщений об ошибках
+        buildErrorDialog(context);
+
+        // 5. Настройка сенсорного ввода
         surfaceView.setOnTouchListener(new OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
@@ -461,6 +474,125 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         parent.addView(div, lp);
     }
 
+    /**
+     * Построение оверлея сообщений об ошибках демонстрации экрана.
+     */
+    private void buildErrorDialog(Context context) {
+        errorOverlay = new FrameLayout(context);
+        errorOverlay.setBackgroundColor(Color.parseColor("#CC030712"));
+        errorOverlay.setVisibility(View.GONE);
+
+        LinearLayout card = new LinearLayout(context);
+        card.setOrientation(LinearLayout.VERTICAL);
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.parseColor("#1E1B24"));
+        bg.setCornerRadius(dpToPx(20));
+        bg.setStroke(dpToPx(1), Color.parseColor("#451A22"));
+        card.setBackground(bg);
+
+        int pad = dpToPx(20);
+        card.setPadding(pad, pad, pad, pad);
+
+        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(
+                dpToPx(340),
+                LayoutParams.WRAP_CONTENT
+        );
+        cardLp.gravity = Gravity.CENTER;
+        card.setLayoutParams(cardLp);
+
+        // Заголовок ошибки
+        errorTitleView = new TextView(context);
+        errorTitleView.setText("Ошибка стрима");
+        errorTitleView.setTextColor(Color.parseColor("#F87171")); // Soft red
+        errorTitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+        errorTitleView.setTypeface(Typeface.DEFAULT_BOLD);
+        card.addView(errorTitleView);
+
+        // Сообщение ошибки
+        errorMsgView = new TextView(context);
+        errorMsgView.setText("");
+        errorMsgView.setTextColor(Color.parseColor("#E2E8F0"));
+        errorMsgView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        LinearLayout.LayoutParams msgLp = new LinearLayout.LayoutParams(
+                LayoutParams.MATCH_PARENT,
+                LayoutParams.WRAP_CONTENT
+        );
+        msgLp.topMargin = dpToPx(10);
+        msgLp.bottomMargin = dpToPx(18);
+        card.addView(errorMsgView, msgLp);
+
+        // Кнопки действий
+        LinearLayout btnRow = new LinearLayout(context);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setGravity(Gravity.END);
+
+        errorCloseBtn = createToolbarButton(context, "Закрыть", "#2B2D38", Color.parseColor("#CBD5E1"));
+        errorCloseBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                hidePlaybackError();
+                closeStreamAndExit();
+            }
+        });
+        btnRow.addView(errorCloseBtn);
+
+        addToolbarSpacer(context, btnRow, 10);
+
+        errorRetryBtn = createToolbarButton(context, "Повторить", "#0284C7", Color.WHITE);
+        errorRetryBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        errorRetryBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                hidePlaybackError();
+                startStream();
+            }
+        });
+        btnRow.addView(errorRetryBtn);
+
+        card.addView(btnRow);
+        errorOverlay.addView(card);
+        addView(errorOverlay, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+    }
+
+    public void showPlaybackError(final String title, final String message, final boolean allowRetry) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    showPlaybackError(title, message, allowRetry);
+                }
+            });
+            return;
+        }
+
+        isErrorVisible = true;
+        if (errorTitleView != null) errorTitleView.setText(title);
+        if (errorMsgView != null) errorMsgView.setText(message);
+        if (errorRetryBtn != null) {
+            errorRetryBtn.setVisibility(allowRetry ? View.VISIBLE : View.GONE);
+        }
+        if (errorOverlay != null) {
+            errorOverlay.setVisibility(View.VISIBLE);
+        }
+    }
+
+    public void hidePlaybackError() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    hidePlaybackError();
+                }
+            });
+            return;
+        }
+        isErrorVisible = false;
+        if (errorOverlay != null) {
+            errorOverlay.setVisibility(View.GONE);
+        }
+    }
+
     public void setPlayerCallback(PlayerCallback callback) {
         this.playerCallback = callback;
     }
@@ -509,6 +641,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     public void startStream() {
         if (isStreaming.get()) return;
         isStreaming.set(true);
+        hidePlaybackError();
         setVisibility(View.VISIBLE);
 
         setControlsVisible(true, false);
@@ -528,6 +661,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         mainHandler.removeCallbacks(hideControlsRunnable);
         mainHandler.removeCallbacks(diagUpdateRunnable);
 
+        synchronized (surfaceLock) {
+            surfaceLock.notifyAll();
+        }
+
         HttpURLConnection conn = activeConn;
         if (conn != null) {
             try {
@@ -535,16 +672,23 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             } catch (Exception ignored) {}
             activeConn = null;
         }
-        if (workerThread != null) {
-            workerThread.interrupt();
+
+        Thread wt = workerThread;
+        if (wt != null) {
+            wt.interrupt();
+            try {
+                wt.join(600);
+            } catch (InterruptedException ignored) {}
             workerThread = null;
         }
+
         releaseDecoder();
 
         post(new Runnable() {
             @Override
             public void run() {
                 setDiagnosticsVisible(false);
+                hidePlaybackError();
                 setVisibility(View.GONE);
             }
         });
@@ -558,10 +702,15 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
 
     /**
-     * Обработка кнопки "Назад": закрывает сначала диагностику, затем Fullscreen, затем стрим.
+     * Обработка кнопки "Назад": закрывает сначала ошибки, затем диагностику, затем Fullscreen, затем стрим.
      * @return true, если событие обработано внутренне.
      */
     public boolean handleBackPressed() {
+        if (isErrorVisible) {
+            hidePlaybackError();
+            closeStreamAndExit();
+            return true;
+        }
         if (isDiagVisible) {
             setDiagnosticsVisible(false);
             return true;
@@ -705,6 +854,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY)
             );
         }
+        if (errorOverlay != null && errorOverlay.getVisibility() != View.GONE) {
+            errorOverlay.measure(
+                    MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY)
+            );
+        }
 
         setMeasuredDimension(widthSize, heightSize);
     }
@@ -736,6 +891,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (diagOverlay != null && diagOverlay.getVisibility() != View.GONE) {
             diagOverlay.layout(0, 0, parentW, parentH);
         }
+        if (errorOverlay != null && errorOverlay.getVisibility() != View.GONE) {
+            errorOverlay.layout(0, 0, parentW, parentH);
+        }
     }
 
     @Override
@@ -761,6 +919,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         synchronized (surfaceLock) {
             this.surfaceReady = false;
             this.surfaceHolder = null;
+            surfaceLock.notifyAll();
         }
         stopStream();
     }
@@ -784,9 +943,21 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             w = (w / 2) * 2;
             h = (h / 2) * 2;
 
-            initDecoder(w, h);
+            try {
+                initDecoder(w, h);
+            } catch (Exception ex) {
+                if (isStreaming.get()) {
+                    showPlaybackError(
+                            "Ошибка кодека MediaCodec",
+                            "Не удалось инициализировать декодер H.264 (" + ex.getClass().getSimpleName() + ": " + ex.getMessage() + ").",
+                            true
+                    );
+                }
+                return;
+            }
 
             if (serverUrl.isEmpty()) {
+                showPlaybackError("Ошибка параметров", "URL сервера не указан.", false);
                 return;
             }
 
@@ -813,7 +984,19 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
             conn.connect();
             int respCode = conn.getResponseCode();
-            if (respCode != 200) {
+            if (respCode == 401) {
+                showPlaybackError(
+                        "Ошибка авторизации (HTTP 401)",
+                        "Токен доступа недействителен или сессия завершена. Выполните повторную авторизацию.",
+                        false
+                );
+                return;
+            } else if (respCode != 200) {
+                showPlaybackError(
+                        "Ошибка сервера (HTTP " + respCode + ")",
+                        "Сервер вернул код ошибки HTTP " + respCode + " при запросе демонстрации экрана.",
+                        true
+                );
                 return;
             }
 
@@ -940,7 +1123,22 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 }
             }
 
-        } catch (Exception ignored) {
+        } catch (EOFException eof) {
+            if (isStreaming.get()) {
+                showPlaybackError("Поток прерван", "Сервер завершил передачу видеопотока.", true);
+            }
+        } catch (java.net.ConnectException ce) {
+            if (isStreaming.get()) {
+                showPlaybackError("Ошибка подключения", "Не удалось соединиться с сервером PC Control по адресу " + serverUrl + ".", true);
+            }
+        } catch (java.net.SocketTimeoutException ste) {
+            if (isStreaming.get()) {
+                showPlaybackError("Таймаут соединения", "Сервер не отвечает в течение установленного таймаута.", true);
+            }
+        } catch (Exception e) {
+            if (isStreaming.get()) {
+                showPlaybackError("Сбой воспроизведения", "Ошибка: " + e.getClass().getSimpleName() + " (" + e.getMessage() + ")", true);
+            }
         } finally {
             if (in != null) {
                 try { in.close(); } catch (Exception ignored) {}
@@ -954,98 +1152,114 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
 
     private void feedDecoderFrame(byte[] data, int len, int flags, long ptsUs) {
-        if (decoder == null || !isStreaming.get()) return;
-        try {
-            int inIndex = decoder.dequeueInputBuffer(8000);
-            if (inIndex >= 0) {
-                ByteBuffer inputBuffer;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    inputBuffer = decoder.getInputBuffer(inIndex);
-                } else {
-                    inputBuffer = decoder.getInputBuffers()[inIndex];
-                }
-                if (inputBuffer != null) {
-                    inputBuffer.clear();
-                    inputBuffer.put(data, 0, len);
-                    int codecFlags = 0;
-                    if ((flags & 1) != 0) {
-                        codecFlags |= MediaCodec.BUFFER_FLAG_KEY_FRAME;
+        synchronized (decoderLock) {
+            if (decoder == null || !isStreaming.get()) return;
+            try {
+                int inIndex = decoder.dequeueInputBuffer(8000);
+                if (inIndex >= 0) {
+                    ByteBuffer inputBuffer;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        inputBuffer = decoder.getInputBuffer(inIndex);
+                    } else {
+                        inputBuffer = decoder.getInputBuffers()[inIndex];
                     }
-                    decoder.queueInputBuffer(inIndex, 0, len, ptsUs, codecFlags);
+                    if (inputBuffer != null) {
+                        inputBuffer.clear();
+                        inputBuffer.put(data, 0, len);
+                        int codecFlags = 0;
+                        if ((flags & 1) != 0) {
+                            codecFlags |= MediaCodec.BUFFER_FLAG_KEY_FRAME;
+                        }
+                        decoder.queueInputBuffer(inIndex, 0, len, ptsUs, codecFlags);
+                    }
                 }
-            }
-        } catch (Exception ignored) {}
+            } catch (Exception ignored) {}
+        }
     }
 
     private void feedDecoderNalu(byte[] data, int offset, int len, int startCodeLen) {
-        if (decoder == null || !isStreaming.get()) return;
-        try {
-            int inIndex = decoder.dequeueInputBuffer(8000);
-            if (inIndex >= 0) {
-                ByteBuffer inputBuffer;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    inputBuffer = decoder.getInputBuffer(inIndex);
-                } else {
-                    inputBuffer = decoder.getInputBuffers()[inIndex];
-                }
-                if (inputBuffer != null) {
-                    inputBuffer.clear();
-                    inputBuffer.put(data, offset, len);
-                    int nalType = data[offset + startCodeLen] & 0x1F;
-                    int flags = 0;
-                    if (nalType == 7 || nalType == 8) {
-                        flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
-                    } else if (nalType == 5) {
-                        flags = MediaCodec.BUFFER_FLAG_KEY_FRAME;
+        synchronized (decoderLock) {
+            if (decoder == null || !isStreaming.get()) return;
+            try {
+                int inIndex = decoder.dequeueInputBuffer(8000);
+                if (inIndex >= 0) {
+                    ByteBuffer inputBuffer;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        inputBuffer = decoder.getInputBuffer(inIndex);
+                    } else {
+                        inputBuffer = decoder.getInputBuffers()[inIndex];
                     }
-                    if (nalType == 1 || nalType == 5) {
-                        receivedFpsTracker.onFrame();
+                    if (inputBuffer != null) {
+                        inputBuffer.clear();
+                        inputBuffer.put(data, offset, len);
+                        int nalType = data[offset + startCodeLen] & 0x1F;
+                        int flags = 0;
+                        if (nalType == 7 || nalType == 8) {
+                            flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
+                        } else if (nalType == 5) {
+                            flags = MediaCodec.BUFFER_FLAG_KEY_FRAME;
+                        }
+                        if (nalType == 1 || nalType == 5) {
+                            receivedFpsTracker.onFrame();
+                        }
+                        long presentationTimeUs = SystemClock.elapsedRealtimeNanos() / 1000;
+                        decoder.queueInputBuffer(inIndex, 0, len, presentationTimeUs, flags);
                     }
-                    long presentationTimeUs = SystemClock.elapsedRealtimeNanos() / 1000;
-                    decoder.queueInputBuffer(inIndex, 0, len, presentationTimeUs, flags);
                 }
-            }
-        } catch (Exception ignored) {}
+            } catch (Exception ignored) {}
+        }
     }
 
     private void initDecoder(int width, int height) throws Exception {
-        String mime = MediaFormat.MIMETYPE_VIDEO_AVC;
-        decoder = MediaCodec.createDecoderByType(mime);
-        activeCodecName = decoder.getName();
-
-        boolean configured = false;
-        try {
-            MediaFormat format = MediaFormat.createVideoFormat(mime, width, height);
-            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                format.setInteger(MediaFormat.KEY_PRIORITY, 0);
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                format.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
-                format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
-                format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
-            }
-
-            decoder.configure(format, surfaceHolder.getSurface(), null, 0);
-            configured = true;
-        } catch (Exception e) {
-            try {
-                if (decoder != null) decoder.release();
-            } catch (Exception ignored) {}
+        synchronized (decoderLock) {
+            String mime = MediaFormat.MIMETYPE_VIDEO_AVC;
             decoder = MediaCodec.createDecoderByType(mime);
             activeCodecName = decoder.getName();
-            MediaFormat fallbackFormat = MediaFormat.createVideoFormat(mime, width, height);
-            fallbackFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-            decoder.configure(fallbackFormat, surfaceHolder.getSurface(), null, 0);
-            configured = true;
-        }
 
-        if (configured) {
-            decoder.start();
+            Surface targetSurface = null;
+            synchronized (surfaceLock) {
+                if (surfaceHolder != null && surfaceHolder.getSurface() != null && surfaceHolder.getSurface().isValid()) {
+                    targetSurface = surfaceHolder.getSurface();
+                }
+            }
+            if (targetSurface == null) {
+                throw new IllegalStateException("SurfaceView surface is not valid for MediaCodec");
+            }
+
+            boolean configured = false;
+            try {
+                MediaFormat format = MediaFormat.createVideoFormat(mime, width, height);
+                format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    format.setInteger(MediaFormat.KEY_PRIORITY, 0);
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    format.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
+                    format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
+                    format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
+                }
+
+                decoder.configure(format, targetSurface, null, 0);
+                configured = true;
+            } catch (Exception e) {
+                try {
+                    if (decoder != null) decoder.release();
+                } catch (Exception ignored) {}
+                decoder = MediaCodec.createDecoderByType(mime);
+                activeCodecName = decoder.getName();
+                MediaFormat fallbackFormat = MediaFormat.createVideoFormat(mime, width, height);
+                fallbackFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+                decoder.configure(fallbackFormat, targetSurface, null, 0);
+                configured = true;
+            }
+
+            if (configured) {
+                decoder.start();
+            }
         }
     }
 
@@ -1053,53 +1267,64 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
      * Выгрузка раскодированных кадров с динамической детекцией разрешения и кроп-области.
      */
     private void drainOutputBuffers() {
-        if (decoder == null || !isStreaming.get()) return;
-        try {
-            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-            int attempts = 0;
-            int outIndex = decoder.dequeueOutputBuffer(info, 0);
+        synchronized (decoderLock) {
+            if (decoder == null || !isStreaming.get()) return;
+            try {
+                MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+                int attempts = 0;
+                int outIndex = decoder.dequeueOutputBuffer(info, 0);
 
-            while (outIndex >= 0 && attempts < 8) {
-                attempts++;
-                decodedFpsTracker.onFrame();
+                while (outIndex >= 0 && attempts < 8) {
+                    attempts++;
+                    decodedFpsTracker.onFrame();
 
-                // Рендерим кадр на Surface
-                decoder.releaseOutputBuffer(outIndex, true);
-                renderedFpsTracker.onFrame();
-                minFpsTracker.onRenderedFrame();
+                    boolean canRender = false;
+                    synchronized (surfaceLock) {
+                        canRender = surfaceReady && surfaceHolder != null && surfaceHolder.getSurface() != null && surfaceHolder.getSurface().isValid();
+                    }
 
-                outIndex = decoder.dequeueOutputBuffer(info, 0);
-            }
+                    // Рендерим кадр на Surface только если поверхность валидна
+                    decoder.releaseOutputBuffer(outIndex, canRender);
+                    if (canRender) {
+                        renderedFpsTracker.onFrame();
+                        minFpsTracker.onRenderedFrame();
+                    }
 
-            if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                MediaFormat newFormat = decoder.getOutputFormat();
-                int w = newFormat.getInteger(MediaFormat.KEY_WIDTH);
-                int h = newFormat.getInteger(MediaFormat.KEY_HEIGHT);
-                if (newFormat.containsKey("crop-left") && newFormat.containsKey("crop-right")) {
-                    w = newFormat.getInteger("crop-right") - newFormat.getInteger("crop-left") + 1;
+                    outIndex = decoder.dequeueOutputBuffer(info, 0);
                 }
-                if (newFormat.containsKey("crop-top") && newFormat.containsKey("crop-bottom")) {
-                    h = newFormat.getInteger("crop-bottom") - newFormat.getInteger("crop-top") + 1;
+
+                if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    MediaFormat newFormat = decoder.getOutputFormat();
+                    int w = newFormat.getInteger(MediaFormat.KEY_WIDTH);
+                    int h = newFormat.getInteger(MediaFormat.KEY_HEIGHT);
+                    if (newFormat.containsKey("crop-left") && newFormat.containsKey("crop-right")) {
+                        w = newFormat.getInteger("crop-right") - newFormat.getInteger("crop-left") + 1;
+                    }
+                    if (newFormat.containsKey("crop-top") && newFormat.containsKey("crop-bottom")) {
+                        h = newFormat.getInteger("crop-bottom") - newFormat.getInteger("crop-top") + 1;
+                    }
+                    if (w > 0 && h > 0 && (w != videoWidth || h != videoHeight)) {
+                        videoWidth = w;
+                        videoHeight = h;
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                requestLayout();
+                            }
+                        });
+                    }
                 }
-                if (w > 0 && h > 0 && (w != videoWidth || h != videoHeight)) {
-                    videoWidth = w;
-                    videoHeight = h;
-                    mainHandler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            requestLayout();
-                        }
-                    });
-                }
-            }
-        } catch (Exception ignored) {}
+            } catch (Exception ignored) {}
+        }
     }
 
     private void releaseDecoder() {
-        if (decoder != null) {
-            try { decoder.stop(); } catch (Exception ignored) {}
-            try { decoder.release(); } catch (Exception ignored) {}
-            decoder = null;
+        synchronized (decoderLock) {
+            if (decoder != null) {
+                try { decoder.stop(); } catch (Exception ignored) {}
+                try { decoder.release(); } catch (Exception ignored) {}
+                decoder = null;
+            }
         }
     }
 

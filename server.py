@@ -13,7 +13,8 @@ import threading
 import time
 import sys
 from pathlib import Path
-from flask import Flask, Request, Response, jsonify, request, send_file, make_response, send_from_directory
+from flask import Flask, Request, Response, jsonify, request, send_file, make_response, send_from_directory, g, has_request_context
+import collections
 import re
 
 from core.config import (
@@ -173,11 +174,13 @@ def _ensure_interactive_desktop():
     if platform.system() == "Windows":
         _attach_input_desktop()
 
-    # Дедупликация повторных POST/PUT запросов с тем же X-Request-Id
+    # Дедупликация повторных POST/PUT запросов с тем же X-Request-Id (для любых мутирующих операций)
     req_id = request.headers.get("X-Request-Id")
-    if req_id and request.method in ("POST", "PUT", "DELETE"):
-        cached = check_idempotency(req_id)
+    if req_id and request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        cached = check_idempotency_request(req_id)
         if cached is not None:
+            if cached.get("error"):
+                return jsonify({"ok": False, "message": cached["message"]}), cached["status"]
             c_resp = make_response(cached["body"], cached["status"])
             c_resp.headers["Content-Type"] = cached.get("content_type", "application/json")
             c_resp.headers["X-Idempotent-Replay"] = "1"
@@ -198,14 +201,19 @@ def _ensure_interactive_desktop():
 
 @app.after_request
 def _add_cors_headers(resp):
-    req_id = request.headers.get("X-Request-Id")
-    if req_id and request.method in ("POST", "PUT", "DELETE") and resp.status_code in (200, 201, 202):
-        store_idempotency_result(req_id, {
-            "body": resp.get_data(),
-            "status": resp.status_code,
-            "content_type": resp.headers.get("Content-Type", "application/json")
-        })
+    primary_key = getattr(g, "idempotency_cache_key", None)
+    if primary_key:
+        content_type = resp.headers.get("Content-Type", "application/json")
+        store_idempotency_completion(primary_key, resp.status_code, resp.get_data(), content_type)
     return _apply_cors_and_security_headers(resp)
+
+
+@app.teardown_request
+def _cleanup_failed_idempotency(exc=None):
+    if exc is not None:
+        primary_key = getattr(g, "idempotency_cache_key", None)
+        if primary_key:
+            store_idempotency_completion(primary_key, 500, b"", "application/json")
 
 
 PAGE = WEB_INDEX_FILE.read_text(encoding="utf-8") if WEB_INDEX_FILE.exists() else "<h1>PC Control Server Online</h1>"
@@ -460,29 +468,164 @@ def api_cors_settings():
     return jsonify({"ok": True, "origins": get_cors_allowed_origins()})
 
 
-# ---------- Дедупликация и защита от повторного выполнения неидемпотентных команд (X-Request-Id) ----------
-_recent_request_ids: dict[str, tuple[float, any]] = {}
-_request_id_lock = threading.Lock()
+# ---------- Надежная дедупликация и защита от повторного выполнения неидемпотентных команд (X-Request-Id) ----------
+class IdempotencyRecord:
+    def __init__(self, token_hash: str, method: str, path: str, body_hash: str, req_id: str):
+        self.token_hash = token_hash
+        self.method = method
+        self.path = path
+        self.body_hash = body_hash
+        self.req_id = req_id
+        self.status = "IN_PROGRESS"  # IN_PROGRESS, COMPLETED, FAILED
+        self.created_at = time.time()
+        self.completed_at = 0.0
+        self.response = None  # dict with body, status, content_type
+
+_idempotency_cache: collections.OrderedDict[str, IdempotencyRecord] = collections.OrderedDict()
+_idempotency_lock = threading.Lock()
+_IDEMPOTENCY_MAX_ENTRIES = 300
+_IDEMPOTENCY_TTL_SEC = 15.0
 
 
-def check_idempotency(req_id: str):
-    if not req_id:
+def _get_request_identity() -> str:
+    """Возвращает безопасный хэш текущего авторизованного контекста."""
+    if has_request_context():
+        token = request.headers.get("X-Auth-Token") or request.cookies.get("pc_token") or get_auth_token() or ""
+    else:
+        token = get_auth_token() or "test_default"
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:16]
+
+
+def check_idempotency_request(req_id: str):
+    """
+    Проверяет идемпотентность перед выполнением запроса.
+    Требования:
+    1. Авторизация должна быть предварительно подтверждена (неавторизованные запросы не получают кэш).
+    2. Ключ кэша жестко привязан к: токену, методу, маршруту и хэшу тела запроса.
+    3. Повторный ID с другим телом или маршрутом немедленно отклоняется (409 Conflict).
+    4. Конкурентные запросы с одним ID атомарно переводятся в IN_PROGRESS.
+    """
+    if not req_id or len(req_id) > 128:
         return None
+
+    if has_request_context():
+        is_safe = is_safe_test_mode()
+        # Мутирующие операции требуют обязательной проверки авторизации до доступа к кэшу!
+        if not is_safe and not check_token():
+            return None
+        method = request.method
+        path = request.path
+        raw_body = request.get_data() or b""
+    else:
+        method = "POST"
+        path = "/test"
+        raw_body = b""
+
+    body_hash = hashlib.sha256(raw_body).hexdigest()
+    token_hash = _get_request_identity()
+
+    primary_key = f"{token_hash}:{req_id}"
     now = time.time()
-    with _request_id_lock:
-        expired = [k for k, (t, _) in _recent_request_ids.items() if (now - t) > 10.0]
-        for k in expired:
-            _recent_request_ids.pop(k, None)
-        if req_id in _recent_request_ids:
-            return _recent_request_ids[req_id][1]
+
+    with _idempotency_lock:
+        # Очистка устаревших записей по TTL
+        expired_keys = [k for k, rec in _idempotency_cache.items() if (now - rec.created_at) > _IDEMPOTENCY_TTL_SEC]
+        for k in expired_keys:
+            _idempotency_cache.pop(k, None)
+
+        if primary_key in _idempotency_cache:
+            rec = _idempotency_cache[primary_key]
+            # Проверяем совпадение контекста: метод, маршрут и тело запроса
+            if rec.method != method or rec.path != path or rec.body_hash != body_hash:
+                return {
+                    "error": "conflict",
+                    "status": 409,
+                    "message": "Idempotency key reused with different request payload or target endpoint"
+                }
+
+            if rec.status == "COMPLETED" and rec.response:
+                return {
+                    "body": rec.response["body"],
+                    "status": rec.response["status"],
+                    "content_type": rec.response.get("content_type", "application/json"),
+                    "replay": True
+                }
+            elif rec.status == "IN_PROGRESS":
+                return {
+                    "error": "in_progress",
+                    "status": 409,
+                    "message": "Operation with this request ID is currently being processed"
+                }
+            elif rec.status == "FAILED":
+                rec.status = "IN_PROGRESS"
+                rec.created_at = now
+                rec.response = None
+                return None
+
+        # Создаем новую запись IN_PROGRESS
+        new_rec = IdempotencyRecord(token_hash, method, path, body_hash, req_id)
+        if len(_idempotency_cache) >= _IDEMPOTENCY_MAX_ENTRIES:
+            _idempotency_cache.popitem(last=False)
+        _idempotency_cache[primary_key] = new_rec
+        if has_request_context():
+            g.idempotency_cache_key = primary_key
+        return None
+
+
+def store_idempotency_completion(primary_key: str, status_code: int, response_bytes: bytes, content_type: str):
+    if not primary_key:
+        return
+    with _idempotency_lock:
+        if primary_key in _idempotency_cache:
+            rec = _idempotency_cache[primary_key]
+            if status_code in (200, 201, 202):
+                rec.status = "COMPLETED"
+                rec.completed_at = time.time()
+                rec.response = {
+                    "body": response_bytes,
+                    "status": status_code,
+                    "content_type": content_type or "application/json"
+                }
+            else:
+                rec.status = "FAILED"
+                rec.completed_at = time.time()
+
+
+# Совместимость с внешними вызовами тестов
+def check_idempotency(req_id: str):
+    if not has_request_context():
+        token_hash = _get_request_identity()
+        primary_key = f"{token_hash}:{req_id}"
+        with _idempotency_lock:
+            if primary_key in _idempotency_cache:
+                rec = _idempotency_cache[primary_key]
+                if rec.status == "COMPLETED" and rec.response:
+                    return {
+                        "body": rec.response["body"],
+                        "status": rec.response["status"],
+                        "content_type": rec.response.get("content_type", "application/json"),
+                        "replay": True
+                    }
+            return None
+    res = check_idempotency_request(req_id)
+    if res and not res.get("error"):
+        return res
     return None
 
 
 def store_idempotency_result(req_id: str, result_data):
-    if not req_id:
-        return
-    with _request_id_lock:
-        _recent_request_ids[req_id] = (time.time(), result_data)
+    token_hash = _get_request_identity()
+    key = f"{token_hash}:{req_id}"
+    with _idempotency_lock:
+        if key not in _idempotency_cache:
+            _idempotency_cache[key] = IdempotencyRecord(token_hash, "POST", "/test", hashlib.sha256(b"").hexdigest(), req_id)
+    if isinstance(result_data, dict):
+        store_idempotency_completion(
+            key,
+            result_data.get("status", 200),
+            result_data.get("body", b""),
+            result_data.get("content_type", "application/json")
+        )
 
 
 @app.route("/api/network/diagnose")

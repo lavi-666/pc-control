@@ -1057,6 +1057,20 @@ window.addEventListener('offline', () => {
   setConnectionState(ConnState.DISCONNECTED, 'Потеряно сетевое подключение на устройстве');
 });
 
+function generateRequestId() {
+  if (typeof crypto !== 'undefined') {
+    if (typeof crypto.randomUUID === 'function') {
+      return 'req_' + crypto.randomUUID();
+    }
+    if (typeof crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      return 'req_' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    }
+  }
+  return 'req_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
+}
+
 let _inFlightGetRequests = new Map();
 
 async function apiFetch(url, options = {}){
@@ -1074,7 +1088,7 @@ async function apiFetch(url, options = {}){
   const doFetch = async () => {
     const headers = Object.assign({}, options.headers, {'X-Auth-Token': encodeURIComponent(getToken())});
     if (isMutating && !headers['X-Request-Id']) {
-      headers['X-Request-Id'] = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+      headers['X-Request-Id'] = generateRequestId();
     }
     let targetUrl = resolveApiUrl(url);
     let res;
@@ -1101,8 +1115,19 @@ async function apiFetch(url, options = {}){
       try { localStorage.removeItem('pc_token'); } catch (e) {}
       const newTok = await requestNewToken();
       if (newTok) {
-        headers['X-Auth-Token'] = encodeURIComponent(newTok);
-        return await fetch(targetUrl, Object.assign({}, options, {headers}));
+        if (!isMutating) {
+          // Автоматический повтор безопасен ТОЛЬКО для идемпотентных запросов чтения (GET)
+          headers['X-Auth-Token'] = encodeURIComponent(newTok);
+          return await fetch(targetUrl, Object.assign({}, options, {headers}));
+        } else {
+          // КРИТИЧЕСКАЯ БЕЗОПАСНОСТЬ: Мутирующие команды (POST/PUT/DELETE, особенно выключение,
+          // перезагрузка, завершение процессов) ЗАПРЕЩЕНО автоматически выполнять после авторизации!
+          const statusEl = document.getElementById('statusMsg');
+          if (statusEl) {
+            statusEl.innerText = (typeof t === 'function' ? t('msg_auth_refreshed_retry') : 'Авторизация подтверждена. Нажмите кнопку ещё раз.');
+          }
+          throw new Error('auth_refreshed_action_aborted');
+        }
       }
       const statusEl = document.getElementById('statusMsg');
       if (statusEl) {
