@@ -11,7 +11,7 @@
 [![Windows 10 | 11](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D6?style=flat-square&logo=windows&logoColor=white)](https://microsoft.com/windows)
 [![CI](https://github.com/lavi-666/pc-control/actions/workflows/ci.yml/badge.svg)](https://github.com/lavi-666/pc-control/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/lavi-666/pc-control?style=flat-square&logo=github&color=3DDC84)](https://github.com/lavi-666/pc-control/releases/latest)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![Python 3.12 Bundled](https://img.shields.io/badge/Python-3.12%20Standalone-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Rust](https://img.shields.io/badge/Rust-WASAPI%20%7C%20DXGI-dea584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Client Android | Web](https://img.shields.io/badge/Client-Android%208.0+%20%7C%20Web-3DDC84?style=flat-square&logo=android&logoColor=white)](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control.apk)
 [![Tailscale Compatible](https://img.shields.io/badge/Tailscale-WireGuard%20Mesh-202020?style=flat-square&logo=tailscale&logoColor=white)](https://tailscale.com)
@@ -34,7 +34,7 @@
 </p>
 
 <p align="center">
-  <sub>Official pre-compiled releases and SHA-256 checksums are published in <a href="https://github.com/lavi-666/pc-control/releases/latest"><b>GitHub Releases</b></a>.</sub>
+  <sub>Official pre-compiled releases, <code>release-manifest.json</code>, and <code>SHA256SUMS.txt</code> checksums are published in <a href="https://github.com/lavi-666/pc-control/releases/latest"><b>GitHub Releases</b></a>.</sub>
 </p>
 
 </div>
@@ -68,7 +68,7 @@ The system is designed to work out of the box in two networking environments:
 1. **Local Network (LAN)**: Operates entirely offline across your home Wi-Fi subnet with zero third-party service dependencies.
 2. **Encrypted Mesh (Tailscale / WireGuard)**: Operates globally over private `100.64.0.0/10` virtual addresses without router port forwarding or public static IPs.
 
-The host runs as an asynchronous Python service paired with an embedded Rust capture engine (`tools/streamer.exe`) for hardware-accelerated desktop duplication and loopback audio capture. A background supervisor (`scripts/watchdog.pyw`) maintains process health and provides automated recovery.
+The Windows distribution ships with a self-contained CPython 3.12 runtime (`runtime/`), an embedded Rust capture engine (`tools/streamer.exe`) for hardware-accelerated desktop duplication and loopback audio capture, a desktop management console (`Launcher.exe`), and a background supervisor (`scripts/watchdog.pyw`) for automated health-check recovery.
 
 ---
 
@@ -78,7 +78,7 @@ The host runs as an asynchronous Python service paired with an embedded Rust cap
 flowchart TD
     subgraph Clients["Client Layer"]
         APK["Android App<br/>(PC_Control.apk)"]
-        WEB["Browser Web Remote<br/>(HTML5 / WebSockets)"]
+        WEB["Browser Web Remote<br/>(HTML5 / WebRTC)"]
     end
 
     subgraph Network["Transport Layer"]
@@ -91,6 +91,7 @@ flowchart TD
         STREAM["Rust Streaming Engine (:5051)<br/>tools/streamer.exe"]
         WATCHDOG["Watchdog Supervisor<br/>scripts/watchdog.pyw"]
         LAUNCHER["Desktop Management UI (:5055)<br/>Launcher.exe / control_panel.py"]
+        UPDATER["Transactional Full Updater<br/>scripts/full_update.py"]
         
         SMTC["Windows SMTC<br/>(Media & Live Queue)"]
         WASAPI["WASAPI / pycaw<br/>(Master & App Mixer)"]
@@ -115,7 +116,8 @@ flowchart TD
     API <--> WIN32
 
     WATCHDOG -.->|Health checks & auto-recovery| API
-    LAUNCHER -.->|Configuration & launch control| API
+    LAUNCHER -.->|Config, QR onboarding & process control| API
+    LAUNCHER -.->|SHA-256 verified package sync & rollback| UPDATER
 
     TS -.->|1. Wake Request| RELAY
     RELAY -.->|2. Magic Packet UDP:9/7| Host
@@ -125,10 +127,11 @@ flowchart TD
 
 | Component | Technology | Default Port | Responsibility |
 |:---|:---|:---|:---|
-| **Core API Server** | Python 3 / Flask | `TCP 5000` | REST API, token authentication, rate limiting, and subsystem routing (`server.py`). |
+| **Core API Server** | Python 3.12 / Flask | `TCP 5000` | REST API, token authentication, rate limiting, and subsystem routing (`server.py`). |
 | **Streaming Microservice** | Rust / DXGI / WASAPI | `TCP 5051` | Hardware desktop duplication, audio loopback capture, and WebRTC streaming (`tools/streamer.exe`). |
 | **Watchdog Supervisor** | Python (`watchdog.pyw`) | N/A | Background process monitoring, crash-loop prevention, and health-check recovery. |
-| **Desktop Launcher** | C# / Python HTTP server | `TCP 5055` | Local desktop dashboard for network checks, server management, and system setup (`Launcher.exe`). |
+| **Desktop Launcher** | C# / Python HTTP server | `TCP 5055` | Local desktop dashboard for auto-network setup, QR phone onboarding, server control, and updates (`Launcher.exe`). |
+| **Full Package Updater** | Python (`full_update.py`) | N/A | Transactional full-application updates from GitHub Releases with per-file SHA-256 verification and automatic rollback. |
 | **Android Client** | Java / WebView / OkHttp | Dynamic | Standalone mobile application with background audio streaming support (`PC_Control.apk`). |
 | **Web Remote** | HTML5 / JavaScript | `TCP 5000` | Browser-based control panel served directly from the host. |
 | **WOL Relay Service** | Python (`wol_relay.py`) | `TCP 5050` | Secondary home device relay for waking powered-off hosts outside the local network. |
@@ -137,40 +140,61 @@ flowchart TD
 
 ```text
 pc-control/
-├── server.py              # Main Flask application entrypoint & Blueprint registry
-├── core/                  # Core infrastructure (auth, rate limiting, config, state)
-│   ├── auth.py            # Dual-tier token authentication & brute-force lockout
-│   ├── config.py          # Configuration management with schema validation
-│   └── logger.py          # Structured actions audit & error logger
-├── modules/               # Modular business logic blueprints
-│   ├── media.py           # SMTC controller & media endpoints dispatcher
-│   ├── media_api.py       # YouTube Music Innertube track & queue resolution
-│   ├── media_history.py   # Listening history persistence & caching
-│   ├── media_keys.py      # Win32 media key injection & window targeting
-│   ├── media_queue.py     # Live queue state, playlist syncing & automix
-│   ├── media_uia.py       # UI Automation for browser tabs & DOM interaction
-│   ├── media_volume.py    # WASAPI per-player session volume control
-│   ├── power.py           # Shutdown, restart, sleep & workstation lock
-│   ├── presets.py         # Multi-step launch presets with fuzzy app search
-│   ├── streaming.py       # Native WebRTC screen & loopback audio proxy
-│   ├── system.py          # Task manager, process terminator & layout switcher
-│   └── volume.py          # Master system volume & WASAPI per-app mixer
-├── web/                   # Web remote client assets & dashboard templates
-│   ├── index.html         # Clean semantic HTML5 web client markup (90 KB)
-│   ├── css/styles.css     # Client stylesheet & responsive layout (44 KB)
-│   ├── js/                # Modular client architecture
-│   │   ├── i18n.js        # Multilingual localization dictionaries (uk, ru, en)
-│   │   ├── stream.js      # WebRTC audio & screen streaming controllers
-│   │   ├── media.js       # Player timeline, active queue & history UI
-│   │   ├── presets.js     # Launch presets editor & execution engine
-│   │   └── app.js         # Core router, network detection & system UI
-│   └── control_panel.html # Desktop Launcher embedded dashboard UI (158 KB)
-├── scripts/               # Management & build utilities
-│   ├── build_apk.py       # Automated APK compilation with dynamic asset sync
-│   ├── control_panel.py   # Desktop management UI server (:5055, 100 KB)
-│   └── watchdog.pyw       # Standalone crash-loop watchdog supervisor
-├── android_app/           # Android Studio native WebView wrapper project
-└── tests/                 # 650-cycle comprehensive regression test suite
+├── Launcher.exe                 # Compiled C# desktop launcher & recovery bootstrapper
+├── PC_Control.apk               # Pre-compiled & signed Android client application
+├── server.py                    # Main Flask application entrypoint & Blueprint registry
+├── open_app.pyw                 # Local Web Remote launcher helper
+├── config.example.json          # Reference configuration template
+├── requirements.txt             # Python dependency specification
+├── requirements-runtime.lock    # Locked wheel manifest for standalone runtime
+├── runtime-source.json          # Official CPython embeddable runtime descriptor
+├── core/                        # Core infrastructure (auth, rate limiting, config, state)
+│   ├── auth.py                  # Two-tier token authentication & brute-force lockout
+│   ├── config.py                # Configuration management with auto-network sync
+│   └── logger.py                # Structured actions audit & error logger
+├── modules/                     # Modular business logic blueprints
+│   ├── media.py                 # SMTC controller & media endpoints dispatcher
+│   ├── media_api.py             # YouTube Music Innertube track & queue resolution
+│   ├── media_history.py         # Listening history persistence & caching
+│   ├── media_keys.py            # Win32 media key injection & window targeting
+│   ├── media_queue.py           # Live queue state, playlist syncing & automix
+│   ├── media_uia.py             # UI Automation for browser tabs & DOM interaction
+│   ├── media_volume.py          # WASAPI per-player session volume control
+│   ├── power.py                 # Shutdown, restart, sleep, lock & Wake-on-LAN
+│   ├── presets.py               # Multi-step launch presets with fuzzy app search
+│   ├── streaming.py             # Native WebRTC screen & loopback audio proxy
+│   ├── system.py                # Task manager, process terminator & layout switcher
+│   └── volume.py                # Master system volume & WASAPI per-app mixer
+├── web/                         # Web remote client assets & dashboard templates
+│   ├── index.html               # Semantic HTML5 web client markup
+│   ├── css/styles.css           # Client stylesheet & responsive layout
+│   ├── js/                      # Modular client architecture
+│   │   ├── i18n.js              # Multilingual localization dictionaries (uk, ru, en)
+│   │   ├── stream.js            # WebRTC audio & screen streaming controllers
+│   │   ├── media.js             # Player timeline, active queue & history UI
+│   │   ├── presets.js           # Launch presets editor & execution engine
+│   │   └── app.js               # Core router, network detection & system UI
+│   └── control_panel.html       # Desktop Launcher embedded dashboard UI (~190 KB)
+├── scripts/                     # Management, networking, update & build utilities
+│   ├── Launcher.cs              # C# desktop launcher source code
+│   ├── control_panel.py         # Desktop management UI server (:5055)
+│   ├── full_update.py           # Transactional full-package updater & rollback worker
+│   ├── network_setup.py         # Automatic LAN IP/MAC & Tailscale discovery + signed installer
+│   ├── manage_server.py         # Instance-aware server start/stop/status CLI
+│   ├── bootstrap_runtime.ps1    # Automated standalone CPython 3.12 bootstrapper
+│   ├── build_runtime.py         # Portable Python runtime builder for releases
+│   ├── package_windows.py       # Full Windows ZIP & release-manifest.json packager
+│   ├── build_apk.py             # Automated APK compiler with dynamic asset sync
+│   ├── configure.py             # Interactive CLI configuration wizard
+│   ├── change_password.py       # CLI password / token rotation utility
+│   ├── setup_autologon.ps1      # Windows Wake-on-LAN & netplwiz autologon helper
+│   ├── apply_firewall_rule.bat  # Windows Defender Firewall Private/Tailscale rule script
+│   ├── wol_relay.py             # Standalone Wake-on-LAN UDP Magic Packet relay
+│   └── watchdog.pyw             # Crash-loop protected watchdog supervisor
+├── streamer_rs/                 # Native Rust DXGI & WASAPI capture microservice crate
+├── android_app/                 # Android native WebView wrapper & background audio service
+├── docs/                        # Technical documentation & audit reports
+└── tests/                       # 650-cycle API regression suite & 64-test release/launcher audits
 ```
 
 ---
@@ -181,38 +205,45 @@ pc-control/
 - Integrates with Windows System Media Transport Controls (`Windows.Media` via WinSDK).
 - Bidirectional synchronization with media players, including YouTube Music, Spotify, desktop players, and browser media tabs.
 - Reads track metadata: title, artist, album art image, duration, and playback progress.
-- Live queue navigation: inspect and select tracks from the active playlist.
+- Live queue navigation: inspect, search, add, remove, and select tracks from the active playlist.
 - Listening history persistence stored in `listening_history.json`.
 
 ### 2. Audio Control & Application Mixer
 - Master Windows volume adjustments and mute toggling via Windows Core Audio (WASAPI).
 - Per-application audio mixer: enumerates active audio sessions (games, browsers, voice clients) with individual volume sliders and mute controls.
-- Thread-safe COM initialization and a cached query layer to eliminate audio API stutter.
+- Thread-safe COM initialization, graceful headless fallback when no audio endpoint is connected, and a cached query layer to eliminate audio API stutter.
 
 ### 3. Display & Audio Streaming
 - Desktop capture using the native Rust streaming microservice (`tools/streamer.exe`) built on the DirectX Graphics Infrastructure (DXGI) Desktop Duplication API.
 - Multi-monitor topology detection with on-the-fly monitor switching.
-- WASAPI loopback audio stream delivered via WebRTC (Opus stereo at 48 kHz).
+- WASAPI loopback audio stream delivered via WebRTC (Opus stereo at 48 kHz) or chunked PCM stream.
 - Supports background audio streaming on Android (audio continues playing when the smartphone screen is locked).
 
 ### 4. Process & System Administration
-- Live task monitor displaying process ID (PID), process name, and working set memory usage.
+- Live task monitor displaying process ID (PID) and executable name with automatic system process filtering.
 - One-click termination for frozen or unresponsive processes (`taskkill` integration).
-- Input locale switching: queries and cycles installed Windows keyboard layouts (`WM_INPUTLANGCHANGEREQUEST` / Win32 HKL).
+- Input locale switching: queries and switches installed Windows keyboard layouts (`WM_INPUTLANGCHANGEREQUEST` / Win32 HKL).
+- Instant full-desktop PNG screenshot capture (`/screenshot`).
 - Append-only actions audit log recorded to `actions_log.jsonl`.
 
 ### 5. Power Management & Wake-on-LAN
-- Host power actions: shutdown, reboot, sleep (ACPI S3), and lock workstation (`Win+L`).
-- Delayed shutdown sleep timer with thread-safe cancellation.
+- Host power actions: shutdown, reboot, sleep (ACPI S3), and lock workstation (`LockWorkStation`).
+- Delayed shutdown timer (`/shutdown_timer`) with live countdown status and thread-safe cancellation.
 - Local Wake-on-LAN: transmits UDP Magic Packets (ports 7 and 9) across network broadcast addresses.
 - Remote Wake-on-LAN: routes wake signals through a secondary relay device (`scripts/wol_relay.py`) on the home subnet.
 
 ### 6. Action Sequences (Launch Presets)
 - Multi-step automation chains defined in `launch_presets.json`.
-- Step types: launch applications (with installed program auto-detection), open URLs, and configurable delay timers between steps.
+- Step types: launch applications (with installed program auto-detection via `/api/programs/search`), open URLs, and configurable delay timers between steps.
 - Asynchronous chain execution with runtime progress reporting and emergency cancellation.
 
-### 7. Reliability & Watchdog Supervisor
+### 7. Standalone Runtime, Auto-Network Discovery & Transactional Updates
+- **Zero-Dependency Private Runtime**: Runs from an isolated `runtime/` directory (CPython 3.12 + locked wheels). Never conflicts with or requires a system Python installation.
+- **Automatic Network Discovery (`auto_network`)**: Automatically selects the primary LAN IPv4 address and matching hardware MAC address from the active default-route adapter, and syncs the active Tailscale IPv4 address when `BackendState == Running`.
+- **One-Click Phone Onboarding (`Connect Phone · QR`)**: Starts the server if stopped and generates a scannable QR code containing the active LAN/VPN URL and access token for instant mobile browser login and APK download.
+- **Transactional Full-Package Updates**: Updates the entire installation (`Launcher.exe`, server, web UI, modules, scripts, tools, `PC_Control.apk`, and `runtime/`) from official GitHub Releases with per-file SHA-256 verification, user config preservation, and automatic rollback on startup failure.
+
+### 8. Reliability & Watchdog Supervisor
 - Standalone background supervisor process (`scripts/watchdog.pyw`) checks server availability every 30 seconds.
 - Mutex-guarded single instance execution (`Local\PCControlWatchdogMutex`).
 - Auto-restart logic triggered on two consecutive failed health pings.
@@ -225,7 +256,8 @@ pc-control/
 
 ### Host PC
 - **Operating System**: Windows 10 (version 1809 or later) or Windows 11 (64-bit).
-- **Python**: included with application libraries in the full Windows ZIP. No system Python or manual pip commands are needed. A source ZIP downloads a private runtime automatically on first launch (internet required).
+- **Python**: Included with all application libraries inside `PC_Control_Windows.zip` (`runtime/`). No system Python or manual `pip` commands are needed. If running from a source-only archive or `git clone`, `Launcher.exe` automatically downloads and provisions the private runtime on first launch (internet required).
+- **Disk Space**: ~250 MB for the installed application; at least 3 GB of free space is required when performing full transactional updates.
 - **Network Adapter**: Ethernet connection recommended for Wake-on-LAN support.
 
 ### Clients
@@ -236,16 +268,19 @@ pc-control/
 
 ## Quick Start & Setup
 
-The project is designed to be fully automated out of the box. You do not need to manually configure virtual environments, run pip commands, or edit configuration files by hand.
+The project is fully automated out of the box. You do not need to manually configure virtual environments, run `pip` commands, or edit configuration files by hand.
 
 ### 1. Download the Project
-Download **PC_Control_Windows.zip** from Releases and extract the complete `PC_Control` folder into a writable location. Python and libraries are included in `runtime`; initial preparation needs no dependency downloads. Keep `Launcher.exe` with the other files. GitHub “Code → Download ZIP” is also supported: the launcher downloads and verifies a private Python runtime and its libraries automatically, with setup progress. That variant requires internet on first launch.
 
-Download the repository as a ZIP archive from GitHub and extract it, or clone via git:
-```cmd
-git clone https://github.com/lavi-666/pc-control.git
-cd pc-control
-```
+- **Option A — Full Standalone Package (Recommended)**:
+  Download [**PC_Control_Windows.zip**](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control_Windows.zip) from [GitHub Releases](https://github.com/lavi-666/pc-control/releases/latest) and extract the complete `PC_Control` folder into any writable directory. Python 3.12 and all libraries are pre-installed in `runtime/` — first launch works immediately offline. Keep `Launcher.exe` inside the extracted folder next to `core/`, `modules/`, `scripts/`, `tools/`, `web/`, and `runtime/`.
+- **Option B — Source Archive or Git Clone**:
+  Clone the repository or download the source ZIP from GitHub:
+  ```cmd
+  git clone https://github.com/lavi-666/pc-control.git
+  cd pc-control
+  ```
+  On first launch, `Launcher.exe` automatically runs `scripts/bootstrap_runtime.ps1` to download and verify an isolated Python 3.12 runtime and install all locked dependencies (internet required on first run).
 
 ### 2. Launch the Desktop Launcher
 Double-click `Launcher.exe` (or run `launcher.bat`):
@@ -254,19 +289,17 @@ Launcher.exe
 ```
 
 On first launch, **Launcher.exe automatically performs all setup steps**:
-1. **Private runtime**: uses `runtime` independently of system Python and virtual environments. If absent, downloads it automatically without administrator privileges.
-2. **Configuration**: creates `config.json`, detects addresses and generates a random password. Change addresses, ports, password and CORS through the launcher.
-3. **Library check**: verifies imports using the same interpreter that runs the server. Logs and dependency repair are available on failure.
-4. **Startup**: review settings and click Start. Success requires an HTTP health response from this installation's server; restart and stop are then available.
+1. **Private runtime**: Uses `runtime/` independently of system Python and virtual environments. If absent, bootstraps it automatically without administrator privileges.
+2. **Configuration & Auto-Network**: Creates `config.json`, detects your active LAN IPv4 address, physical adapter MAC address, and Tailscale VPN IP, and generates a cryptographically random password. You can adjust addresses, ports, password, and CORS origins anytime in the launcher UI.
+3. **Library check**: Verifies module imports using the exact interpreter that runs the server. Live logs and one-click dependency repair are available if needed.
+4. **Startup**: Click **Start**. The launcher verifies that this installation's server instance responds over HTTP before reporting online status.
 
 > [!IMPORTANT]
-> **No Default Credentials**: PC Control does not use static or insecure default passwords. A fresh installation generates a cryptographically random token saved in `config.json`. You can inspect, copy, or change your password anytime directly in the Launcher GUI or via `change_password.exe`.
+> **No Default Credentials**: PC Control does not use static or insecure default passwords. A fresh installation generates a cryptographically random token saved in `config.json`. You can view, copy, rotate, or change your password anytime directly in the Launcher GUI or via `change_password.bat`.
 
-The dashboard displays your connection URLs, active network addresses, and server controls.
-
-### 3. Connect Clients
-- **Web Browser**: Open the displayed URL (`http://<LAN_IP>:5000/`) on your phone or tablet browser and log in with your access token.
-- **Android App**: Install `PC_Control.apk` (pre-compiled in the repository root) on your Android device and enter your connection details.
+### 3. Connect Your Phone or Browser
+- **Instant QR Onboarding (Web Remote & APK Download)**: Click **Connect Phone · QR** (`Подключить телефон · QR`) in the launcher. If the server is stopped, it starts automatically and displays a QR code with your active LAN/Tailscale URL and access token. Scan the QR code with your phone camera to open the authenticated Web Remote immediately, or tap **Download APK** on that page.
+- **Android App**: Install `PC_Control.apk` on your Android device and enter your PC address (`http://<LAN_OR_TAILSCALE_IP>:5000`) and access token.
 
 ---
 
@@ -275,23 +308,16 @@ The dashboard displays your connection URLs, active network addresses, and serve
 All parameters can be adjusted directly inside the desktop launcher interface. For headless environments or script-based administration, the following automated tools are also available:
 
 #### Windows Defender Firewall (Recommended for LAN access)
-To permit inbound client connections across your home Wi-Fi and Tailscale while isolating the server from untrusted public networks, click **Configure** next to Step 4 in the launcher checklist, or execute:
+To permit inbound client connections across your home Wi-Fi and Tailscale while isolating the server from untrusted public networks, click **Configure** on the Firewall step in the launcher checklist, or execute:
 ```cmd
 scripts\apply_firewall_rule.bat
 ```
-This administrative script configures an inbound allow rule on TCP port 5000 restricted to `LocalSubnet` and the Tailscale CGNAT subnet (`100.64.0.0/10`).
+This administrative script configures an inbound allow rule on the configured TCP port (default `5000`) restricted to `Private` profiles across `LocalSubnet` and the Tailscale CGNAT subnet (`100.64.0.0/10`).
 
 #### Custom Password & Interactive Configuration Wizard
-To change your access password, click **Change** on the password card in the launcher GUI. Alternatively, run the interactive command-line wizard:
+To change your access password, click **Change** on the password card in the launcher GUI, run `change_password.bat`, or launch the interactive command-line wizard:
 ```cmd
 scripts\configure.bat
-```
-
-#### Manual Dependency Installation (CLI)
-If running on a headless server or custom Python virtual environment without the desktop launcher:
-```cmd
-python -m pip install --upgrade pip
-pip install -r requirements.txt
 ```
 
 ---
@@ -305,22 +331,23 @@ Launcher.exe
 ```
 *(Or run `launcher.bat`)*
 
-This starts the desktop control service on `http://127.0.0.1:5055` and opens a dedicated application window. The dashboard displays server status, detected IP addresses, active Tailscale peers, and provides controls to start/stop the server, review live console logs, and inspect Windows sign-in settings.
+This starts the desktop control service on `http://127.0.0.1:5055` and opens a dedicated application window. The dashboard displays server status, auto-detected LAN and Tailscale addresses, QR onboarding, and provides controls to start/stop/restart the server, review live console logs, and configure Windows sign-in settings.
 
 Key launcher capabilities include:
-- **Automatic Startup Update Checks**: On startup, the launcher queries the official GitHub repository for updates. If a newer build is available, a dismissible non-intrusive banner appears: *"A new version of PC Control is available"*, with an **Update Now** button and an **✕** dismiss button.
-- **Manual Update Checks**: Clicking *"Check for Updates"* verifies availability and reports *"You are currently using the latest version."* when up to date.
-- **Full project updates through the launcher**: **Update Now** installs the official release package, including launcher, server, UI, modules and bundled dependencies. SHA-256 checks cover the archive and every managed file; even a single file change is detected independently of version numbers. User settings and pairings are preserved. A separate worker verifies startup and rolls back on failure; launching `Launcher.exe` recovers interrupted installations. Internet and at least 3 GB of free disk space are required (larger packages may require more).
+- **Automatic Startup Update Checks**: On startup, the launcher queries the official GitHub repository (`releases/latest`). If a newer build or changed file hash is published, a dismissible banner appears with an **Update Now** button.
+- **Manual Update Checks**: Clicking **Check for Updates** compares the local installation's SHA-256 file hashes against `release-manifest.json` from the latest GitHub Release.
+- **Transactional Full Project Updates**: Clicking **Update Now** downloads the official `PC_Control_Windows.zip` release package, verifies `SHA256SUMS.txt` and every managed file hash in `release-manifest.json`, backs up replaced files, updates `Launcher.exe`, server, web UI, modules, tools, `PC_Control.apk`, and `runtime/`, and verifies post-update startup from an isolated worker. User settings (`config.json`, `launch_presets.json`, logs) are preserved. If startup verification fails, the updater automatically rolls back to the previous version; interrupted updates are automatically recovered on the next `Launcher.exe` launch.
+- **Automatic & Manual Network Sync**: Clicking **Auto IP / MAC / VPN** re-detects the active LAN adapter IPv4, hardware MAC, and Tailscale IPv4 and enables automatic network tracking (`auto_network: true`).
 - **Browser Profile & Cache Cleaner**: One-click cleanup utility for temporary browser profiles and web cache files.
 - **Token Rotation**: Secure one-click generation and rotation of the access token without restarting the system.
 
 ### Method 2: Headless Background Service
-To run the server quietly in the background without keeping a terminal open:
-- **Start**: Run `start_server.bat` (or `scripts\3_start_server.bat`). Launches both `server.py` and `scripts\watchdog.pyw`.
-- **Stop**: Run `stop_server.bat`. Gracefully terminates `server.py`, `watchdog.pyw`, and `tools\streamer.exe`.
+To run the server quietly in the background without keeping a window open:
+- **Start**: Run `start_server.bat` (or `scripts\3_start_server.bat`). Uses `scripts/manage_server.py` to launch `server.py` and `scripts\watchdog.pyw` via the bundled `runtime/pythonw.exe`.
+- **Stop**: Run `stop_server.bat`. Gracefully terminates `server.py`, `watchdog.pyw`, and `tools\streamer.exe` belonging to this installation.
 - **Foreground / Debugging**:
   ```cmd
-  python server.py
+  runtime\python.exe server.py
   ```
 
 ---
@@ -332,16 +359,16 @@ Open a web browser on any device connected to your local network or Tailscale me
 ```text
 http://<HOST_IP>:5000/
 ```
-Enter the authentication token configured in `config.json`.
+Enter the authentication token configured in `config.json` (or scan the QR code from `Launcher.exe` to log in automatically).
 
 ### Android Application
-1. Install `PC_Control.apk` on your Android device (located in the repository root).
+1. Install `PC_Control.apk` on your Android device (located in the repository root or downloaded from the Web Remote / GitHub Releases).
 2. Launch the app and enter the server URL (`http://192.168.x.x:5000` or `http://100.x.x.x:5000`) and authentication token.
-3. To generate a custom APK with your personal IP and token pre-configured:
+3. To compile a custom APK from source:
    ```cmd
-   python scripts/build_apk.py
+   runtime\python.exe scripts/build_apk.py
    ```
-   The build script uses the embedded Android toolchain in `.android_sdk` (aapt2, d8, zipalign, apksigner) to compile, package, and sign a standalone APK without requiring Android Studio.
+   The build script uses the Android SDK toolchain (`aapt2`, `d8`, `zipalign`, `apksigner`) to compile, package, and sign `PC_Control.apk` (v2/v3 signature schemes) without requiring Android Studio.
 
 ---
 
@@ -349,10 +376,10 @@ Enter the authentication token configured in `config.json`.
 
 ### Remote Access via Tailscale
 To control your PC outside your home network without port forwarding or dynamic DNS:
-1. Install [Tailscale](https://tailscale.com) on the host PC (using `tailscale-setup-1.102.4.exe` or official download).
+1. Click the **Tailscale VPN** action button in `Launcher.exe` (which automatically downloads the official signed Windows installer from `pkgs.tailscale.com`, verifies its Windows Authenticode signature, and launches it), or install [Tailscale](https://tailscale.com) manually.
 2. Install Tailscale on your smartphone from Google Play or the App Store.
 3. Sign in to the same account on both devices.
-4. Use the assigned Tailscale IPv4 address (`100.x.x.x`) in the client application. All traffic is end-to-end encrypted using WireGuard.
+4. Once connected, `Launcher.exe` automatically detects your `100.x.x.x` Tailscale IPv4 address and updates `vpn_ip` in `config.json`. All traffic is end-to-end encrypted using WireGuard.
 
 ### Wake-on-LAN Configuration
 
@@ -362,27 +389,27 @@ Enable standby power to the Ethernet controller:
 - Set **ErP Ready** / **Deep Sleep** to **Disabled** (ErP shuts off standby power to the network interface when the computer is turned off).
 
 #### 2. Windows Network Adapter & Autologon
-Run the automated configuration script as Administrator:
+Run the automated configuration script as Administrator (or click **Configure Autologon** in `Launcher.exe`):
 ```cmd
 scripts\2_setup_autologon.cmd
 ```
-The script performs the following setup:
+The script (`scripts/setup_autologon.ps1`) performs the following setup:
 - Configures network adapter driver parameters (`*WakeOnMagicPacket = 1`).
-- Disables Windows Fast Startup (`HiberbootEnabled = 0`), which prevents Windows from cutting NIC power during shutdown.
+- Disables Windows Fast Startup (`HiberbootEnabled = 0`), preventing Windows from cutting NIC standby power during shutdown.
 - Adds the server startup shortcut to the Windows Startup folder.
-- Configures `DevicePasswordLessBuildVersion = 0` in the registry and launches `netplwiz` for automatic user logon.
+- Configures `DevicePasswordLessBuildVersion = 0` in the registry and opens `netplwiz` for automatic user logon.
 
 > [!IMPORTANT]
 > When configuring automatic logon in `netplwiz`, supply your **actual Windows / Microsoft Account password**, not a 4-digit Windows Hello PIN. Using a PIN will cause automatic sign-in to fail upon reboot.
 
 #### 3. Remote Wake Relay (Outside Home)
-Because a shut-down computer cannot maintain a VPN connection, remote wake requests must be received by a device on your home network:
-1. Run `scripts/wol_relay.py` on a secondary device permanently connected to your home Wi-Fi (such as an older Android phone running Termux or a mini-PC).
+Because a powered-off computer cannot maintain an active VPN connection, remote wake requests must be broadcast by an always-on device on your home network:
+1. Run `scripts/wol_relay.py` on a secondary device permanently connected to your home Wi-Fi (such as an older Android phone running Termux or a home mini-PC):
    ```bash
    python scripts/wol_relay.py
    ```
-2. The relay listens on port `5050`. In the client application, specify the relay's Tailscale address (e.g. `http://100.64.0.2:5050`).
-3. Tapping the power-on button sends a wake command to the relay, which broadcasts raw UDP Magic Packets across the local subnet.
+2. The relay listens on port `5050`. In `Launcher.exe` (or the client application), set the relay's Tailscale address (e.g. `100.64.0.2`).
+3. Triggering Wake-on-LAN sends an authenticated request to the relay, which broadcasts raw UDP Magic Packets across the local subnet.
 
 ---
 
@@ -392,6 +419,7 @@ Configuration parameters are stored in `config.json` in the project root:
 
 ```json
 {
+  "auto_network": true,
   "token": "your_secure_password_here",
   "lan_ip": "192.168.0.100",
   "vpn_ip": "100.64.0.1",
@@ -412,126 +440,160 @@ Configuration parameters are stored in `config.json` in the project root:
 
 | Field | Type | Default | Description |
 |:---|:---|:---|:---|
-| `token` | `string` | *(generated)* | Shared secret authentication token. Cryptographically generated on first run (`secrets.token_hex`). No static default password. Passed in `X-Auth-Token` header, HTTP-only cookie, or verified at `/api/auth/login`. |
-| `lan_ip` | `string` | `"192.168.0.101"` | Primary IPv4 address of the host machine on the local network. |
-| `vpn_ip` | `string` | `""` | Tailscale IPv4 address assigned to the host machine. |
-| `wol_relay_ip` | `string` | `""` | Tailscale IPv4 address of the secondary relay device for remote Wake-on-LAN. |
-| `mac_address` | `string` | `"AA-BB-CC-DD-EE-FF"` | Hardware MAC address of the physical Ethernet adapter used for Magic Packets. |
-| `port` | `integer` | `5000` | TCP port for the primary Flask server and web client. |
+| `auto_network` | `boolean` | `true` | Automatically keeps `lan_ip`, `mac_address`, and `vpn_ip` synchronized with active Windows network adapters and Tailscale state. Disabled automatically if addresses are edited manually; re-enabled via the **Auto IP / MAC / VPN** button. |
+| `token` | `string` | *(generated)* | Shared secret authentication token. Cryptographically generated on first run (`secrets.token_hex`). Passed via `X-Auth-Token`, `Authorization: Bearer`, query `?token=`, cookie, or `/api/auth/login`. |
+| `lan_ip` | `string` | `""` *(auto-detected)* | Primary IPv4 address of the host machine on the local network. |
+| `vpn_ip` | `string` | `""` *(auto-detected)* | Tailscale IPv4 address (`100.x.x.x`) assigned to the host machine when Tailscale is running. |
+| `wol_relay_ip` | `string` | `""` | IPv4 / Tailscale address of the secondary relay device for remote Wake-on-LAN. |
+| `mac_address` | `string` | `""` *(auto-detected)* | Hardware MAC address of the active physical network adapter used for Magic Packets. |
+| `port` | `integer` | `5000` | TCP port for the primary Flask server and web client (cannot overlap with `5050`–`5055`). |
 | `relay_port` | `integer` | `5050` | TCP port for the Wake-on-LAN relay service (`wol_relay.py`). |
-| `language` | `string` | `"en"` | Interface language code (`"en"`, `"ru"`, `"uk"`). |
-| `cors_allowed_origins` | `array` | `["http://localhost:*", ...]` | Allowed HTTP Origin headers for CORS protection. Supports wildcard subnets for trusted local LAN and Tailscale mesh addresses. |
+| `language` | `string` | `"ru"` | Interface language code (`"en"`, `"ru"`, `"uk"`). |
+| `cors_allowed_origins` | `array` | `["http://localhost:*", ...]` | Allowed HTTP `Origin` patterns for CORS protection. Supports wildcard subnets for local LAN and Tailscale mesh addresses. |
 
-To change only the authentication password at any time, run:
+To change or rotate the authentication password from the command line at any time, run:
 ```cmd
-change_password.exe
+change_password.bat
 ```
-*(Or run `change_password.bat`)*
 
 ---
 
 ## REST API Reference
 
-All state-altering requests require authentication via the `X-Auth-Token` HTTP header or a `token` JSON property in the request body.
+All protected requests require authentication via the `X-Auth-Token` header, `Authorization: Bearer <token>`, session cookie, or a `token` JSON property in the request body.
 
-### System & Health
+### System, Auth & Health
 
-| Method | Endpoint | Description |
-|:---|:---|:---|
-| `GET` | `/status` | Returns system telemetry, CPU/RAM utilization, current volume, active media, and server uptime. |
-| `GET` | `/health` | Minimal health check endpoint used by the supervisor process. |
-| `GET` | `/actions/log` | Returns the recent actions audit trail. |
+| Method | Endpoint | Payload Example | Description |
+|:---|:---|:---|:---|
+| `GET` | `/status` | N/A | Returns server health (`"online"`), instance ID, hostname, OS info, and active timers. |
+| `GET` | `/history` | N/A | Returns the recent actions audit trail from `actions_log.jsonl`. |
+| `POST` | `/api/auth/login` | `{"token": "..."}` | Authenticates the client and sets an `HttpOnly` session cookie. |
+| `GET/POST` | `/api/auth/verify` | N/A | Verifies whether the current token/session is valid and reports lockout status. |
+| `POST` | `/api/auth/rotate` | N/A | Generates and saves a new random authentication token. |
+| `GET` | `/api/lan_info` | N/A | Returns configured LAN/VPN IPs, ports, and connection URLs. |
+| `GET` | `/download/apk` | N/A | Downloads the signed `PC_Control.apk` Android installer package. |
+| `GET` | `/download/wol_relay.py` | N/A | Downloads the standalone `wol_relay.py` script. |
 
 ### Audio & Volume
 
 | Method | Endpoint | Payload Example | Description |
 |:---|:---|:---|:---|
-| `GET` | `/volume` | N/A | Returns master volume percentage and mute status. |
-| `POST` | `/volume` | `{"percent": 45}` | Sets the system master volume level (0–100). |
-| `GET` | `/app_volumes` | N/A | Returns a list of active per-application audio sessions. |
-| `POST` | `/app_volume` | `{"pid": 4820, "percent": 70}` | Sets the volume level for a specific application process. |
-| `POST` | `/app_volume/mute` | `{"pid": 4820, "mute": true}` | Toggles mute on an application audio session. |
+| `GET` | `/volume` | N/A | Returns master volume percentage (`percent`) and `muted` state. |
+| `POST` | `/volume` | `{"percent": 45}` | Sets the system master volume level (`0`–`100`). |
+| `POST` | `/mute` | `{"mute": true}` | Sets or toggles master system audio mute. |
+| `GET` | `/app_volumes` | N/A | Returns a list of active per-application WASAPI audio sessions (`pid`, `name`, `percent`, `muted`). |
+| `POST` | `/app_volume` | `{"pid": 4820, "percent": 70}` | Sets the volume level (`0`–`100`) for a specific application process. |
+| `POST` | `/app_volume/mute` | `{"pid": 4820, "mute": true}` | Mutes or unmutes a specific application audio session by PID. |
 
-### Media Player (SMTC)
+### Media Player (SMTC & YouTube Music Queue)
 
 | Method | Endpoint | Payload Example | Description |
 |:---|:---|:---|:---|
-| `GET` | `/media/status` | N/A | Returns playback status, track metadata, and album art URI. |
-| `POST` | `/media/play_pause` | N/A | Toggles play/pause state. |
-| `POST` | `/media/next` | N/A | Skips to the next track in the active media player. |
-| `POST` | `/media/prev` | N/A | Skips to the previous track. |
-| `GET` | `/media/queue` | N/A | Returns the current track list from the active player session. |
-| `POST` | `/media/play_index` | `{"index": 3}` | Jumps to a specific track index in the active queue. |
-| `GET` | `/media/history` | N/A | Returns local playback history. |
+| `GET` | `/media/now` | N/A | Returns active player availability, playback status, track metadata, position, duration, and thumbnail. |
+| `POST` | `/media/control` | `{"action": "play_pause"}` | Executes media transport commands (`play_pause`, `next`, `prev`, `stop`, `repeat`, `shuffle`, `seek`). |
+| `POST` | `/media/volume` | `{"percent": 80}` | Adjusts volume for the active media player session. |
+| `POST` | `/media/mode` | `{"mode": "normal"}` | Switches media controller targeting mode. |
+| `GET` | `/media/queue` | N/A | Returns the live playback queue (`tracks`) and listening history (`history`). |
+| `POST` | `/media/queue/refresh` | N/A | Forces a live refresh of the active player queue. |
+| `POST` | `/media/queue/play` | `{"index": 2}` | Jumps to and plays a specific track in the queue. |
+| `POST` | `/media/queue/play_next` | `{"video_id": "..."}` | Inserts a track immediately after the current song in the queue. |
+| `POST` | `/media/queue/add` | `{"video_id": "..."}` | Appends a track to the active playback queue. |
+| `POST` | `/media/queue/remove` | `{"index": 2}` | Removes a track from the queue by index. |
+| `GET` | `/media/search` | `?q=artist+track` | Searches YouTube Music tracks and returns metadata and video IDs. |
+| `POST` | `/media/history/play` | `{"video_id": "..."}` | Replays a track from the saved listening history. |
 
 ### Process Management & System Controls
 
 | Method | Endpoint | Payload Example | Description |
 |:---|:---|:---|:---|
-| `GET` | `/processes` | N/A | Lists running user processes sorted by memory usage. |
-| `POST` | `/process/kill` | `{"pid": 10240}` | Forcefully terminates a process by PID. |
-| `GET` | `/keyboard/layout` | N/A | Returns active and installed Windows keyboard layouts. |
-| `POST` | `/keyboard/toggle` | N/A | Cycles to the next installed keyboard layout. |
+| `GET` | `/processes` | N/A | Lists running user processes sorted alphabetically (`name`, `pid`). |
+| `POST` | `/processes/kill` | `{"pid": 10240}` | Forcefully terminates a user process by PID (`taskkill /PID /T /F`). |
+| `GET` | `/keyboard/languages` | N/A | Returns current and installed Windows input languages (`current`, `languages`). |
+| `POST` | `/keyboard/switch_language` | N/A | Cycles to the next installed keyboard layout. |
+| `POST` | `/keyboard/set_language` | `{"hkl": "0x04090409"}` | Activates a specific keyboard layout by HKL identifier. |
+| `GET` | `/screenshot` | N/A | Captures and returns a full multi-monitor desktop PNG screenshot. |
 
-### Power & Power Timers
-
-| Method | Endpoint | Payload Example | Description |
-|:---|:---|:---|:---|
-| `POST` | `/power/shutdown` | N/A | Initiates an immediate system shutdown. |
-| `POST` | `/power/restart` | N/A | Initiates an immediate system restart. |
-| `POST` | `/power/sleep` | N/A | Puts the system into sleep mode (ACPI S3). |
-| `POST` | `/power/lock` | N/A | Locks the active Windows session (`LockWorkStation`). |
-| `POST` | `/power/sleep_timer` | `{"minutes": 45}` | Schedules a delayed shutdown. |
-| `POST` | `/power/cancel_timer` | N/A | Cancels an active sleep timer. |
-
-### Streaming & Automation
+### Power, Sleep Timer & Wake-on-LAN
 
 | Method | Endpoint | Payload Example | Description |
 |:---|:---|:---|:---|
-| `POST` | `/stream/offer` | `{"sdp": "...", "type": "offer"}` | WebRTC SDP handshake for desktop video/audio stream. |
-| `GET` | `/presets` | N/A | Returns saved application launch routines. |
-| `POST` | `/presets/run` | `{"id": "preset_gaming"}` | Executes a configured automation sequence. |
+| `POST` | `/action` | `{"action": "shutdown"}` | Executes a host power command (`shutdown`, `restart`, `sleep`, `lock`, `launch_cs2`). |
+| `POST` | `/shutdown_timer` | `{"minutes": 45}` | Schedules a delayed system shutdown (`1`–`1440` minutes). |
+| `POST` | `/shutdown_timer/cancel` | N/A | Cancels an active shutdown timer. |
+| `GET` | `/shutdown_timer/status` | N/A | Returns remaining seconds on the active shutdown timer. |
+| `POST` | `/api/wol` | `{"mac": "AA-BB-CC-DD-EE-FF"}` | Sends local broadcast UDP Magic Packets (and forwards to `wol_relay_ip` if configured). |
+
+### Streaming & Launch Presets
+
+| Method | Endpoint | Payload Example | Description |
+|:---|:---|:---|:---|
+| `POST` | `/webrtc/offer` | `{"sdp": "...", "type": "offer"}` | WebRTC SDP handshake proxied to `tools/streamer.exe` for desktop video/audio streaming. |
+| `POST` | `/webrtc/close` | `{"session_id": "..."}` | Closes an active WebRTC streaming session. |
+| `GET` | `/screen/monitors` | N/A | Lists connected display monitors and resolutions. |
+| `POST` | `/screen/config` | `{"monitor": 0, "fps": 30, "height": 720}` | Updates capture monitor, target FPS, JPEG quality, and resolution height. |
+| `GET/POST` | `/screen/volume` | `{"percent": 80, "muted": false}` | Gets or sets the streaming audio gain and mute state. |
+| `GET` | `/screen/stream` | N/A | Multipart MJPEG fallback desktop video stream. |
+| `GET` | `/audio` | N/A | Chunked WASAPI loopback audio stream. |
+| `GET` | `/api/presets` | N/A | Returns saved multi-step launch presets and current execution status. |
+| `POST` | `/api/presets/save` | `{"name": "Gaming", "steps": [...]}` | Creates or updates a launch preset sequence. |
+| `POST` | `/api/presets/delete` | `{"id": "..."}` | Deletes a saved launch preset. |
+| `POST` | `/api/presets/run` | `{"id": "..."}` | Starts asynchronous execution of a launch preset. |
+| `POST` | `/api/presets/cancel` | N/A | Cancels a currently running preset sequence. |
+| `GET` | `/api/presets/status` | N/A | Returns live progress of the active launch preset. |
+| `GET` | `/api/programs/search` | `?q=steam` | Searches Start Menu and installed Windows applications for preset creation. |
 
 ---
 
 ## Security Model
 
-- **Zero Hardcoded Credentials**: PC Control does not contain static default passwords (such as `123456789`). Every installation automatically generates a unique, cryptographically random 128-bit authentication token (`secrets.token_hex`) on initial startup and stores it in `config.json`.
+- **Zero Hardcoded Credentials**: PC Control does not contain static default passwords. Every installation automatically generates a unique, cryptographically random authentication token (`secrets.token_hex`) on initial startup and stores it in `config.json`.
 - **Constant-Time Verification**: All token comparisons use `secrets.compare_digest` to eliminate timing side-channel analysis.
 - **Two-Tier Brute-Force Rate Limiting & IP Lockout**:
   - Evaluation window: **120 seconds** (`LOCKOUT_WINDOW = 120s`).
   - **External / Public IP Addresses**: Exceeding **5 failed attempts** within 120 seconds triggers an immediate **180-second (3-minute)** IP lockout (`LOCKOUT_MAX_ATTEMPTS = 5`, `LOCKOUT_DURATION = 180s`).
   - **Trusted Local & Mesh Networks** (RFC 1918 subnets `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, loopback `127.0.0.1`, and Tailscale CGNAT `100.64.0.0/10`): Threshold is set to **15 failed attempts** within 120 seconds, with a brief cooldown of **30 seconds** (`LOCKOUT_LAN_MAX = 15`, `LOCKOUT_LAN_DURATION = 30s`).
-  - *Dual-tier rationale*: The relaxed threshold on trusted private subnets prevents accidental lockouts and lock-in loops for legitimate household smartphones and family members due to typos or stale cached app tokens, while preserving aggressive throttling against scans from untrusted interfaces.
   - **Persistent Cooldowns**: Active lockouts are persisted to disk in `logs/lockouts.json`, ensuring temporary blocks survive server restarts.
-  - **Immediate Reset**: A successful authentication immediately clears the failure counter for that IP. Changing the password via the Launcher GUI or `change_password.exe` flushes all active lockouts across all addresses.
+  - **Immediate Reset**: A successful authentication immediately clears the failure counter for that IP. Changing the password via the Launcher GUI or `change_password.bat` flushes all active lockouts across all addresses.
 - **Strict Environment-Only Test Isolation**:
   - Test and safe modes cannot be enabled or forged via client HTTP headers (e.g. `X-Safe-Mode`).
-  - Test mode is strictly bound to process environment variables (`PC_CONTROL_TEST_MODE=1` or `SAFE_TEST_MODE=1`), preventing unauthorized external clients from spoofing test flags or bypassing security gates.
+  - Test mode is strictly bound to server process environment variables (`PC_CONTROL_TEST_MODE=1` or `SAFE_TEST_MODE=1`), preventing external clients from spoofing test flags.
+- **Local Control Panel Origin & DNS-Rebinding Protection**:
+  - The local desktop service (`127.0.0.1:5055`) validates `Host` and `Origin` headers to block cross-origin browser requests and DNS-rebinding attacks, and enforces a strict 64 KiB request payload cap.
 - **Fine-Grained CORS Whitelisting**:
-  - Inbound HTTP `Origin` headers are strictly validated against `cors_allowed_origins` in `config.json`.
-  - Supports wildcard subnet patterns (`http://localhost:*`, `http://192.168.*`, `http://100.*`, `http://10.*`) for local LAN and Tailscale access. Requests from unauthorized origins are rejected with HTTP 403 Forbidden.
-- **Two-Point SHA-256 Release Integrity Verification**:
-  - Full updates come from official GitHub Releases and require `PC_Control_Windows.zip`, `release-manifest.json` and `SHA256SUMS.txt`. Legacy releases without these assets are not installed.
-  - An official `SHA256SUMS.txt` manifest is parsed and validated in memory before any binary touches the file system (implemented across both Python `control_panel.py` and C# `Launcher.cs`).
-  - Strict Portable Executable (PE) validation (`MZ` magic bytes, `PE\0\0` offset) and file size sanity checks (20 KB – 50 MB) are enforced.
-  - Unauthenticated `git pull origin main` execution has been eliminated.
+  - Inbound HTTP `Origin` headers on the main server are validated against `cors_allowed_origins` in `config.json`.
+  - Supports wildcard subnet patterns (`http://localhost:*`, `http://192.168.*`, `http://100.*`, `http://10.*`) for local LAN and Tailscale access. Requests from unauthorized origins are rejected with HTTP `403 Forbidden`.
+- **Cryptographic Release & Full-Update Verification**:
+  - Full updates (`scripts/full_update.py`) accept only official GitHub Releases URLs (`github.com/lavi-666/pc-control`) containing `PC_Control_Windows.zip`, `release-manifest.json`, and `SHA256SUMS.txt`.
+  - Both the archive digest and every individual managed file's SHA-256 checksum in `release-manifest.json` are verified before any file is replaced on disk.
+  - Strict path validation (`managed_name`) rejects path traversal (`..`), Windows reserved device names (`CON`, `NUL`, `COM1`, etc.), case collisions, and any attempt to overwrite user data (`config.json`, `launch_presets.json`).
+  - Updates run from a private copy of the Python runtime, verify post-update server/panel startup, and automatically restore the backup on failure.
 - **Network Profile Isolation**:
-  - Windows Defender Firewall rules explicitly bind TCP port 5000 access to `Private` network profiles, permitting only `LocalSubnet` and `100.64.0.0/10`. Inbound packets from arbitrary public IP addresses are blocked at the packet filter.
-- **Transport Encryption**:
-  - Remote connections routed through Tailscale are encapsulated in point-to-point WireGuard tunnels using ChaCha20-Poly1305 and Curve25519 cryptography.
+  - Windows Defender Firewall rules explicitly bind TCP port access to `Private` network profiles, permitting only `LocalSubnet` and `100.64.0.0/10`.
 
 ---
 
 ## Testing & Quality Assurance
 
-The repository includes a comprehensive 650-cycle regression test suite covering all functional modules:
+The repository includes two complementary automated test suites executed in CI on every push:
+
+### 1. Release, Launcher, Updater & Network Audit Suite (64 Unit/Integration Tests)
+Tests the transactional full-update engine, archive security guards, standalone packaging, C# / Python launcher HTTP server (`:5055`), and automatic LAN/Tailscale network discovery in isolated temporary directories without touching the user's running server:
 
 ```cmd
-python tests/run_all_650_tests.py
+runtime\python.exe -m unittest tests.test_update_system tests.test_distribution_audit tests.test_launcher_audit tests.test_network_setup -v
 ```
 
-The test runner executes 26 modular batches:
+### 2. Full 650-Cycle Server Regression Suite
+Covers all 26 server functional batches (650 test cycles) in safe test mode:
+
+```cmd
+set PC_CONTROL_TEST_MODE=1
+set SAFE_TEST_MODE=1
+runtime\python.exe tests/run_all_650_tests.py
+```
+
+The 26 batches validate:
 1. Core API contracts & authentication headers
 2. Boundary values & parameter clamping
 3. Malformed data handling, SQLi & XSS injection resilience
@@ -559,19 +621,14 @@ The test runner executes 26 modular batches:
 25. Multi-pass deterministic fuzzing
 26. Cross-subsystem invariant verification
 
-To run an individual test batch directly:
-```cmd
-python tests/test_batch_08.py
-```
-
 ---
 
 ## Troubleshooting
 
 ### Client Cannot Connect over Local Wi-Fi
 - Verify your Windows network connection is set to **Private network** (Settings → Network & internet → Properties). Windows blocks inbound connections on Public networks.
-- Re-apply the firewall rule by running `scripts\apply_firewall_rule.bat` as Administrator.
-- Confirm the client and host are connected to the same router subnet (not isolated guest networks).
+- Click **Configure** on the Firewall step in `Launcher.exe` (or run `scripts\apply_firewall_rule.bat` as Administrator).
+- Confirm the client and host are connected to the same router subnet (not isolated guest Wi-Fi networks).
 
 ### Computer Prompts for Password or PIN after Wake-on-LAN
 - Run `scripts\2_setup_autologon.cmd` as Administrator.
@@ -583,25 +640,30 @@ python tests/test_batch_08.py
 - Check that the physical Ethernet port LED remains illuminated after shutdown.
 - Run the diagnostic script in a terminal:
   ```cmd
-  python tools/diag_wol.py
+  runtime\python.exe tools/diag_wol.py
   ```
 
-### `winsdk` Installation Issue on Python 3.13
-- The `winsdk` package provides wheels for Python 3.8 through 3.12.
-- For Python 3.13 systems, create a Python 3.11/3.12 virtual environment:
+### Missing or Corrupted Python Runtime / Libraries
+- If `runtime/` is missing or a library fails to import, simply open `Launcher.exe` and click **Install / Repair Dependencies** (`Установить / проверить библиотеки`), or run:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File scripts\bootstrap_runtime.ps1 -ProjectRoot .
+  ```
+  This downloads the official embeddable CPython 3.12 runtime and installs all locked wheels (`winsdk`, `pycaw`, `pyaudiowpatch`, `Pillow`, `psutil`, `Flask`, `qrcode`) into `runtime/`.
+
+### Compiling Binaries & Release Package from Source
+- **C# Desktop Launcher (`Launcher.exe`)**:
+  ```powershell
+  C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /optimize+ /target:winexe /win32icon:pc_control.ico /out:Launcher.exe scripts\Launcher.cs
+  ```
+- **Native Rust Streaming Engine (`tools/streamer.exe`)**:
   ```cmd
-  py -3.12 -m venv venv
-  venv\Scripts\pip install -r requirements.txt
+  cargo build --release --manifest-path streamer_rs/Cargo.toml
+  copy streamer_rs\target\release\streamer.exe tools\streamer.exe
   ```
-  `start_server.bat` automatically checks for and uses a `venv` directory if present.
-
-### Compiling Native Streaming Engine from Source
-To rebuild `tools/streamer.exe` from the Rust source code:
-```cmd
-cd streamer_rs
-cargo build --release
-copy target\release\streamer.exe ..\tools\streamer.exe
-```
+- **Complete Windows Distribution (`dist/PC_Control_Windows.zip`)**:
+  ```cmd
+  runtime\python.exe scripts/package_windows.py
+  ```
 
 ---
 
