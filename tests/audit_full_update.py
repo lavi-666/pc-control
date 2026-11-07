@@ -103,7 +103,7 @@ panel.main()
         while time.monotonic() < deadline:
             try:
                 state = json.loads((base / 'logs/update_status.json').read_text(encoding='utf-8'))
-                if state['phase'] == 'recovery_required':
+                if state['phase'] in ('recovery_required', 'failed'):
                     raise AssertionError(state)
                 if state['phase'] == expected and not (base / update.PENDING).exists():
                     with urllib.request.urlopen(f'http://127.0.0.1:{server_port}/status', timeout=2) as response:

@@ -1,4 +1,5 @@
 {
+  "auto_network": true,
   "token": "CHANGE_ME_SECURE_PASSWORD",
   "lan_ip": "192.168.0.100",
   "vpn_ip": "",

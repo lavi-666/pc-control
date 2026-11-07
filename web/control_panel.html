@@ -1916,8 +1916,9 @@
                 <div class="instr-missing-desc" id="txtMissingDesc" data-i18n="instr_missing_desc">
                   In some Windows 10 and Windows 11 configurations, automatic sign-in through <code>netplwiz</code> may be unavailable due to Windows Hello settings. In that case, check <strong>Settings → Accounts → Sign-in options</strong>, including the setting that requires Windows Hello sign-in for Microsoft accounts.
                 </div>
-                <div style="margin-top:8px;">
+                <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:8px;">
                   <button type="button" class="btn btn-secondary btn-sm" onclick="openSigninSettings(this)" data-i18n="btn_open_signin_settings">Open Windows Sign-In Options</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btnFullAutologonSetup" onclick="runAction('setup_autologon', {}, this)" data-i18n="btn_auto_setup_wol">Auto-Setup (Startup + Wake-on-LAN + Autologon)</button>
                 </div>
               </div>
 
@@ -2334,7 +2335,6 @@
       badge_optional: "Optional",
       step5_desc: "Configure automatic sign-in into Windows without entering a password at lockscreen on startup (ideal for Wake-on-LAN).",
       btn_setup: "Configure",
-      btn_configure: "Configure",
       instr_title: "Instructions",
       tip_toggle_instr: "Show / hide step-by-step instructions",
       instr_step1: "Click “Configure” to open the Windows system utility <code>netplwiz</code>.",
@@ -2352,6 +2352,7 @@
       btn_disable_hello: "Disable Windows Hello",
       btn_enable_hello: "Enable Windows Hello",
       hello_modal_title: "Windows Hello",
+      hello_modal_desc: "Enabling Windows Hello may make automatic Windows sign-in unavailable. If you use automatic sign-in without entering your password, enabling this feature may prevent it from working. Do you want to continue?",
       hello_modal_enable_title: "Enable Windows Hello",
       hello_modal_enable_desc: "Enabling Windows Hello may make automatic Windows sign-in unavailable. If you use automatic sign-in without entering your password, enabling this feature may prevent it from working. Do you want to continue?",
       hello_modal_disable_title: "Disable Windows Hello",
@@ -2508,7 +2509,6 @@
       badge_optional: "Опционально",
       step5_desc: "Настройка автоматического входа в Windows без ввода пароля на экране блокировки при включении компьютера (идеально для удалённого запуска через Wake-on-LAN).",
       btn_setup: "Настроить",
-      btn_configure: "Настроить",
       instr_title: "Инструкция",
       tip_toggle_instr: "Показать / скрыть пошаговую инструкцию",
       instr_step1: "Нажмите «Настроить», чтобы открыть системную утилиту Windows <code>netplwiz</code>.",
@@ -2526,6 +2526,7 @@
       btn_disable_hello: "Отключить Windows Hello",
       btn_enable_hello: "Включить Windows Hello",
       hello_modal_title: "Windows Hello",
+      hello_modal_desc: "Управление требованием входа через Windows Hello для учетных записей Microsoft.",
       hello_modal_enable_title: "Включение Windows Hello",
       hello_modal_enable_desc: "Включение Windows Hello может сделать автоматический вход в Windows недоступным. Если вы используете автоматический вход без ввода пароля, включение этой функции может помешать его работе. Вы уверены, что хотите продолжить?",
       hello_modal_disable_title: "Отключение Windows Hello",
@@ -2682,7 +2683,6 @@
       badge_optional: "Опціонально",
       step5_desc: "Налаштування автоматичного входу до Windows без введення пароля на екрані блокування під час увімкнення комп'ютера (ідеально для віддаленого запуску через Wake-on-LAN).",
       btn_setup: "Налаштувати",
-      btn_configure: "Налаштувати",
       instr_title: "Інструкція",
       tip_toggle_instr: "Показати / приховати покрокову інструкцію",
       instr_step1: "Натисніть «Налаштувати», щоб відкрити системну утиліту Windows <code>netplwiz</code>.",
@@ -2700,6 +2700,7 @@
       btn_disable_hello: "Вимкнути Windows Hello",
       btn_enable_hello: "Увімкнути Windows Hello",
       hello_modal_title: "Windows Hello",
+      hello_modal_desc: "Керування вимогою входу через Windows Hello для облікових записів Microsoft.",
       hello_modal_enable_title: "Увімкнення Windows Hello",
       hello_modal_enable_desc: "Увімкнення Windows Hello може зробити автоматичний вхід до Windows недоступним. Якщо ви використовуєте авто-вхід без введення пароля, увімкнення цієї функції може завадити його роботі. Ви впевнені, що хочете продовжити?",
       hello_modal_disable_title: "Вимкнення Windows Hello",
@@ -2811,9 +2812,9 @@
     }
   };
 
-  Object.assign(I18N.en, {network_settings: 'Network settings', network_reload: 'Reload saved', network_hint: 'Stop the server before changing its port. Apply the firewall rule again after saving.'});
-  Object.assign(I18N.ru, {network_settings: 'Настройки сети', network_reload: 'Вернуть сохранённые', network_hint: 'Перед сменой порта остановите сервер. После сохранения заново примените правило брандмауэра.'});
-  Object.assign(I18N.uk, {network_settings: 'Налаштування мережі', network_reload: 'Відновити збережені', network_hint: 'Перед зміною порту зупиніть сервер. Після збереження повторно застосуйте правило брандмауера.'});
+  Object.assign(I18N.en, {network_settings: 'Network settings', network_reload: 'Reload saved', network_hint: 'Stop the server before changing its port. Apply the firewall rule again after saving.', btn_auto_setup_wol: 'Auto-Setup (Startup + Wake-on-LAN + Autologon)'});
+  Object.assign(I18N.ru, {network_settings: 'Настройки сети', network_reload: 'Вернуть сохранённые', network_hint: 'Перед сменой порта остановите сервер. После сохранения заново примените правило брандмауэра.', btn_auto_setup_wol: 'Автонастройка (Автозапуск + Wake-on-LAN + Автовход)'});
+  Object.assign(I18N.uk, {network_settings: 'Налаштування мережі', network_reload: 'Відновити збережені', network_hint: 'Перед зміною порту зупиніть сервер. Після збереження повторно застосуйте правило брандмауера.', btn_auto_setup_wol: 'Автоналаштування (Автозапуск + Wake-on-LAN + Автовхід)'});
 
   Object.assign(I18N.en, {phone_title:'Connect phone · QR', phone_intro:'Scan, open the remote and download APK', phone_steps:'Connect the phone and PC to the same Wi-Fi/router. Scan with the phone camera, open the link, then tap Download APK.', phone_apk_note:'Android: allow installation from this browser if prompted. In the installed app, enter the PC address shown here and the access password from the launcher. The QR grants access to the web remote; it does not configure the installed APK. Keep this QR private.', phone_firewall:'If the link does not open: apply the firewall rule in the launcher, check the LAN IP in Network settings, and disable guest Wi-Fi isolation.', phone_invalid:'Set a reachable LAN IPv4 address in Network settings first.'});
   Object.assign(I18N.ru, {phone_title:'Подключить телефон · QR', phone_intro:'Сканировать, открыть пульт и скачать APK', phone_steps:'Подключите телефон и ПК к одному Wi-Fi/роутеру. Сканируйте камерой телефона, откройте ссылку и нажмите «Скачать APK».', phone_apk_note:'Android: разрешите установку из браузера, если появится запрос. В установленном приложении укажите адрес ПК ниже QR и пароль доступа из лаунчера. QR подключает веб-пульт, но не настраивает установленный APK. Не передавайте QR посторонним.', phone_firewall:'Если ссылка не открывается: примените правило брандмауэра в лаунчере, проверьте LAN IP в настройках сети и изоляцию гостевого Wi-Fi.', phone_invalid:'Сначала укажите доступный LAN IPv4 в настройках сети.'});
@@ -3519,7 +3520,7 @@
           showToast(errTitle, errMsg, 'error', 4500);
         }
       } else {
-        if (action === 'start_server' || action === 'restart_server' || action === 'stop_server' || action === 'set_password' || action === 'rebuild_apk' || action === 'install_deps' || action === 'launch_tailscale') {
+        if (action === 'start_server' || action === 'restart_server' || action === 'stop_server' || action === 'set_password' || action === 'rebuild_apk' || action === 'install_deps' || action === 'launch_tailscale' || action === 'apply_firewall' || action === 'setup_autologon') {
           showToast(dict.toast_action_success, data.message || dict.toast_ts_launched || dict.toast_apk_success, 'success', 3500);
         }
       }

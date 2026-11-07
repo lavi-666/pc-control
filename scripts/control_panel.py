@@ -64,7 +64,14 @@ def save_config_data(cfg):
                                          prefix="config-", suffix=".tmp", delete=False) as f:
             temp_path = Path(f.name)
             json.dump(cfg, f, indent=2, ensure_ascii=False)
-        os.replace(temp_path, CONFIG_FILE)
+        for attempt in range(5):
+            try:
+                os.replace(temp_path, CONFIG_FILE)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.02)
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
@@ -728,14 +735,18 @@ def load_config_data() -> dict:
 
 def _load_config_data() -> dict:
     if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if "language" not in data:
-                    data["language"] = "en"
-                return data
-        except Exception:
-            pass
+        for attempt in range(5):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if "language" not in data:
+                        data["language"] = "en"
+                    return data
+            except PermissionError:
+                if attempt < 4:
+                    time.sleep(0.02)
+            except Exception:
+                break
 
     # Первоначальное создание config.json с авто-определением сетевых настроек
     lan_ip = get_local_ip()
@@ -779,10 +790,7 @@ def _load_config_data() -> dict:
         ]
     }
     try:
-        tmp_file = CONFIG_FILE.with_suffix(".json.tmp")
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_file, CONFIG_FILE)
+        save_config_data(cfg)
         append_log("[FIRST RUN] Auto-generated config.json with detected system network parameters.")
     except Exception as e:
         append_log(f"[WARNING] Could not write config.json: {e}")
@@ -807,6 +815,8 @@ def run_install_dependencies_task(auto_start_server: bool = False):
         global _is_busy, _busy_action, _cached_deps_time
         try:
             req_file = BASE_DIR / "requirements-runtime.lock"
+            if not req_file.exists():
+                req_file = BASE_DIR / "requirements.txt"
             if not req_file.exists():
                 append_log("[ERROR] requirements.txt not found in project root directory.")
                 return
@@ -835,9 +845,12 @@ def run_install_dependencies_task(auto_start_server: bool = False):
             _cached_deps_time = 0.0
 
             deps_after = check_python_deps()
-            if proc.returncode == 0 and deps_after.get("installed", False):
-                append_log("[SUCCESS] All required Python libraries installed successfully!")
-                if auto_start_server:
+            if deps_after.get("installed", False):
+                if proc.returncode == 0:
+                    append_log("[SUCCESS] All required Python libraries installed successfully!")
+                else:
+                    append_log("[SUCCESS] All required Python libraries are already installed and verified!")
+                if auto_start_server and not is_server_running():
                     append_log("[FIRST RUN] Automatically starting PC Control server and watchdog supervisor...")
                     time.sleep(0.5)
                     ok, code, title, msg = start_server_process()
@@ -1083,7 +1096,7 @@ def stop_server_process() -> tuple:
     """
     # 1. Записываем флаг ручной остановки, чтобы watchdog не перезапускал сервер
     try:
-        with open(LOGS_DIR / "manual_stop.flag", "w") as f:
+        with open(LOGS_DIR / "manual_stop.flag", "w", encoding="utf-8") as f:
             f.write("manual_stop")
     except Exception:
         pass
@@ -1850,15 +1863,25 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
 
                 ok, code, msg = run_elevated_command(
                     "cmd.exe",
-                    f'/c ""{script_path}""',
+                    f'/c "set "PC_CONTROL_NO_PAUSE=1" && "{script_path}""',
                     str(BASE_DIR),
                     show=True
                 )
                 if ok:
                     global _cached_fw_time
+                    for _ in range(20):
+                        _cached_fw_time = 0.0
+                        if is_firewall_configured():
+                            break
+                        time.sleep(0.25)
                     _cached_fw_time = 0.0
-                    append_log("Firewall setup window opened (please confirm UAC in Windows).")
-                    self.send_json({"ok": True, "message": "Окно настройки брандмауэра открыто (подтвердите UAC)"})
+                    fw_active = is_firewall_configured()
+                    if fw_active:
+                        append_log("Windows Firewall rules successfully applied and verified.")
+                        self.send_json({"ok": True, "firewall_ok": True, "message": "Правила брандмауэра Windows успешно применены"})
+                    else:
+                        append_log("Firewall setup window opened (please confirm UAC in Windows).")
+                        self.send_json({"ok": True, "firewall_ok": False, "message": "Окно настройки брандмауэра открыто (подтвердите UAC)"})
                 else:
                     append_log(f"[ERROR] {msg} ({code})")
                     self.send_json({
@@ -2060,92 +2083,45 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             if action == "launch_tailscale":
+                global _cached_ts_time
+                lang = req_data.get("lang") or load_config_data().get("language", "ru")
                 bins = find_tailscale_binaries()
+
+                # 1. Если Tailscale не установлен — запускаем локальный установщик или скачиваем официальный
                 if not bins.get("installed"):
                     if not _background_lock.acquire(False):
                         self.send_json({"ok": False, "message": "Another operation is running"}, 409)
                         return
                     try:
-                        from scripts.network_setup import download_tailscale
-                        installer = download_tailscale(BASE_DIR / "logs/installers")
-                        os.startfile(str(installer))
-                        self.send_json({"ok": True, "installer_launched": True, "message": "Tailscale: подтвердите установку Windows, затем войдите в аккаунт. IP подтянется автоматически."})
+                        installer_file = None
+                        for cand in (
+                            [BASE_DIR / "tailscale-setup-1.102.4.exe"]
+                            + list((BASE_DIR / "logs/installers").glob("tailscale-setup*.exe"))
+                            + list(BASE_DIR.glob("tailscale-setup*.exe"))
+                        ):
+                            if cand.is_file() and cand.stat().st_size > 1_000_000:
+                                installer_file = cand
+                                break
+                        if not installer_file:
+                            from scripts.network_setup import download_tailscale
+                            installer_file = download_tailscale(BASE_DIR / "logs/installers")
+                        os.startfile(str(installer_file))
+                        append_log(f"Launched Tailscale installer: {installer_file.name}")
+                        msg = (
+                            "Tailscale: подтвердите установку Windows, затем войдите в аккаунт. IP подтянется автоматически." if lang == "ru" else
+                            "Tailscale: підтвердіть встановлення Windows, потім увійдіть в акаунт. IP підтягнеться автоматично." if lang == "uk" else
+                            "Tailscale: confirm Windows installation, then sign in. The VPN IP will be detected automatically."
+                        )
+                        self.send_json({"ok": True, "installer_launched": True, "message": msg})
                     except Exception as error:
+                        append_log(f"[ERROR] Tailscale installer error: {error}")
                         self.send_json({"ok": False, "message": "Tailscale installer: " + str(error)}, 500)
                     finally:
                         _background_lock.release()
                     return
-                lang = req_data.get("lang") or "ru"
-                installer_file = None
-                for cand in [BASE_DIR / "tailscale-setup-1.102.4.exe"] + list(BASE_DIR.glob("tailscale-setup*.exe")):
-                    if cand.is_file():
-                        installer_file = cand
-                        break
-
-                # 1. Если Tailscale не установлен — запускаем локальный установщик или открываем страницу загрузки
-                if not bins.get("installed"):
-                    ts_info = get_tailscale_info()
-                    if not ts_info.get("installed"):
-                        if installer_file:
-                            try:
-                                os.startfile(str(installer_file))
-                                append_log(f"Launched local Tailscale installer: {installer_file.name}")
-                                msg = (
-                                    f"Запущен установщик {installer_file.name}" if lang == "ru" else
-                                    f"Запущено інсталятор {installer_file.name}" if lang == "uk" else
-                                    f"Launched installer {installer_file.name}"
-                                )
-                                self.send_json({"ok": True, "message": msg, "installer_launched": True})
-                                return
-                            except Exception as e:
-                                append_log(f"Could not start local installer: {e}")
-                        try:
-                            webbrowser.open("https://tailscale.com/download/windows")
-                            append_log("Opened Tailscale official download page in browser.")
-                        except Exception:
-                            pass
-                        if lang == "ru":
-                            err_title = "Tailscale не установлен"
-                            err_msg = "Открыта страница загрузки Tailscale. Скачайте и установите клиент для Windows."
-                            inst_hint = f"\n\nВ папке проекта обнаружен файл установщика: {installer_file.name}. Вы можете установить его." if installer_file else ""
-                            err_details = (
-                                "Исполняемые файлы Tailscale (tailscale-ipn.exe, tailscale.exe) не найдены "
-                                "в каталогах Program Files, реестре Windows и системном PATH.\n\n"
-                                "Для работы защищенного удаленного доступа скачайте и установите Tailscale:\n"
-                                f"https://tailscale.com/download/windows{inst_hint}"
-                            )
-                        elif lang == "uk":
-                            err_title = "Tailscale не встановлено"
-                            err_msg = "Відкрито сторінку завантаження Tailscale. Завантажте та встановіть клієнт для Windows."
-                            inst_hint = f"\n\nУ папці проекту виявлено файл інсталятора: {installer_file.name}." if installer_file else ""
-                            err_details = (
-                                "Виконувані файли Tailscale (tailscale-ipn.exe, tailscale.exe) не знайдено "
-                                "у каталогах Program Files, реєстрі Windows та системному PATH.\n\n"
-                                "Для роботи захищеного віддаленого доступу завантажте та встановіть Tailscale:\n"
-                                f"https://tailscale.com/download/windows{inst_hint}"
-                            )
-                        else:
-                            err_title = "Tailscale Not Installed"
-                            err_msg = "Opened Tailscale download page. Please download and install Tailscale for Windows."
-                            inst_hint = f"\n\nA local installer was found in the project folder: {installer_file.name}." if installer_file else ""
-                            err_details = (
-                                "Tailscale executables (tailscale-ipn.exe, tailscale.exe) were not found "
-                                "in Program Files, Windows Registry, or system PATH.\n\n"
-                                "To use secure remote control, please download and install Tailscale:\n"
-                                f"https://tailscale.com/download/windows{inst_hint}"
-                            )
-                        self.send_json({
-                            "ok": False,
-                            "error_code": "ERR_TAILSCALE_NOT_INSTALLED",
-                            "error_title": err_title,
-                            "message": err_msg,
-                            "details": err_details,
-                            "download_url": "https://tailscale.com/download/windows",
-                            "installer_exists": bool(installer_file)
-                        }, 404)
-                        return
 
                 # 2. Tailscale установлен — проверяем процесс трея (tailscale-ipn.exe)
+                _cached_ts_time = 0.0
                 is_ipn_running = False
                 try:
                     import psutil
@@ -2156,21 +2132,33 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+                gui_started = False
                 if not is_ipn_running:
                     if bins.get("shortcut") and bins["shortcut"].is_file():
                         try:
                             os.startfile(str(bins["shortcut"]))
+                            gui_started = True
                             append_log(f"Started Tailscale tray process via shortcut: {bins['shortcut'].name}")
                         except Exception as e:
                             append_log(f"Could not open Tailscale shortcut: {e}")
                     elif bins.get("gui") and bins["gui"].is_file():
                         try:
                             subprocess.Popen([str(bins["gui"])], cwd=str(bins["gui"].parent))
+                            gui_started = True
                             append_log(f"Started Tailscale GUI process: {bins['gui']}")
                         except Exception as e:
                             append_log(f"Could not start tailscale-ipn: {e}")
                 else:
                     append_log("Tailscale background service (tailscale-ipn) is already active.")
+
+                if bins.get("cli") and bins["cli"].is_file():
+                    ts_cur = get_tailscale_info()
+                    if not ts_cur.get("running"):
+                        try:
+                            subprocess.Popen([str(bins["cli"]), "up", "--unattended"], creationflags=NO_WINDOW)
+                            _cached_ts_time = 0.0
+                        except Exception:
+                            pass
 
                 # 3. Определяем URL интерфейса Tailscale
                 target_url = "http://100.100.100.100"
@@ -2189,32 +2177,40 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                         except Exception:
                             pass
 
-                if not check_tailscale_web_accessible(target_url, timeout=1):
-                    self.send_json({"ok": False, "message": "Интерфейс Tailscale пока недоступен. Откройте значок Tailscale в трее, войдите в аккаунт и повторите."}, 503)
-                    return
-                # 4. Открываем окно приложения Tailscale
-                launched = launch_tailscale_app_window(target_url)
-                if launched:
-                    succ_msg = (
-                        "Приложение Tailscale открыто" if lang == "ru" else
-                        "Додаток Tailscale відкрито" if lang == "uk" else
-                        "Tailscale application opened"
-                    )
-                    append_log(f"Tailscale interface launched successfully ({target_url}).")
-                    self.send_json({"ok": True, "message": succ_msg, "url": target_url})
+                succ_msg = (
+                    "Приложение Tailscale открыто" if lang == "ru" else
+                    "Додаток Tailscale відкрито" if lang == "uk" else
+                    "Tailscale application opened"
+                )
+                if check_tailscale_web_accessible(target_url, timeout=1):
+                    launched = launch_tailscale_app_window(target_url)
+                    if launched:
+                        append_log(f"Tailscale interface launched successfully ({target_url}).")
+                        self.send_json({"ok": True, "message": succ_msg, "url": target_url})
+                        return
+
+                # Fallback: активация нативного клиента Tailscale в трее / окне Windows
+                if not gui_started:
+                    if bins.get("gui") and bins["gui"].is_file():
+                        try:
+                            subprocess.Popen([str(bins["gui"])], cwd=str(bins["gui"].parent))
+                            gui_started = True
+                            append_log(f"Activated native Tailscale client: {bins['gui']}")
+                        except Exception as e:
+                            append_log(f"Could not activate tailscale-ipn: {e}")
+                    elif bins.get("shortcut") and bins["shortcut"].is_file():
+                        try:
+                            os.startfile(str(bins["shortcut"]))
+                            gui_started = True
+                            append_log(f"Activated Tailscale via shortcut: {bins['shortcut'].name}")
+                        except Exception as e:
+                            append_log(f"Could not open Tailscale shortcut: {e}")
+
+                if gui_started or is_ipn_running:
+                    _cached_ts_time = 0.0
+                    self.send_json({"ok": True, "message": succ_msg})
                 else:
-                    err_msg = (
-                        "Не удалось открыть окно Tailscale" if lang == "ru" else
-                        "Не вдалося відкрити вікно Tailscale" if lang == "uk" else
-                        "Failed to open Tailscale window"
-                    )
-                    self.send_json({
-                        "ok": False,
-                        "error_code": "ERR_LAUNCH_FAILED",
-                        "error_title": "Ошибка запуска" if lang == "ru" else "Launch Error",
-                        "message": err_msg,
-                        "details": f"Не удалось запустить окно Tailscale по адресу {target_url}."
-                    }, 500)
+                    self.send_json({"ok": False, "message": "Интерфейс Tailscale пока недоступен. Откройте значок Tailscale в трее, войдите в аккаунт и повторите."}, 503)
                 return
 
             if action in ("open_web", "open_web_standalone"):
@@ -2320,12 +2316,22 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             if action == "get_cors_origins":
-                from core.config import get_cors_allowed_origins
-                self.send_json({"ok": True, "origins": get_cors_allowed_origins()})
+                cfg = load_config_data()
+                origins = cfg.get("cors_allowed_origins")
+                if isinstance(origins, list):
+                    origins_list = [str(o).strip() for o in origins if str(o).strip()]
+                else:
+                    origins_list = [
+                        "http://localhost:*",
+                        "http://127.0.0.1:*",
+                        "http://192.168.*",
+                        "http://100.*",
+                        "http://10.*"
+                    ]
+                self.send_json({"ok": True, "origins": origins_list})
                 return
 
             if action == "set_cors_origins":
-                from core.config import update_cors_origins
                 origins_in = req_data.get("origins")
                 if isinstance(origins_in, str):
                     origins_list = [o.strip() for o in re.split(r"[,\r\n]+", origins_in) if o.strip()]
@@ -2337,10 +2343,14 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     self.send_json({"ok": False, "message": "Origins must be text or a list"}, 400)
                     return
-                with _settings_lock:
-                    if not update_cors_origins(origins_list):
-                        self.send_json({"ok": False, "message": "Could not save CORS settings"}, 500)
-                        return
+                try:
+                    with _settings_lock:
+                        cfg = load_config_data()
+                        cfg["cors_allowed_origins"] = origins_list
+                        save_config_data(cfg)
+                except Exception:
+                    self.send_json({"ok": False, "message": "Could not save CORS settings"}, 500)
+                    return
                 append_log(f"CORS allowed origins updated: {origins_list}")
                 self.send_json({"ok": True, "origins": origins_list})
                 return

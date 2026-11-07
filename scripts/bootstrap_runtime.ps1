@@ -40,12 +40,13 @@ function Invoke-Runtime([string[]]$CommandArguments) {
     $ErrorActionPreference = $savedPreference
     if ($nativeExitCode -ne 0) { throw "Python command failed with exit code $nativeExitCode" }
 }
+$stage = $null
 try {
     try { $ownsMutex = $setupMutex.WaitOne(600000) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
     if (-not $ownsMutex) { throw 'Another installation is still running. Try again later.' }
     'Preparing private PC Control runtime...' | Out-File -LiteralPath $logFile -Encoding utf8
     if (Test-Path -LiteralPath $runtimeDir) {
-        if ((Test-Path (Join-Path $runtimeDir 'pythonw.exe')) -and (Test-Path (Join-Path $runtimeDir 'pccontrol-runtime.json'))) { exit 0 }
+        if ((Test-Path -LiteralPath (Join-Path $runtimeDir 'pythonw.exe')) -and (Test-Path -LiteralPath (Join-Path $runtimeDir 'pccontrol-runtime.json'))) { exit 0 }
         throw 'Runtime directory already exists. Use the complete release ZIP to restore damaged runtime files.'
     }
     $source = Get-Content -LiteralPath (Join-Path $BaseDir 'runtime-source.json') -Raw | ConvertFrom-Json
@@ -74,7 +75,7 @@ try {
     Invoke-Runtime @('-I', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-warn-script-location', '--no-cache-dir', '--only-binary=:all:', '-r', (Join-Path $BaseDir 'requirements-runtime.lock'))
     Invoke-Runtime @('-I', '-m', 'pip', 'check')
     Invoke-Runtime @('-I', '-c', 'import flask, PIL, pycaw, comtypes, winsdk, aiortc, pyaudiowpatch, mss, qrcode, psutil, numpy; from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager')
-    @{ python = $source.python; source = $source.url; source_sha256 = $source.sha256; requirements_sha256 = (Get-SetupHash (Join-Path $BaseDir 'requirements-runtime.lock')) } | ConvertTo-Json | Out-File (Join-Path $pythonDir 'pccontrol-runtime.json') -Encoding utf8
+    @{ python = $source.python; source = $source.url; source_sha256 = $source.sha256; requirements_sha256 = (Get-SetupHash (Join-Path $BaseDir 'requirements-runtime.lock')) } | ConvertTo-Json | Out-File -LiteralPath (Join-Path $pythonDir 'pccontrol-runtime.json') -Encoding utf8
     Move-Item -LiteralPath $pythonDir -Destination $runtimeDir
     # Only this invocation's verified staging directory may be removed.
     if ((Split-Path -Parent ([IO.Path]::GetFullPath($stage))) -ne $BaseDir) { throw 'Invalid staging path' }
@@ -85,6 +86,9 @@ try {
     Write-SetupLog ('ERROR: ' + $_.Exception.Message)
     exit 1
 } finally {
+    if ($stage -and (Test-Path -LiteralPath $stage) -and ((Split-Path -Parent ([IO.Path]::GetFullPath($stage))) -eq $BaseDir)) {
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
     if ($ownsMutex) { $setupMutex.ReleaseMutex() }
     $setupMutex.Dispose()
 }

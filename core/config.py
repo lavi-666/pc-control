@@ -9,6 +9,7 @@ import secrets
 import subprocess
 import threading
 import tempfile
+import time
 from pathlib import Path
 
 # Базовые директории проекта
@@ -149,7 +150,14 @@ def save_app_config(cfg: dict) -> bool:
                                              prefix="config-", suffix=".tmp", delete=False) as f:
                 tmp_file = Path(f.name)
                 json.dump(cfg, f, indent=2, ensure_ascii=False)
-            os.replace(tmp_file, cfg_file)
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_file, cfg_file)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.02)
             _cached_config = dict(cfg)
             try:
                 _cached_config_mtime = cfg_file.stat().st_mtime_ns

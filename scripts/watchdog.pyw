@@ -71,6 +71,8 @@ def is_already_running() -> bool:
 
 
 def ping_server() -> tuple[bool, str]:
+    global SERVER_PORT
+    SERVER_PORT = _read_server_port()
     conn = None
     try:
         conn = http.client.HTTPConnection("127.0.0.1", SERVER_PORT, timeout=PING_TIMEOUT_SEC)

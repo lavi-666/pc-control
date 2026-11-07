@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
@@ -144,7 +144,7 @@ static class Program
 
         ProcessStartInfo psi = new ProcessStartInfo();
         psi.FileName = pythonwExe;
-        psi.Arguments = "\"" + scriptPath + "\"";
+        psi.Arguments = "-E -s \"" + scriptPath + "\"";
         if (Array.IndexOf(args, "--no-browser") >= 0) psi.Arguments += " --no-browser";
         if (showUpdate) psi.Arguments += " --check-update";
         psi.WorkingDirectory = baseDir;
@@ -291,7 +291,7 @@ static class Program
             using (Process p = Process.Start(psi))
             {
                 if (p == null) return false;
-                if (!p.WaitForExit(1500))
+                if (!p.WaitForExit(10000))
                 {
                     try { p.Kill(); } catch {}
                     return false;

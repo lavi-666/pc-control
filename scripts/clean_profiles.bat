@@ -2,8 +2,8 @@
 chcp 65001 >nul
 cd /d "%~dp0.."
 if not exist "runtime\python.exe" (
-    echo Private runtime missing. Run Launcher.exe first.
-    exit /b 1
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "scripts\bootstrap_runtime.ps1"
+    if errorlevel 1 exit /b 1
 )
-"runtime\python.exe" -E -s scripts\manage_server.py clean-profiles
+"runtime\python.exe" -E -s "scripts\manage_server.py" clean-profiles
 exit /b %ERRORLEVEL%

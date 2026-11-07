@@ -1,7 +1,10 @@
 """Shared CLI entry point for legacy start/stop shortcuts."""
 import argparse
 from pathlib import Path
-from control_panel import BASE_DIR, start_server_process, stop_server_process, restart_server_process, clean_browser_profiles
+try:
+    from scripts.control_panel import BASE_DIR, start_server_process, stop_server_process, restart_server_process, clean_browser_profiles
+except ImportError:
+    from control_panel import BASE_DIR, start_server_process, stop_server_process, restart_server_process, clean_browser_profiles
 
 
 def stop_owned_helpers():

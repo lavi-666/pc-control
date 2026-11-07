@@ -1,4 +1,4 @@
-﻿# ==============================================================================
+# ==============================================================================
 # PC Control - Universal Windows Auto-Setup:
 # 1. Automatic logon (standard netplwiz + Windows Hello bypass)
 # 2. Wake-on-LAN (power on PC via network: adapters, power cfg, disable Fast Startup)
@@ -64,15 +64,27 @@ try {
     "Error enabling WOL devices: $_" | Out-File $log -Append -Encoding utf8
 }
 
-# 4. Open port 5000 in Windows Firewall (restricted to Private network + LocalSubnet and Tailscale 100.64.0.0/10)
-Write-Host "[4/5] Configuring Windows Firewall rule for port 5000 (Private network + Tailscale only)..." -ForegroundColor Green
+# 4. Open configured ports in Windows Firewall (restricted to Private/LocalSubnet and Tailscale 100.64.0.0/10)
+$srvPort = 5000
+$relayPort = 5050
+try {
+    $cfgFile = Join-Path $projectRoot 'config.json'
+    if (Test-Path -LiteralPath $cfgFile) {
+        $cfgObj = Get-Content -LiteralPath $cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($cfgObj.port) { $srvPort = [int]$cfgObj.port }
+        if ($cfgObj.relay_port) { $relayPort = [int]$cfgObj.relay_port }
+    }
+} catch {}
+Write-Host "[4/5] Configuring Windows Firewall rules for ports $srvPort and $relayPort (LocalSubnet + Tailscale only)..." -ForegroundColor Green
 try {
     netsh advfirewall firewall delete rule name="PC Control Server" 2>$null | Out-Null
-    netsh advfirewall firewall add rule name="PC Control Server" dir=in action=allow protocol=TCP localport=5000 profile=private remoteip="LocalSubnet,100.64.0.0/10" | Out-Null
-    "Firewall rule added: TCP 5000 (profile=private, remoteip=LocalSubnet,100.64.0.0/10)" | Out-File $log -Append -Encoding utf8
-    Write-Host "  -> Port 5000 restricted to Private network and LocalSubnet / Tailscale (100.64.0.0/10)." -ForegroundColor Gray
+    netsh advfirewall firewall delete rule name="PC Control WOL Relay" 2>$null | Out-Null
+    netsh advfirewall firewall add rule name="PC Control Server" dir=in action=allow protocol=TCP localport=$srvPort profile=any remoteip="LocalSubnet,100.64.0.0/10" | Out-Null
+    netsh advfirewall firewall add rule name="PC Control WOL Relay" dir=in action=allow protocol=TCP localport=$relayPort profile=any remoteip="LocalSubnet,100.64.0.0/10" | Out-Null
+    "Firewall rules added: TCP $srvPort and $relayPort (remoteip=LocalSubnet,100.64.0.0/10)" | Out-File -LiteralPath $log -Append -Encoding utf8
+    Write-Host "  -> Ports $srvPort and $relayPort restricted to LocalSubnet / Tailscale (100.64.0.0/10)." -ForegroundColor Gray
 } catch {
-    "Error configuring firewall: $_" | Out-File $log -Append -Encoding utf8
+    "Error configuring firewall: $_" | Out-File -LiteralPath $log -Append -Encoding utf8
 }
 
 # 5. Add startup shortcut
@@ -90,14 +102,14 @@ try {
     $shortcut.WorkingDirectory = $projectRoot
     $shortcut.WindowStyle = 7
     $shortcut.Description = 'PC Control Server Autostart'
-    if (Test-Path $icoPath) {
+    if (Test-Path -LiteralPath $icoPath) {
         $shortcut.IconLocation = $icoPath
     }
     $shortcut.Save()
-    "Autostart shortcut created at $shortcutPath" | Out-File $log -Append -Encoding utf8
+    "Autostart shortcut created at $shortcutPath" | Out-File -LiteralPath $log -Append -Encoding utf8
     Write-Host "  -> Server added to Windows Startup folder." -ForegroundColor Gray
 } catch {
-    "Error creating autostart shortcut: $_" | Out-File $log -Append -Encoding utf8
+    "Error creating autostart shortcut: $_" | Out-File -LiteralPath $log -Append -Encoding utf8
 }
 
 # Launch standard Windows user account panel (netplwiz)
@@ -109,12 +121,16 @@ Write-Host "3. Click 'Apply'." -ForegroundColor Yellow
 Write-Host "4. Enter your Windows password (twice) and click OK." -ForegroundColor Yellow
 Write-Host "----------------------------------------------------------`n" -ForegroundColor Yellow
 
-Start-Process "netplwiz.exe"
-"netplwiz launched (OK)" | Out-File $log -Append -Encoding utf8
+if (-not $env:PC_CONTROL_NO_PAUSE) {
+    Start-Process "netplwiz.exe"
+    "netplwiz launched (OK)" | Out-File -LiteralPath $log -Append -Encoding utf8
+}
 
 Write-Host "All system settings applied successfully!" -ForegroundColor Green
 Write-Host "Log saved to: setup_autologon.log" -ForegroundColor Gray
 Write-Host "`n==========================================================" -ForegroundColor Cyan
 Write-Host "[ГОТОВО / DONE] Нажмите Enter, чтобы закрыть это окно..." -ForegroundColor Yellow
 Write-Host "==========================================================" -ForegroundColor Cyan
-$null = Read-Host
+if (-not $env:PC_CONTROL_NO_PAUSE) {
+    $null = Read-Host
+}

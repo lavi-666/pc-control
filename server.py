@@ -557,7 +557,7 @@ def _ensure_watchdog():
                 if os.path.exists(pyw):
                     py = pyw
             import subprocess
-            subprocess.Popen([py, str(watchdog_path)], cwd=str(BASE_DIR), creationflags=0x08000000)
+            subprocess.Popen([py, "-E", "-s", str(watchdog_path)], cwd=str(BASE_DIR), creationflags=0x08000000)
     except Exception:
         pass
 

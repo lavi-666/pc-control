@@ -5,4 +5,5 @@ echo =================================================================
 echo    PC CONTROL - Настройка автологина Windows (UAC)
 echo =================================================================
 echo Запуск PowerShell от имени Администратора...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath powershell.exe -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','\"%~dp0setup_autologon.ps1\"'"
+set "PS_SCRIPT=%~dp0setup_autologon.ps1"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe' -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',(\"`\"\" + $env:PS_SCRIPT + \"`\"\"))"

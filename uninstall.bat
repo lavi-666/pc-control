@@ -13,7 +13,8 @@ echo   [2] Очистить только профили браузеров (%%LO
 echo   [3] Удалить только правило брандмауэра для порта 5000
 echo   [4] Отмена
 echo.
-set /p "choice=Введите номер действия (1-4): "
+set "choice=%~1"
+if "%choice%"=="" set /p "choice=Введите номер действия (1-4): "
 
 if "%choice%"=="4" goto :cancel
 if "%choice%"=="3" goto :clean_firewall
@@ -47,11 +48,18 @@ if exist "%LOCALAPPDATA%\PCControl" (
 :clean_firewall
 echo.
 echo [3/4] Удаление правила брандмауэра Windows...
-netsh advfirewall firewall delete rule name="PC Control Server" >nul 2>&1
-netsh advfirewall firewall delete rule name="PC Control WOL Relay" >nul 2>&1
-netsh advfirewall firewall delete rule name="PC Control Server (TCP 5000)" >nul 2>&1
 net session >nul 2>&1
-if errorlevel 1 echo   [!] Run uninstall.bat as Administrator to remove firewall rules.
+if errorlevel 1 (
+    if not defined PC_CONTROL_NO_PAUSE (
+        "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "Start-Process -FilePath 'cmd.exe' -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '/c netsh advfirewall firewall delete rule name=\"PC Control Server\" >nul 2>&1 & netsh advfirewall firewall delete rule name=\"PC Control WOL Relay\" >nul 2>&1 & netsh advfirewall firewall delete rule name=\"PC Control Server (TCP 5000)\" >nul 2>&1'" >nul 2>&1
+    ) else (
+        echo   [!] Run uninstall.bat as Administrator to remove firewall rules.
+    )
+) else (
+    netsh advfirewall firewall delete rule name="PC Control Server" >nul 2>&1
+    netsh advfirewall firewall delete rule name="PC Control WOL Relay" >nul 2>&1
+    netsh advfirewall firewall delete rule name="PC Control Server (TCP 5000)" >nul 2>&1
+)
 if "%choice%"=="3" (
     echo   - Правило брандмауэра удалено.
     goto :done
@@ -92,4 +100,4 @@ echo ======================================================================
 
 :exit
 echo.
-pause
+if not defined PC_CONTROL_NO_PAUSE pause

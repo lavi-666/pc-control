@@ -40,11 +40,14 @@ def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
-    with temp.open('w', encoding='utf-8') as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temp, path)
+    try:
+        with temp.open('w', encoding='utf-8') as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        replace_file(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def replace_file(source, target):
@@ -281,7 +284,7 @@ def prepare(base, port, restart_server=False, log=lambda message: None, open_bro
             stream.write(str(job))
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(pointer, base / PENDING)
+        replace_file(pointer, base / PENDING)
         command = [str(job / 'runner/python.exe'), '-I', str(job / 'worker.py'), '--job', str(job)]
         subprocess.Popen(command, cwd=job, creationflags=NO_WINDOW)
         log('Полный пакет проверен. Выполняется обновление проекта; пользовательские данные сохраняются.')

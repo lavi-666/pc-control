@@ -88,7 +88,10 @@ def load_config():
 
 
 def save_config(cfg):
-    from control_panel import save_config_data, validate_network_settings
+    try:
+        from scripts.control_panel import save_config_data, validate_network_settings
+    except ImportError:
+        from control_panel import save_config_data, validate_network_settings
     cfg.update(validate_network_settings(cfg))
     save_config_data(cfg)
 

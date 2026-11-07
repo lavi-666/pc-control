@@ -72,7 +72,7 @@ Next
     with open(vbs_path, "w", encoding="mbcs", errors="replace") as f:
         f.write(vbs_code)
     try:
-        out = subprocess.check_output(["cscript", "//Nologo", vbs_path], text=True)
+        out = subprocess.check_output(["cscript", "//Nologo", vbs_path], text=True, creationflags=NO_WINDOW)
         print(out.strip())
     finally:
         try:

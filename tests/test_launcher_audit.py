@@ -210,6 +210,36 @@ class LauncherAudit(unittest.TestCase):
         with patch.object(panel, 'load_config_data', return_value={'port': 6123, 'token': 'pass&?#'}):
             self.assertEqual(legacy['get_app_url'](), 'http://127.0.0.1:6123/?token=pass%26%3F%23')
 
+    def test_cors_origins_round_trip_and_write_failure(self):
+        status, data, _ = self.request({'action': 'set_cors_origins', 'origins': 'http://localhost:*, http://127.0.0.1:*'})
+        self.assertEqual(status, 200)
+        self.assertEqual(data['origins'], ['http://localhost:*', 'http://127.0.0.1:*'])
+        status, got, _ = self.request({'action': 'get_cors_origins'})
+        self.assertEqual(status, 200)
+        self.assertEqual(got['origins'], ['http://localhost:*', 'http://127.0.0.1:*'])
+        with patch.object(panel, 'save_config_data', side_effect=PermissionError('read only')):
+            self.assertEqual(self.request({'action': 'set_cors_origins', 'origins': ['http://localhost:*']})[0], 500)
+
+    def test_launch_tailscale_native_gui_fallback_when_web_unavailable(self):
+        gui = Path(self.temp.name) / 'tailscale-ipn.exe'
+        gui.touch()
+        with patch.object(panel, 'find_tailscale_binaries', return_value={'installed': True, 'gui': gui, 'cli': None, 'shortcut': None}), \
+             patch.object(panel, 'check_tailscale_web_accessible', return_value=False), \
+             patch.object(panel.subprocess, 'Popen') as popen_mock:
+            status, data, _ = self.request({'action': 'launch_tailscale', 'lang': 'ru'})
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertTrue(popen_mock.called)
+
+    def test_apply_firewall_polls_and_passes_no_pause(self):
+        with patch.object(panel, 'run_elevated_command', return_value=(True, '', 'OK')) as elev_mock, \
+             patch.object(panel, 'is_firewall_configured', side_effect=[False, True, True]):
+            status, data, _ = self.request({'action': 'apply_firewall'})
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertTrue(data['firewall_ok'])
+        self.assertIn('PC_CONTROL_NO_PAUSE=1', elev_mock.call_args[0][1])
+
 
 if __name__ == '__main__':
     unittest.main()

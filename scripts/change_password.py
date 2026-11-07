@@ -42,7 +42,10 @@ def get_current_token() -> str:
 
 
 def save_token_to_config(token: str):
-    from control_panel import save_token_everywhere
+    try:
+        from scripts.control_panel import save_token_everywhere
+    except ImportError:
+        from control_panel import save_token_everywhere
     if not save_token_everywhere(token):
         raise ValueError("Password cannot be empty")
 
@@ -66,7 +69,10 @@ def update_token_in_file(file_path: Path, token: str):
 
 def restart_server():
     """Softly restarts the server.py process so that changes take effect."""
-    from control_panel import restart_server_process
+    try:
+        from scripts.control_panel import restart_server_process
+    except ImportError:
+        from control_panel import restart_server_process
     ok, code, title, message = restart_server_process()
     if not ok:
         raise RuntimeError(f"{code}: {title}: {message}")
