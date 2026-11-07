@@ -31,6 +31,16 @@ def _ensure_com():
         _com_tls.initialized = True
 
 
+def _get_audio_sessions():
+    from pycaw.pycaw import AudioUtilities
+
+    _ensure_com()
+    try:
+        return list(AudioUtilities.GetAllSessions())
+    except Exception:
+        return []
+
+
 def _volume_interface():
     import comtypes
     from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
@@ -142,10 +152,7 @@ def app_volumes():
     if not check_token():
         return jsonify({"message": "Неверный пароль"}), 401
     try:
-        from pycaw.pycaw import AudioUtilities
-
-        _ensure_com()
-        sessions = AudioUtilities.GetAllSessions()
+        sessions = _get_audio_sessions()
         result = []
         seen_pids = set()
         for s in sessions:
@@ -194,10 +201,7 @@ def set_app_volume():
     except (ValueError, TypeError, OverflowError):
         return jsonify({"message": "Некорректное значение громкости"}), 400
     try:
-        from pycaw.pycaw import AudioUtilities
-
-        _ensure_com()
-        for s in AudioUtilities.GetAllSessions():
+        for s in _get_audio_sessions():
             if s.Process and s.Process.pid == pid:
                 if not is_safe_test_mode():
                     s.SimpleAudioVolume.SetMasterVolume(percent / 100, None)
@@ -225,10 +229,7 @@ def mute_app_volume():
         return jsonify({"message": "Некорректный PID"}), 400
     state = 1 if data.get("mute", True) else 0
     try:
-        from pycaw.pycaw import AudioUtilities
-
-        _ensure_com()
-        for s in AudioUtilities.GetAllSessions():
+        for s in _get_audio_sessions():
             if s.Process and s.Process.pid == pid:
                 if not is_safe_test_mode():
                     s.SimpleAudioVolume.SetMute(state, None)

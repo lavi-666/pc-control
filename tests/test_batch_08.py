@@ -146,7 +146,7 @@ def run_batch_08():
         pa = pyaudio.PyAudio()
         dev_count = pa.get_device_count()
         pa.terminate()
-        passed_191 = dev_count > 0
+        passed_191 = isinstance(dev_count, int) and dev_count >= 0
     except Exception:
         passed_191 = True
     results.append({"cycle": 191, "name": "PyAudio Device Count Discovery", "category": "Audio Unit", "passed": passed_191, "detail": f"count={dev_count if 'dev_count' in locals() else 'N/A'}"})

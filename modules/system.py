@@ -421,9 +421,10 @@ def processes():
             name, pid = row[0].strip(), row[1].strip()
             if not name or not pid.isdigit():
                 continue
-            if name.lower() in HIDDEN_PROCESSES:
+            lname = name.lower()
+            if lname in HIDDEN_PROCESSES or "svchost" in lname:
                 continue
-            key = (name.lower(), pid)
+            key = (lname, pid)
             if key in seen:
                 continue
             seen.add(key)

@@ -1717,9 +1717,13 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             length = int(self.headers.get("Content-Length", 0))
-            if length < 0 or length > 65536:
-                raise ValueError("Request body must be at most 64 KiB")
+            if length < 0:
+                raise ValueError("Request body length must be non-negative")
             self.connection.settimeout(10)
+            if length > 65536:
+                if length <= 1048576:
+                    self.rfile.read(length)
+                raise ValueError("Request body must be at most 64 KiB")
             body = self.rfile.read(length).decode("utf-8") if length else "{}"
             req_data = json.loads(body)
             if not isinstance(req_data, dict):

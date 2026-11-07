@@ -13,8 +13,7 @@ from scripts import control_panel as panel
 
 class LauncherAudit(unittest.TestCase):
     def setUp(self):
-        (Path(__file__).resolve().parent.parent / 'scratch').mkdir(exist_ok=True)
-        self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent.parent / 'scratch')
+        self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.cfg_file = Path(self.temp.name) / 'config.json'
         self.initial = dict(token='audit-secret', language='ru', port=5000, relay_port=5050,
