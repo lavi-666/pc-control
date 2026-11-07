@@ -596,9 +596,51 @@ window.onNativeScreenClosed = function(){
   stopScreenTelemetry();
   const btn = document.getElementById('screenStartBtn');
   const txt = document.getElementById('screenStartText');
+  const pcBtn = document.getElementById('pcControlBtn');
   if (btn) btn.className = 'btn-ytm-red';
   if (txt) txt.innerText = t('btn_start_screen');
+  if (pcBtn) pcBtn.classList.remove('active');
 };
+
+async function startPcControlMode(){
+  const pcBtn = document.getElementById('pcControlBtn');
+  const statusEl = document.getElementById('statusMsg');
+
+  // Если запущено в нативном приложении Android APK
+  if (window.AndroidBridge && typeof window.AndroidBridge.startNativePcControl === 'function'){
+    if (pcBtn) pcBtn.classList.add('active');
+    if (statusEl) statusEl.innerText = t('btn_pc_control') + ' (MediaCodec + Touchpad)';
+    await setScreenOpt('monitor', screenCfg.monitor);
+    try {
+      const serverBase = getApiBase() || window.location.origin;
+      window.AndroidBridge.startNativePcControl(
+        serverBase,
+        getToken(),
+        screenCfg.monitor,
+        screenCfg.height,
+        screenCfg.fps,
+        screenCfg.bitrate || 0,
+        'auto',
+        'auto'
+      );
+    } catch (err) {
+      if (pcBtn) pcBtn.classList.remove('active');
+      if (statusEl) statusEl.innerText = 'PC Control Error: ' + err.message;
+    }
+    return;
+  }
+
+  // Если запущено в обычном браузере
+  if (pcBtn) pcBtn.classList.add('active');
+  const panel = document.getElementById('screenPanel');
+  if (panel && panel.style.display !== 'block') {
+    toggleScreenPanel();
+  }
+  if (!screenStreamOn) {
+    await toggleScreenStream();
+  }
+  if (statusEl) statusEl.innerText = 'Режим «Управление ПК» активен';
+}
 
 window.onNativeScreenParamsUpdated = function(monitor, height, fps, bitrate){
   if (typeof monitor === 'number') screenCfg.monitor = monitor;

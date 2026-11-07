@@ -1,22 +1,28 @@
 package com.pccontrol.remote;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.text.TextUtils;
 import android.media.AudioFormat;
 import android.media.AudioManager;
+import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
+import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
@@ -27,12 +33,15 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.animation.AlphaAnimation;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.BufferedInputStream;
 import java.io.EOFException;
@@ -47,22 +56,32 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * NativeScreenView — Нативный Android-плеер демонстрации экрана для PC Control.
- * Полная переработка:
- * 1. Чистый дизайн в стилистике PC Control (убран постоянный технический HUD).
- * 2. Автоматически скрываемая верхняя панель управления по касанию (5 сек).
- * 3. Полноценная модальная панель настроек стрима и звука прямо во время демонстрации (кнопка ⚙).
- * 4. Нативный встроенный аудиодвижок WASAPI Loopback (AudioTrack PCM 48 кГц стерео).
- * 5. Настоящее масштабирование без растягивания (Fit Center / Letterbox с сохранением 16:9).
- * 6. Поддержка переключения Fit / Fill.
- * 7. Полноценный Fullscreen (Immersive Sticky Mode) без пересоздания декодера.
- * 8. Прецизионный расчёт FPS (Received, Decoded, Rendered, Min) через скользящее окно без скачков.
- * 9. Сенсорный контроллер мыши Moonlight с точным позиционированием внутри области видео.
+ * NativeScreenView — Нативный Android-плеер демонстрации экрана и режим «Управление ПК» для PC Control.
+ *
+ * Поддерживает 2 режима работы:
+ * 1. MODE_VIEW (Демонстрация экрана): просмотр экрана без захвата сенсорного ввода.
+ * 2. MODE_PC_CONTROL (Управление ПК):
+ *    - Прозрачный виртуальный тачпад поверх видео
+ *    - Плавающая шестерёнка (⚙) и стрелочка (◀/▶) с выдвижным меню быстрых функций
+ *    - 4 быстрых переключателя: Клавиатура, Микрофон (телефон -> ПК), Звук ПК, Тачпад
+ *    - Анимированный Split-Screen редактор настроек (живое уменьшение видео слева, параметры справа)
+ *    - Настраиваемый тачпад с живым предпросмотром и перетаскиванием 8 маркеров на экране
+ *    - Собственная встроенная экранная клавиатура (EN, RU, UK, 123/Symbols) с модификаторами
+ *    - Индивидуальная настройка прозрачности 14 элементов интерфейса
+ *    - Низколатентный неблокирующий диспетчер ввода (coalescing mouse queue)
  */
 public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callback {
+
+    public static final int MODE_VIEW = 0;
+    public static final int MODE_PC_CONTROL = 1;
+
+    public static final int SCALE_MODE_FIT = 0;
+    public static final int SCALE_MODE_FILL = 1;
 
     public interface PlayerCallback {
         void onCloseRequested();
@@ -70,12 +89,15 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         void onSettingsChanged(int monitor, int height, int fps, int bitrate);
     }
 
-    public static final int SCALE_MODE_FIT = 0;
-    public static final int SCALE_MODE_FILL = 1;
+    // Режим работы
+    private int operatingMode = MODE_VIEW;
 
-    // Компоненты отображения
+    // Контейнер видео для плавного сплит-масштабирования без пересоздания декодера
+    private FrameLayout videoContainer;
     private SurfaceView surfaceView;
     private SurfaceHolder surfaceHolder;
+
+    // Верхняя панель управления (для MODE_VIEW)
     private LinearLayout topToolbar;
     private TextView titleView;
     private TextView subtitleView;
@@ -84,20 +106,76 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private TextView settingsBtn;
     private TextView closeBtn;
 
-    // Панель настроек стрима и звука
-    private FrameLayout settingsOverlay;
-    private LinearLayout settingsCard;
-    private boolean isSettingsVisible = false;
+    // Плавающие элементы управления (для MODE_PC_CONTROL)
+    private FrameLayout floatingControlsGroup;
+    private TextView floatingGearBtn;
+    private TextView floatingArrowBtn;
+    private LinearLayout quickActionsDrawer;
+    private boolean isQuickDrawerOpen = false;
+
+    // 4 быстрые кнопки
+    private TextView quickBtnKeyboard;
+    private TextView quickBtnMic;
+    private TextView quickBtnSound;
+    private TextView quickBtnTouchpad;
+
+    private boolean isTouchpadEnabled = true;
+    private boolean isKeyboardVisible = false;
+    private boolean isMicStreaming = false;
+
+    // Сплит-панель настроек с анимацией уменьшения экрана
+    private FrameLayout splitSettingsContainer;
+    private LinearLayout splitSettingsCard;
+    private ScrollView splitSettingsScroll;
+    private boolean isSplitSettingsOpen = false;
+    private int activeSettingsSection = 0; // 0=Главное, 1=Экран, 2=Качество, 3=FPS, 4=Тачпад, 5=Клавиатура, 6=Прозрачность
+
+    // Настраиваемая геометрия тачпада (в нормализованных долях 0.0 .. 1.0)
+    private float tpNormX = 0.55f;
+    private float tpNormY = 0.10f;
+    private float tpNormW = 0.42f;
+    private float tpNormH = 0.80f;
+    private float mouseSensitivity = 1.0f;
+    private boolean mouseAccel = true;
+    private boolean isMouseAbsolute = false;
+
+    // Оверлей визуального редактирования тачпада прямо на экране
+    private TouchpadVisualEditorView touchpadVisualEditor;
+    private boolean isTouchpadEditing = false;
+
+    // Собственная встроенная клавиатура PC Control
+    private CustomKeyboardView customKeyboardView;
+    private int kbdWidthPct = 100;
+    private int kbdHeightDp = 220;
+    private int kbdLayoutIdx = 0; // 0=EN, 1=RU, 2=UK, 3=SYM
+
+    // Настройки прозрачности элементов (0..100%)
+    private int opacityGear = 85;
+    private int opacityArrow = 85;
+    private int opacityQuickDrawer = 90;
+    private int opacityBtnKeyboard = 100;
+    private int opacityBtnMic = 100;
+    private int opacityBtnSound = 100;
+    private int opacityBtnTouchpad = 100;
+    private int opacitySettings = 95;
+    private int opacityDiag = 90;
+    private int opacityKbdBg = 92;
+    private int opacityKbdKeys = 95;
+    private int opacityKbdSpecial = 95;
+    private int opacityTpBorder = 80;
+    private int opacityTpCenter = 80;
+
+    // Позиция плавающей шестерёнки
+    private float gearPosX = -1f;
+    private float gearPosY = -1f;
+
+    // Стандартные чипы настроек экрана
     private final List<TextView> monitorChips = new ArrayList<>();
     private final Map<Integer, TextView> resChips = new HashMap<>();
     private final Map<Integer, TextView> fpsChips = new HashMap<>();
     private final Map<Integer, TextView> bitrateChips = new HashMap<>();
-    private TextView soundStatusView;
-    private TextView soundToggleBtn;
-    private TextView soundVolumeLabel;
-    private SeekBar soundVolumeBar;
 
-    // Встроенный аудиодвижок WASAPI Loopback (PCM 48 кГц стерео AudioTrack)
+    // Звук ПК (WASAPI Loopback)
     private boolean isAudioEnabled = true;
     private int audioVolume = 80;
     private boolean isAudioMuted = false;
@@ -106,7 +184,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private AudioPlayerThread audioThread = null;
     private final Object audioLock = new Object();
 
-    // Панель диагностики
+    // Микрофон телефона -> ПК
+    private MicSenderThread micSenderThread = null;
+    private final Object micLock = new Object();
+
+    // Диспетчер ввода мыши (Coalescing input queue thread)
+    private InputDispatcherThread inputDispatcherThread = null;
+
+    // Диагностика
     private FrameLayout diagOverlay;
     private LinearLayout diagCard;
     private TextView diagCodecVal;
@@ -121,8 +206,17 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private TextView diagDroppedVal;
     private TextView diagLatencyVal;
     private TextView diagColorVal;
+    private boolean isDiagVisible = false;
 
-    // Состояние декодера и потока
+    // Ошибки
+    private FrameLayout errorOverlay;
+    private TextView errorTitleView;
+    private TextView errorMsgView;
+    private TextView errorRetryBtn;
+    private TextView errorCloseBtn;
+    private boolean isErrorVisible = false;
+
+    // Декодер и сетевой поток
     private MediaCodec decoder;
     private final Object decoderLock = new Object();
     private Thread workerThread;
@@ -132,14 +226,6 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private boolean surfaceReady = false;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    // Диалог ошибок воспроизведения
-    private FrameLayout errorOverlay;
-    private TextView errorTitleView;
-    private TextView errorMsgView;
-    private TextView errorRetryBtn;
-    private TextView errorCloseBtn;
-    private boolean isErrorVisible = false;
-
     // Параметры стрима
     private String serverUrl = "";
     private String authToken = "";
@@ -148,25 +234,22 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private int targetFps = 60;
     private int targetBitrate = 0;
 
-    // Соотношение сторон и размеры видеокадра
     private int videoWidth = 1920;
     private int videoHeight = 1080;
     private int scaleMode = SCALE_MODE_FIT;
     private final Rect videoViewportRect = new Rect();
 
-    // Флаги управления интерфейсом
     private boolean isFullscreen = false;
     private boolean isControlsVisible = true;
-    private boolean isDiagVisible = false;
     private PlayerCallback playerCallback;
 
-    // Прецизионные трекеры FPS (скользящее окно 1500 мс)
+    // Трекеры FPS
     private final FpsTracker receivedFpsTracker = new FpsTracker(180, 1500);
     private final FpsTracker decodedFpsTracker = new FpsTracker(180, 1500);
     private final FpsTracker renderedFpsTracker = new FpsTracker(180, 1500);
     private final MinFpsTracker minFpsTracker = new MinFpsTracker(3000);
 
-    // Телеметрия и замеры
+    // Телеметрия
     private long totalBytesReceived = 0;
     private long lastBitrateSampleTime = 0;
     private long lastBitrateBytes = 0;
@@ -175,16 +258,29 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private long estimatedLatencyMs = 8;
     private String activeCodecName = "Hardware H.264";
 
-    // Управление сенсорным вводом (Moonlight Touch Controller)
+    // Обработка жестов тачпада
     private float touchStartX = 0f;
     private float touchStartY = 0f;
     private float lastTouchX = 0f;
     private float lastTouchY = 0f;
     private long touchDownTime = 0;
+    private long lastTapTime = 0;
     private boolean isDraggingMouse = false;
+    private boolean isMouseLongPressed = false;
     private int activePointerCount = 1;
 
-    // Автоматическое скрытие панели управления
+    private final Runnable longPressRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (operatingMode == MODE_PC_CONTROL && isTouchpadEnabled && !isDraggingMouse) {
+                isMouseLongPressed = true;
+                if (inputDispatcherThread != null) {
+                    inputDispatcherThread.enqueueMouseDown("left");
+                }
+            }
+        }
+    };
+
     private final Runnable hideControlsRunnable = new Runnable() {
         @Override
         public void run() {
@@ -192,13 +288,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         }
     };
 
-    // Обновление диагностических метрик
     private final Runnable diagUpdateRunnable = new Runnable() {
         @Override
         public void run() {
             if (isDiagVisible && isStreaming.get()) {
                 refreshDiagValues();
-                mainHandler.postDelayed(this, 500);
+                mainHandler.postDelayed(this, 300);
             }
         }
     };
@@ -215,28 +310,43 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private void init(Context context) {
         setBackgroundColor(Color.parseColor("#030303"));
-
         loadPreferences();
 
-        // 1. Создание SurfaceView для аппаратного рендеринга MediaCodec
+        // Запуск неблокирующего диспетчера команд мыши
+        inputDispatcherThread = new InputDispatcherThread();
+        inputDispatcherThread.start();
+
+        // 1. Контейнер для масштабирования видео при сплит-экране настроек
+        videoContainer = new FrameLayout(context);
         surfaceView = new SurfaceView(context);
         surfaceHolder = surfaceView.getHolder();
         surfaceHolder.addCallback(this);
-        addView(surfaceView, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        videoContainer.addView(surfaceView, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
-        // 2. Верхняя полупрозрачная панель управления в стиле PC Control
+        // Оверлей визуального редактирования зоны тачпада
+        touchpadVisualEditor = new TouchpadVisualEditorView(context);
+        touchpadVisualEditor.setVisibility(View.GONE);
+        videoContainer.addView(touchpadVisualEditor, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+
+        addView(videoContainer, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+
+        // 2. Верхняя панель управления (для MODE_VIEW)
         buildTopToolbar(context);
 
-        // 3. Модальная диалоговая панель настроек стрима и звука
-        buildSettingsDialog(context);
+        // 3. Плавающие кнопки и быстрое меню (для MODE_PC_CONTROL)
+        buildFloatingControls(context);
 
-        // 4. Отдельная скрытая панель диагностики
+        // 4. Собственная экранная клавиатура PC Control
+        buildCustomKeyboard(context);
+
+        // 5. Анимированная сплит-панель настроек
+        buildSplitSettings(context);
+
+        // 6. Диагностика и оверлей ошибок
         buildDiagnosticsDialog(context);
-
-        // 5. Оверлей сообщений об ошибках
         buildErrorDialog(context);
 
-        // 6. Настройка сенсорного ввода
+        // Сенсорное управление
         surfaceView.setOnTouchListener(new OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
@@ -245,445 +355,935 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         });
     }
 
-    /**
-     * Построение стильной верхней панели управления.
-     */
-    private void buildTopToolbar(Context context) {
-        topToolbar = new LinearLayout(context);
-        topToolbar.setOrientation(LinearLayout.HORIZONTAL);
-        topToolbar.setGravity(Gravity.CENTER_VERTICAL);
-
-        GradientDrawable tbBg = new GradientDrawable();
-        tbBg.setColor(Color.parseColor("#E612161F")); // Темный полупрозрачный сланец
-        tbBg.setCornerRadius(dpToPx(24));
-        tbBg.setStroke(dpToPx(1), Color.parseColor("#33FFFFFF"));
-        topToolbar.setBackground(tbBg);
-
-        int padH = dpToPx(16);
-        int padV = dpToPx(8);
-        topToolbar.setPadding(padH, padV, padH, padV);
-
-        FrameLayout.LayoutParams tbParams = new FrameLayout.LayoutParams(
-                LayoutParams.WRAP_CONTENT,
-                LayoutParams.WRAP_CONTENT
-        );
-        tbParams.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-        tbParams.topMargin = dpToPx(16);
-        topToolbar.setLayoutParams(tbParams);
-
-        topToolbar.setOnTouchListener(new OnTouchListener() {
+    public void setOperatingMode(int mode) {
+        this.operatingMode = mode;
+        post(new Runnable() {
             @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                scheduleControlsAutoHide();
+            public void run() {
+                applyOperatingModeUI();
+            }
+        });
+    }
+
+    private void applyOperatingModeUI() {
+        if (operatingMode == MODE_PC_CONTROL) {
+            if (topToolbar != null) topToolbar.setVisibility(View.GONE);
+            if (floatingControlsGroup != null) {
+                floatingControlsGroup.setVisibility(View.VISIBLE);
+                applyOpacities();
+            }
+            if (titleView != null) titleView.setText("Управление ПК");
+        } else {
+            if (floatingControlsGroup != null) floatingControlsGroup.setVisibility(View.GONE);
+            if (quickActionsDrawer != null) quickActionsDrawer.setVisibility(View.GONE);
+            if (customKeyboardView != null) customKeyboardView.setVisibility(View.GONE);
+            if (topToolbar != null) topToolbar.setVisibility(View.VISIBLE);
+            if (titleView != null) titleView.setText("Демонстрация экрана");
+        }
+        requestLayout();
+    }
+
+    // -----------------------------------------------------------------------
+    // ПЛАВАЮЩИЕ КНОПКИ И ВЫДВИЖНОЕ МЕНЮ БЫСТРЫХ ФУНКЦИЙ (MODE_PC_CONTROL)
+    // -----------------------------------------------------------------------
+    private void buildFloatingControls(Context context) {
+        floatingControlsGroup = new FrameLayout(context);
+        floatingControlsGroup.setVisibility(View.GONE);
+
+        // Кнопка-шестерёнка (⚙)
+        floatingGearBtn = createCircularButton(context, "⚙", 48, "#EB121622", Color.WHITE, 18f);
+        floatingGearBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleSplitSettings();
+            }
+        });
+
+        // Поддержка перетаскивания шестерёнки пользователем
+        floatingGearBtn.setOnTouchListener(new OnTouchListener() {
+            private float startRawX, startRawY, initialX, initialY;
+            private boolean isMoving = false;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent ev) {
+                switch (ev.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        startRawX = ev.getRawX();
+                        startRawY = ev.getRawY();
+                        initialX = floatingControlsGroup.getX();
+                        initialY = floatingControlsGroup.getY();
+                        isMoving = false;
+                        return false;
+                    case MotionEvent.ACTION_MOVE:
+                        float dx = ev.getRawX() - startRawX;
+                        float dy = ev.getRawY() - startRawY;
+                        if (Math.abs(dx) > dpToPx(6) || Math.abs(dy) > dpToPx(6)) {
+                            isMoving = true;
+                            float newX = Math.max(dpToPx(8), Math.min(getWidth() - dpToPx(56), initialX + dx));
+                            float newY = Math.max(dpToPx(8), Math.min(getHeight() - dpToPx(56), initialY + dy));
+                            floatingControlsGroup.setX(newX);
+                            floatingControlsGroup.setY(newY);
+                            gearPosX = newX;
+                            gearPosY = newY;
+                        }
+                        return isMoving;
+                    case MotionEvent.ACTION_UP:
+                        if (isMoving) {
+                            savePreferences();
+                            return true;
+                        }
+                        return false;
+                }
                 return false;
             }
         });
 
-        // Кнопка назад / выход в основной пульт (←)
-        TextView backBtn = createToolbarButton(context, "←", "#242A35", Color.WHITE, 17f);
-        backBtn.setOnClickListener(new OnClickListener() {
+        // Кнопка-стрелочка (◀ / ▶)
+        floatingArrowBtn = createCircularButton(context, "◀", 40, "#EB121622", Color.parseColor("#38BDF8"), 14f);
+        floatingArrowBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
-                closeStreamAndExit();
+                toggleQuickDrawer();
             }
         });
-        topToolbar.addView(backBtn);
 
-        // Блок заголовка: "Демонстрация экрана" + компактный статус
-        LinearLayout titleBox = new LinearLayout(context);
-        titleBox.setOrientation(LinearLayout.VERTICAL);
-        titleBox.setPadding(dpToPx(12), 0, dpToPx(14), 0);
-        titleBox.setGravity(Gravity.CENTER_VERTICAL);
+        // Панель быстрых действий (выдвижная)
+        quickActionsDrawer = new LinearLayout(context);
+        quickActionsDrawer.setOrientation(LinearLayout.VERTICAL);
+        quickActionsDrawer.setVisibility(View.GONE);
 
-        titleView = new TextView(context);
-        titleView.setText("Демонстрация экрана");
-        titleView.setTextColor(Color.WHITE);
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
-        titleView.setTypeface(Typeface.DEFAULT_BOLD);
-        titleView.setSingleLine(true);
-        titleView.setEllipsize(TextUtils.TruncateAt.END);
-        titleBox.addView(titleView);
+        GradientDrawable drawerBg = new GradientDrawable();
+        drawerBg.setColor(Color.parseColor("#EB121622"));
+        drawerBg.setCornerRadius(dpToPx(16));
+        drawerBg.setStroke(dpToPx(1), Color.parseColor("#334155"));
+        quickActionsDrawer.setBackground(drawerBg);
+        int pad = dpToPx(8);
+        quickActionsDrawer.setPadding(pad, pad, pad, pad);
 
-        subtitleView = new TextView(context);
-        subtitleView.setText("1080p · 60 FPS · Запуск...");
-        subtitleView.setTextColor(Color.parseColor("#94A3B8"));
-        subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-        subtitleView.setSingleLine(true);
-        subtitleView.setEllipsize(TextUtils.TruncateAt.END);
-        titleBox.addView(subtitleView);
-
-        topToolbar.addView(titleBox);
-
-        // Кнопка режима масштабирования (Fit / Fill)
-        scaleModeBtn = createToolbarButton(context, "Fit", "#242A35", Color.parseColor("#E2E8F0"), 13f);
-        scaleModeBtn.setOnClickListener(new OnClickListener() {
+        // 4 быстрые кнопки
+        quickBtnKeyboard = createQuickActionButton(context, "⌨", "Клавиатура", new Runnable() {
             @Override
-            public void onClick(View v) {
-                toggleScaleMode();
-                scheduleControlsAutoHide();
+            public void run() {
+                toggleCustomKeyboard();
             }
         });
-        topToolbar.addView(scaleModeBtn);
-
-        addToolbarSpacer(context, topToolbar, 8);
-
-        // Кнопка полноэкранного режима (⛶)
-        fullscreenBtn = createToolbarButton(context, "⛶", "#242A35", Color.WHITE, 17f);
-        fullscreenBtn.setOnClickListener(new OnClickListener() {
+        quickBtnMic = createQuickActionButton(context, "🎤", "Микрофон", new Runnable() {
             @Override
-            public void onClick(View v) {
-                toggleFullscreen();
-                scheduleControlsAutoHide();
+            public void run() {
+                toggleMicStreaming();
             }
         });
-        topToolbar.addView(fullscreenBtn);
-
-        addToolbarSpacer(context, topToolbar, 8);
-
-        // Кнопка настроек демонстрации и звука (⚙)
-        settingsBtn = createToolbarButton(context, "⚙", "#242A35", Color.WHITE, 17f);
-        settingsBtn.setOnClickListener(new OnClickListener() {
+        quickBtnSound = createQuickActionButton(context, "🔊", "Звук ПК", new Runnable() {
             @Override
-            public void onClick(View v) {
-                toggleSettingsDialog();
-                scheduleControlsAutoHide();
+            public void run() {
+                setAudioEnabled(!isAudioEnabled);
+                updateQuickActionStates();
             }
         });
-        topToolbar.addView(settingsBtn);
-
-        addToolbarSpacer(context, topToolbar, 8);
-
-        // Кнопка быстрого закрытия (✕)
-        closeBtn = createToolbarButton(context, "✕", "#3A2024", Color.parseColor("#FF5252"), 17f);
-        closeBtn.setOnClickListener(new OnClickListener() {
+        quickBtnTouchpad = createQuickActionButton(context, "🖱", "Тачпад", new Runnable() {
             @Override
-            public void onClick(View v) {
-                closeStreamAndExit();
+            public void run() {
+                isTouchpadEnabled = !isTouchpadEnabled;
+                updateQuickActionStates();
+                Toast.makeText(getContext(), isTouchpadEnabled ? "Тачпад включён" : "Тачпад выключен", Toast.LENGTH_SHORT).show();
             }
         });
-        topToolbar.addView(closeBtn);
 
-        addView(topToolbar);
+        quickActionsDrawer.addView(quickBtnKeyboard);
+        addQuickSpacer(context, quickActionsDrawer);
+        quickActionsDrawer.addView(quickBtnMic);
+        addQuickSpacer(context, quickActionsDrawer);
+        quickActionsDrawer.addView(quickBtnSound);
+        addQuickSpacer(context, quickActionsDrawer);
+        quickActionsDrawer.addView(quickBtnTouchpad);
+
+        // Компоновка плавающего контейнера
+        LinearLayout headRow = new LinearLayout(context);
+        headRow.setOrientation(LinearLayout.HORIZONTAL);
+        headRow.setGravity(Gravity.CENTER_VERTICAL);
+        headRow.addView(floatingArrowBtn);
+        View sp = new View(context);
+        headRow.addView(sp, new LinearLayout.LayoutParams(dpToPx(6), 1));
+        headRow.addView(floatingGearBtn);
+
+        LinearLayout groupCol = new LinearLayout(context);
+        groupCol.setOrientation(LinearLayout.VERTICAL);
+        groupCol.setGravity(Gravity.RIGHT);
+        groupCol.addView(headRow);
+
+        LinearLayout.LayoutParams drawerLp = new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
+        drawerLp.topMargin = dpToPx(8);
+        groupCol.addView(quickActionsDrawer, drawerLp);
+
+        floatingControlsGroup.addView(groupCol);
+        addView(floatingControlsGroup, new FrameLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
+
+        updateQuickActionStates();
     }
 
-    private TextView createToolbarButton(Context context, String text, String bgColorHex, int textColor, float textSizeSp) {
+    private TextView createCircularButton(Context context, String text, int sizeDp, String bgHex, int textColor, float textSp) {
         TextView btn = new TextView(context);
         btn.setText(text);
         btn.setTextColor(textColor);
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSizeSp);
+        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp);
         btn.setTypeface(Typeface.DEFAULT_BOLD);
         btn.setGravity(Gravity.CENTER);
 
-        // Крупная зона касания (минимум 48x48 dp по Material Design Guidelines)
-        btn.setMinWidth(dpToPx(48));
-        btn.setMinHeight(dpToPx(48));
+        int px = dpToPx(sizeDp);
+        btn.setLayoutParams(new LinearLayout.LayoutParams(px, px));
 
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor(bgColorHex));
-        bg.setCornerRadius(dpToPx(14));
-        btn.setBackground(bg);
-
-        int padX = dpToPx(12);
-        int padY = dpToPx(8);
-        btn.setPadding(padX, padY, padX, padY);
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(Color.parseColor(bgHex));
+        gd.setCornerRadius(px / 2f);
+        gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
+        btn.setBackground(gd);
         return btn;
     }
 
-    private TextView createToolbarButton(Context context, String text, String bgColorHex, int textColor) {
-        return createToolbarButton(context, text, bgColorHex, textColor, 13f);
-    }
+    private TextView createQuickActionButton(Context context, final String icon, final String label, final Runnable onClick) {
+        TextView btn = new TextView(context);
+        btn.setText(icon + " " + label);
+        btn.setTextColor(Color.parseColor("#94A3B8"));
+        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        btn.setTypeface(Typeface.DEFAULT_BOLD);
+        btn.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
+        btn.setMinWidth(dpToPx(120));
+        btn.setMinHeight(dpToPx(44));
 
-    private void addToolbarSpacer(Context context, LinearLayout parent, int dp) {
-        View sp = new View(context);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dpToPx(dp), 1);
-        sp.setLayoutParams(lp);
-        parent.addView(sp);
-    }
-
-    private TextView createChipButton(Context context, String text, final Runnable onClick) {
-        TextView chip = new TextView(context);
-        chip.setText(text);
-        chip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        chip.setTypeface(Typeface.DEFAULT_BOLD);
-        chip.setGravity(Gravity.CENTER);
-        chip.setTextColor(Color.parseColor("#CBD5E1"));
-        chip.setMinWidth(dpToPx(48));
-        chip.setMinHeight(dpToPx(48));
-        int padX = dpToPx(8);
+        int padX = dpToPx(10);
         int padY = dpToPx(6);
-        chip.setPadding(padX, padY, padX, padY);
+        btn.setPadding(padX, padY, padX, padY);
 
         GradientDrawable gd = new GradientDrawable();
         gd.setColor(Color.parseColor("#1E2530"));
-        gd.setCornerRadius(dpToPx(12));
+        gd.setCornerRadius(dpToPx(10));
         gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
-        chip.setBackground(gd);
+        btn.setBackground(gd);
 
-        chip.setOnClickListener(new OnClickListener() {
+        btn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (onClick != null) onClick.run();
             }
         });
-        return chip;
+        return btn;
     }
 
-    private void setChipActive(TextView chip, boolean active) {
-        if (chip == null) return;
+    private void addQuickSpacer(Context context, LinearLayout parent) {
+        View sp = new View(context);
+        parent.addView(sp, new LinearLayout.LayoutParams(1, dpToPx(6)));
+    }
+
+    private void setQuickButtonState(TextView btn, boolean active, boolean error) {
+        if (btn == null) return;
         GradientDrawable gd = new GradientDrawable();
-        gd.setCornerRadius(dpToPx(12));
-        if (active) {
-            gd.setColor(Color.parseColor("#2563EB")); // Vibrant Blue
-            gd.setStroke(dpToPx(1), Color.parseColor("#60A5FA"));
-            chip.setTextColor(Color.WHITE);
+        gd.setCornerRadius(dpToPx(10));
+        if (error) {
+            gd.setColor(Color.parseColor("#3B181E"));
+            gd.setStroke(dpToPx(1), Color.parseColor("#EF4444"));
+            btn.setTextColor(Color.parseColor("#FCA5A5"));
+        } else if (active) {
+            // Мягкий сине-бирюзовый акцент PC Control
+            gd.setColor(Color.parseColor("#0C4A6E"));
+            gd.setStroke(dpToPx(1), Color.parseColor("#38BDF8"));
+            btn.setTextColor(Color.parseColor("#38BDF8"));
         } else {
             gd.setColor(Color.parseColor("#1E2530"));
             gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
-            chip.setTextColor(Color.parseColor("#CBD5E1"));
+            btn.setTextColor(Color.parseColor("#94A3B8"));
         }
-        chip.setBackground(gd);
+        btn.setBackground(gd);
     }
 
-    private void addSectionHeader(Context context, LinearLayout parent, String text) {
-        TextView label = new TextView(context);
-        label.setText(text);
-        label.setTextColor(Color.parseColor("#94A3B8"));
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-        label.setTypeface(Typeface.DEFAULT_BOLD);
-        label.setPadding(0, dpToPx(4), 0, dpToPx(4));
-        parent.addView(label);
+    private void updateQuickActionStates() {
+        setQuickButtonState(quickBtnKeyboard, isKeyboardVisible, false);
+        setQuickButtonState(quickBtnMic, isMicStreaming, false);
+        setQuickButtonState(quickBtnSound, isAudioEnabled, false);
+        setQuickButtonState(quickBtnTouchpad, isTouchpadEnabled, false);
+    }
+
+    private void toggleQuickDrawer() {
+        isQuickDrawerOpen = !isQuickDrawerOpen;
+        if (isQuickDrawerOpen) {
+            quickActionsDrawer.setVisibility(View.VISIBLE);
+            floatingArrowBtn.setText("▶");
+            AlphaAnimation fa = new AlphaAnimation(0f, 1f);
+            fa.setDuration(180);
+            quickActionsDrawer.startAnimation(fa);
+        } else {
+            floatingArrowBtn.setText("◀");
+            quickActionsDrawer.setVisibility(View.GONE);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // АНИМИРОВАННЫЙ SPLIT-SCREEN РЕДАКТОР НАСТРОЕК (Scale, Translate, Preview)
+    // -----------------------------------------------------------------------
+    private void buildSplitSettings(Context context) {
+        splitSettingsContainer = new FrameLayout(context);
+        splitSettingsContainer.setVisibility(View.GONE);
+        splitSettingsContainer.setBackgroundColor(Color.parseColor("#CC030303"));
+
+        splitSettingsScroll = new ScrollView(context);
+        splitSettingsScroll.setVerticalScrollBarEnabled(false);
+
+        splitSettingsCard = new LinearLayout(context);
+        splitSettingsCard.setOrientation(LinearLayout.VERTICAL);
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.parseColor("#EB121622"));
+        bg.setCornerRadius(dpToPx(20));
+        bg.setStroke(dpToPx(1), Color.parseColor("#334155"));
+        splitSettingsCard.setBackground(bg);
+
+        int pad = dpToPx(18);
+        splitSettingsCard.setPadding(pad, pad, pad, pad);
+
+        splitSettingsScroll.addView(splitSettingsCard, new ScrollView.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+        splitSettingsContainer.addView(splitSettingsScroll, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+
+        addView(splitSettingsContainer, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+    }
+
+    private void toggleSplitSettings() {
+        if (isSplitSettingsOpen) {
+            closeSplitSettingsWithAnimation();
+        } else {
+            openSplitSettingsWithAnimation(0);
+        }
     }
 
     /**
-     * Построение модальной панели настроек стрима и звука прямо внутри запущенного плеера.
+     * Плавная анимация: уменьшение живого видео слева (scale=0.52), выезд панели справа.
      */
-    private void buildSettingsDialog(Context context) {
-        settingsOverlay = new FrameLayout(context);
-        settingsOverlay.setBackgroundColor(Color.parseColor("#99000000")); // Полупрозрачный бэкдроп
-        settingsOverlay.setVisibility(View.GONE);
-        settingsOverlay.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setSettingsVisible(false);
-            }
-        });
+    private void openSplitSettingsWithAnimation(int section) {
+        isSplitSettingsOpen = true;
+        activeSettingsSection = section;
+        renderSplitSettingsContent();
 
-        ScrollView scroll = new ScrollView(context);
-        scroll.setVerticalScrollBarEnabled(false);
+        // Скрываем плавающие кнопки на время настроек
+        if (floatingControlsGroup != null) floatingControlsGroup.setVisibility(View.GONE);
+        if (customKeyboardView != null) customKeyboardView.setVisibility(View.GONE);
 
-        settingsCard = new LinearLayout(context);
-        settingsCard.setOrientation(LinearLayout.VERTICAL);
+        splitSettingsContainer.setVisibility(View.VISIBLE);
+        splitSettingsContainer.setAlpha(0f);
 
-        GradientDrawable cardBg = new GradientDrawable();
-        cardBg.setColor(Color.parseColor("#EB121622"));
-        cardBg.setCornerRadius(dpToPx(20));
-        cardBg.setStroke(dpToPx(1), Color.parseColor("#334155"));
-        settingsCard.setBackground(cardBg);
+        int parentW = getWidth();
+        int parentH = getHeight();
 
-        int pad = dpToPx(18);
-        settingsCard.setPadding(pad, pad, pad, pad);
+        // Анимация контейнера видео
+        videoContainer.animate()
+                .scaleX(0.50f)
+                .scaleY(0.50f)
+                .translationX(-(parentW * 0.24f))
+                .setDuration(280)
+                .setInterpolator(new AccelerateDecelerateInterpolator())
+                .start();
 
-        FrameLayout.LayoutParams cardParams = new FrameLayout.LayoutParams(
-                dpToPx(380),
-                LayoutParams.WRAP_CONTENT
-        );
-        cardParams.gravity = Gravity.CENTER;
-        cardParams.topMargin = dpToPx(24);
-        cardParams.bottomMargin = dpToPx(24);
-        settingsCard.setLayoutParams(cardParams);
-        settingsCard.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // Блокируем клик на карточке от закрытия бэкдропа
-            }
-        });
+        // Анимация появления правой панели
+        splitSettingsContainer.animate()
+                .alpha(1f)
+                .setDuration(280)
+                .setListener(new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        requestLayout();
+                    }
+                })
+                .start();
+    }
 
-        // 1. Заголовок диалога
-        LinearLayout head = new LinearLayout(context);
+    private void closeSplitSettingsWithAnimation() {
+        isSplitSettingsOpen = false;
+        if (touchpadVisualEditor != null) {
+            touchpadVisualEditor.setVisibility(View.GONE);
+            isTouchpadEditing = false;
+        }
+
+        videoContainer.animate()
+                .scaleX(1.0f)
+                .scaleY(1.0f)
+                .translationX(0f)
+                .translationY(0f)
+                .setDuration(260)
+                .setInterpolator(new DecelerateInterpolator())
+                .start();
+
+        splitSettingsContainer.animate()
+                .alpha(0f)
+                .setDuration(220)
+                .setListener(new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        splitSettingsContainer.setVisibility(View.GONE);
+                        if (operatingMode == MODE_PC_CONTROL && floatingControlsGroup != null) {
+                            floatingControlsGroup.setVisibility(View.VISIBLE);
+                        }
+                        requestLayout();
+                    }
+                })
+                .start();
+    }
+
+    private void renderSplitSettingsContent() {
+        splitSettingsCard.removeAllViews();
+        Context ctx = getContext();
+
+        // Шапка панели настроек
+        LinearLayout head = new LinearLayout(ctx);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView title = new TextView(context);
-        title.setText("НАСТРОЙКИ ДЕМОНСТРАЦИИ");
-        title.setTextColor(Color.parseColor("#38BDF8")); // Sky blue
+        TextView title = new TextView(ctx);
+        title.setText(getSectionTitle(activeSettingsSection));
+        title.setTextColor(Color.parseColor("#38BDF8"));
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
-        head.addView(title, titleLp);
+        head.addView(title, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
 
-        TextView closeBtn = new TextView(context);
-        closeBtn.setText("✕");
-        closeBtn.setTextColor(Color.parseColor("#94A3B8"));
-        closeBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
-        closeBtn.setGravity(Gravity.CENTER);
-        closeBtn.setMinWidth(dpToPx(48));
-        closeBtn.setMinHeight(dpToPx(48));
-        closeBtn.setOnClickListener(new OnClickListener() {
+        TextView closeX = createToolbarButton(ctx, "✕", "#242A35", Color.parseColor("#94A3B8"), 14f);
+        closeX.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
-                setSettingsVisible(false);
+                closeSplitSettingsWithAnimation();
             }
         });
-        head.addView(closeBtn);
-        settingsCard.addView(head);
+        head.addView(closeX);
+        splitSettingsCard.addView(head);
 
-        addDivider(context, settingsCard);
+        addDivider(ctx, splitSettingsCard);
 
-        // 2. Раздел: ЭКРАН (МОНИТОР)
-        addSectionHeader(context, settingsCard, "ЭКРАН (МОНИТОР)");
-        LinearLayout monRow = new LinearLayout(context);
+        if (activeSettingsSection == 0) {
+            // Главное меню разделов
+            buildMainSettingsMenu(ctx);
+        } else if (activeSettingsSection == 1) {
+            // Раздел: Экран
+            buildScreenSettingsSection(ctx);
+        } else if (activeSettingsSection == 2) {
+            // Раздел: Качество
+            buildQualitySettingsSection(ctx);
+        } else if (activeSettingsSection == 3) {
+            // Раздел: FPS
+            buildFpsSettingsSection(ctx);
+        } else if (activeSettingsSection == 4) {
+            // Раздел: Тачпад
+            buildTouchpadSettingsSection(ctx);
+        } else if (activeSettingsSection == 5) {
+            // Раздел: Клавиатура
+            buildKeyboardSettingsSection(ctx);
+        } else if (activeSettingsSection == 6) {
+            // Раздел: Прозрачность
+            buildOpacitySettingsSection(ctx);
+        }
+    }
+
+    private String getSectionTitle(int s) {
+        switch (s) {
+            case 1: return "НАСТРОЙКИ ЭКРАНА";
+            case 2: return "КАЧЕСТВО ИЗОБРАЖЕНИЯ";
+            case 3: return "ЧАСТОТА КАДРОВ (FPS)";
+            case 4: return "НАСТРОЙКА ТАЧПАДА";
+            case 5: return "ЭКРАННАЯ КЛАВИАТУРА";
+            case 6: return "ПРОЗРАЧНОСТЬ ИНТЕРФЕЙСА";
+            default: return "УПРАВЛЕНИЕ ПК: НАСТРОЙКИ";
+        }
+    }
+
+    private void buildMainSettingsMenu(Context ctx) {
+        addSectionNavButton(ctx, "🖥 1. Экран (Мониторы)", 1);
+        addSectionNavButton(ctx, "🎨 2. Качество изображения", 2);
+        addSectionNavButton(ctx, "⚡ 3. Частота кадров (FPS)", 3);
+        addSectionNavButton(ctx, "🖱 4. Прозрачный тачпад", 4);
+        addSectionNavButton(ctx, "⌨ 5. Экранная клавиатура", 5);
+        addSectionNavButton(ctx, "👁 6. Прозрачность элементов", 6);
+
+        addDivider(ctx, splitSettingsCard);
+
+        // Кнопка перехода в диагностику
+        TextView diagBtn = createToolbarButton(ctx, "📊 Диагностика и телеметрия потока", "#1E293B", Color.parseColor("#38BDF8"), 13f);
+        diagBtn.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+        diagBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeSplitSettingsWithAnimation();
+                setDiagnosticsVisible(true);
+            }
+        });
+        splitSettingsCard.addView(diagBtn);
+    }
+
+    private void addSectionNavButton(Context ctx, String title, final int targetSection) {
+        TextView btn = createToolbarButton(ctx, title, "#1E2530", Color.WHITE, 13f);
+        btn.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
+        int pad = dpToPx(12);
+        btn.setPadding(pad, pad, pad, pad);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dpToPx(8);
+        btn.setLayoutParams(lp);
+        btn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                activeSettingsSection = targetSection;
+                renderSplitSettingsContent();
+            }
+        });
+        splitSettingsCard.addView(btn);
+    }
+
+    // -----------------------------------------------------------------------
+    // РАЗДЕЛ: ТАЧПАД (СИНХРОНИЗИРОВАННЫЙ РЕДАКТОР С ЖИВЫМ ПРЕВЬЮ)
+    // -----------------------------------------------------------------------
+    private void buildTouchpadSettingsSection(Context ctx) {
+        isTouchpadEditing = true;
+        if (touchpadVisualEditor != null) {
+            touchpadVisualEditor.setVisibility(View.VISIBLE);
+            touchpadVisualEditor.invalidate();
+        }
+
+        addBackToMainButton(ctx);
+
+        addSectionHeader(ctx, splitSettingsCard, "ЖИВАЯ РЕГУЛИРОВКА ПАРАМЕТРОВ");
+
+        // Ширина тачпада
+        final TextView wLbl = new TextView(ctx);
+        wLbl.setText("Ширина зоны: " + (int) (tpNormW * 100) + "%");
+        wLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        wLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(wLbl);
+
+        SeekBar wBar = createSlider(ctx, 20, 95, (int) (tpNormW * 100), new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                tpNormW = val / 100f;
+                wLbl.setText("Ширина зоны: " + val + "%");
+                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            }
+        });
+        splitSettingsCard.addView(wBar);
+
+        // Высота тачпада
+        final TextView hLbl = new TextView(ctx);
+        hLbl.setText("Высота зоны: " + (int) (tpNormH * 100) + "%");
+        hLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        hLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(hLbl);
+
+        SeekBar hBar = createSlider(ctx, 20, 95, (int) (tpNormH * 100), new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                tpNormH = val / 100f;
+                hLbl.setText("Высота зоны: " + val + "%");
+                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            }
+        });
+        splitSettingsCard.addView(hBar);
+
+        // Чувствительность мыши
+        final TextView sLbl = new TextView(ctx);
+        sLbl.setText("Чувствительность: " + String.format("%.1f", mouseSensitivity) + "x");
+        sLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        sLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(sLbl);
+
+        SeekBar sBar = createSlider(ctx, 2, 30, (int) (mouseSensitivity * 10), new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                mouseSensitivity = val / 10f;
+                sLbl.setText("Чувствительность: " + String.format("%.1f", mouseSensitivity) + "x");
+            }
+        });
+        splitSettingsCard.addView(sBar);
+
+        // Режим мыши: Относительный vs Абсолютный
+        addSectionHeader(ctx, splitSettingsCard, "РЕЖИМ УПРАВЛЕНИЯ");
+        LinearLayout modeRow = new LinearLayout(ctx);
+        modeRow.setOrientation(LinearLayout.HORIZONTAL);
+
+        final TextView relChip = createChipButton(ctx, "Относительный (Тачпад)", null);
+        final TextView absChip = createChipButton(ctx, "Абсолютный (Перо)", null);
+        setChipActive(relChip, !isMouseAbsolute);
+        setChipActive(absChip, isMouseAbsolute);
+
+        relChip.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                isMouseAbsolute = false;
+                setChipActive(relChip, true);
+                setChipActive(absChip, false);
+            }
+        });
+        absChip.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                isMouseAbsolute = true;
+                setChipActive(relChip, false);
+                setChipActive(absChip, true);
+            }
+        });
+        modeRow.addView(relChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        modeRow.addView(absChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        splitSettingsCard.addView(modeRow);
+
+        addDivider(ctx, splitSettingsCard);
+
+        // Кнопки сохранения
+        LinearLayout btnRow = new LinearLayout(ctx);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+
+        TextView applyBtn = createToolbarButton(ctx, "✓ Применить", "#16A34A", Color.WHITE, 13f);
+        applyBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                savePreferences();
+                closeSplitSettingsWithAnimation();
+                Toast.makeText(getContext(), "Настройки тачпада сохранены", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        TextView resetBtn = createToolbarButton(ctx, "Сброс", "#242A35", Color.parseColor("#94A3B8"), 13f);
+        resetBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                tpNormX = 0.55f;
+                tpNormY = 0.10f;
+                tpNormW = 0.42f;
+                tpNormH = 0.80f;
+                mouseSensitivity = 1.0f;
+                mouseAccel = true;
+                isMouseAbsolute = false;
+                savePreferences();
+                renderSplitSettingsContent();
+            }
+        });
+
+        btnRow.addView(resetBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        View sp = new View(ctx);
+        btnRow.addView(sp, new LinearLayout.LayoutParams(dpToPx(8), 1));
+        btnRow.addView(applyBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        splitSettingsCard.addView(btnRow);
+    }
+
+    // -----------------------------------------------------------------------
+    // РАЗДЕЛ: КЛАВИАТУРА (СОБСТВЕННАЯ КЛАВИАТУРА И ПАРАМЕТРЫ)
+    // -----------------------------------------------------------------------
+    private void buildKeyboardSettingsSection(Context ctx) {
+        addBackToMainButton(ctx);
+
+        addSectionHeader(ctx, splitSettingsCard, "НАСТРОЙКИ ЭКРАННОЙ КЛАВИАТУРЫ");
+
+        final TextView hLbl = new TextView(ctx);
+        hLbl.setText("Высота клавиатуры: " + kbdHeightDp + " dp");
+        hLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        hLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(hLbl);
+
+        SeekBar hBar = createSlider(ctx, 160, 320, kbdHeightDp, new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                kbdHeightDp = val;
+                hLbl.setText("Высота клавиатуры: " + val + " dp");
+                if (customKeyboardView != null) customKeyboardView.updateLayoutSize();
+            }
+        });
+        splitSettingsCard.addView(hBar);
+
+        // Прозрачность фона клавиатуры
+        final TextView opLbl = new TextView(ctx);
+        opLbl.setText("Прозрачность подложки: " + opacityKbdBg + "%");
+        opLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        opLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(opLbl);
+
+        SeekBar opBar = createSlider(ctx, 20, 100, opacityKbdBg, new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                opacityKbdBg = val;
+                opLbl.setText("Прозрачность подложки: " + val + "%");
+                applyOpacities();
+            }
+        });
+        splitSettingsCard.addView(opBar);
+
+        addDivider(ctx, splitSettingsCard);
+
+        TextView testKbdBtn = createToolbarButton(ctx, "⌨ Открыть клавиатуру для проверки", "#1E2530", Color.parseColor("#38BDF8"), 13f);
+        testKbdBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeSplitSettingsWithAnimation();
+                showCustomKeyboard(true);
+            }
+        });
+        splitSettingsCard.addView(testKbdBtn);
+    }
+
+    // -----------------------------------------------------------------------
+    // РАЗДЕЛ: ПРОЗРАЧНОСТЬ (14 ИНДИВИДУАЛЬНЫХ СЛАЙДЕРОВ С ЖИВЫМ ПРИМЕНЕНИЕМ)
+    // -----------------------------------------------------------------------
+    private void buildOpacitySettingsSection(Context ctx) {
+        addBackToMainButton(ctx);
+
+        addSectionHeader(ctx, splitSettingsCard, "ПРОЗРАЧНОСТЬ ЭЛЕМЕНТОВ (0 - 100%)");
+
+        addOpacitySlider(ctx, "Шестерёнка настроек", opacityGear, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityGear = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Стрелочка быстрого меню", opacityArrow, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityArrow = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Панель быстрых действий", opacityQuickDrawer, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityQuickDrawer = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Кнопка «Клавиатура»", opacityBtnKeyboard, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityBtnKeyboard = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Кнопка «Микрофон»", opacityBtnMic, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityBtnMic = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Кнопка «Звук ПК»", opacityBtnSound, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityBtnSound = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Кнопка «Тачпад»", opacityBtnTouchpad, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityBtnTouchpad = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Основная панель настроек", opacitySettings, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacitySettings = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Панель диагностики", opacityDiag, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityDiag = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Подложка клавиатуры", opacityKbdBg, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityKbdBg = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Клавиши клавиатуры", opacityKbdKeys, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityKbdKeys = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Панель спец-клавиш", opacityKbdSpecial, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityKbdSpecial = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Рамка тачпада в редакторе", opacityTpBorder, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityTpBorder = v; applyOpacities(); }
+        });
+        addOpacitySlider(ctx, "Индикатор тачпада", opacityTpCenter, new SeekBarCallback() {
+            @Override
+            public void onVal(int v) { opacityTpCenter = v; applyOpacities(); }
+        });
+
+        addDivider(ctx, splitSettingsCard);
+
+        TextView resetOp = createToolbarButton(ctx, "Сбросить прозрачность по умолчанию", "#242A35", Color.parseColor("#E2E8F0"), 13f);
+        resetOp.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                resetDefaultOpacities();
+                savePreferences();
+                renderSplitSettingsContent();
+            }
+        });
+        splitSettingsCard.addView(resetOp);
+    }
+
+    private void addOpacitySlider(Context ctx, String label, int currentVal, final SeekBarCallback cb) {
+        final TextView lbl = new TextView(ctx);
+        lbl.setText(label + ": " + currentVal + "%");
+        lbl.setTextColor(Color.parseColor("#CBD5E1"));
+        lbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        splitSettingsCard.addView(lbl);
+
+        SeekBar sb = createSlider(ctx, 10, 100, currentVal, new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                cb.onVal(val);
+                lbl.setText(label + ": " + val + "%");
+            }
+        });
+        splitSettingsCard.addView(sb);
+    }
+
+    private void applyOpacities() {
+        if (floatingGearBtn != null) floatingGearBtn.setAlpha(opacityGear / 100f);
+        if (floatingArrowBtn != null) floatingArrowBtn.setAlpha(opacityArrow / 100f);
+        if (quickActionsDrawer != null) quickActionsDrawer.setAlpha(opacityQuickDrawer / 100f);
+        if (quickBtnKeyboard != null) quickBtnKeyboard.setAlpha(opacityBtnKeyboard / 100f);
+        if (quickBtnMic != null) quickBtnMic.setAlpha(opacityBtnMic / 100f);
+        if (quickBtnSound != null) quickBtnSound.setAlpha(opacityBtnSound / 100f);
+        if (quickBtnTouchpad != null) quickBtnTouchpad.setAlpha(opacityBtnTouchpad / 100f);
+        if (splitSettingsCard != null) splitSettingsCard.setAlpha(opacitySettings / 100f);
+        if (diagCard != null) diagCard.setAlpha(opacityDiag / 100f);
+        if (customKeyboardView != null) customKeyboardView.applyOpacity(opacityKbdBg / 100f, opacityKbdKeys / 100f);
+        if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+    }
+
+    private void resetDefaultOpacities() {
+        opacityGear = 85;
+        opacityArrow = 85;
+        opacityQuickDrawer = 90;
+        opacityBtnKeyboard = 100;
+        opacityBtnMic = 100;
+        opacityBtnSound = 100;
+        opacityBtnTouchpad = 100;
+        opacitySettings = 95;
+        opacityDiag = 90;
+        opacityKbdBg = 92;
+        opacityKbdKeys = 95;
+        opacityKbdSpecial = 95;
+        opacityTpBorder = 80;
+        opacityTpCenter = 80;
+        applyOpacities();
+    }
+
+    // -----------------------------------------------------------------------
+    // РАЗДЕЛЫ: ЭКРАН, КАЧЕСТВО, FPS
+    // -----------------------------------------------------------------------
+    private void buildScreenSettingsSection(Context ctx) {
+        addBackToMainButton(ctx);
+        addSectionHeader(ctx, splitSettingsCard, "ВЫБОР МОНИТОРА");
+
+        LinearLayout monRow = new LinearLayout(ctx);
         monRow.setOrientation(LinearLayout.HORIZONTAL);
-        monRow.setGravity(Gravity.CENTER_VERTICAL);
-        monRow.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
-
         monitorChips.clear();
-        final int[] monIds = {1, 2, 0};
-        final String[] monNames = {"Экран 1", "Экран 2", "Все экраны"};
-        for (int i = 0; i < monIds.length; i++) {
-            final int mId = monIds[i];
-            TextView chip = createChipButton(context, monNames[i], new Runnable() {
+
+        final int[] mIds = {1, 2, 0};
+        final String[] mNames = {"Экран 1", "Экран 2", "Все"};
+        for (int i = 0; i < mIds.length; i++) {
+            final int mId = mIds[i];
+            TextView chip = createChipButton(ctx, mNames[i], new Runnable() {
                 @Override
                 public void run() {
                     applyVideoSettings(mId, targetHeight, targetFps, targetBitrate);
                 }
             });
             chip.setTag(mId);
+            setChipActive(chip, mId == targetMonitor);
             monitorChips.add(chip);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
-            lp.setMargins(dpToPx(3), dpToPx(3), dpToPx(3), dpToPx(3));
-            chip.setLayoutParams(lp);
-            monRow.addView(chip);
+            monRow.addView(chip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
         }
-        settingsCard.addView(monRow);
+        splitSettingsCard.addView(monRow);
+    }
 
-        addDivider(context, settingsCard);
+    private void buildQualitySettingsSection(Context ctx) {
+        addBackToMainButton(ctx);
+        addSectionHeader(ctx, splitSettingsCard, "РАЗРЕШЕНИЕ");
 
-        // 3. Раздел: РАЗРЕШЕНИЕ
-        addSectionHeader(context, settingsCard, "РАЗРЕШЕНИЕ");
-        LinearLayout resRow = new LinearLayout(context);
+        LinearLayout resRow = new LinearLayout(ctx);
         resRow.setOrientation(LinearLayout.HORIZONTAL);
-        resRow.setGravity(Gravity.CENTER_VERTICAL);
-        resRow.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
-
         resChips.clear();
-        final int[] heights = {480, 720, 1080, 0};
-        final String[] resNames = {"480p", "720p", "1080p", "Исходное"};
-        for (int i = 0; i < heights.length; i++) {
-            final int h = heights[i];
-            TextView chip = createChipButton(context, resNames[i], new Runnable() {
+
+        final int[] rVals = {480, 720, 1080, 0};
+        final String[] rNames = {"480p", "720p", "1080p", "Native"};
+        for (int i = 0; i < rVals.length; i++) {
+            final int h = rVals[i];
+            TextView chip = createChipButton(ctx, rNames[i], new Runnable() {
                 @Override
                 public void run() {
                     applyVideoSettings(targetMonitor, h, targetFps, targetBitrate);
                 }
             });
-            chip.setTag(h);
             resChips.put(h, chip);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
-            lp.setMargins(dpToPx(3), dpToPx(3), dpToPx(3), dpToPx(3));
-            chip.setLayoutParams(lp);
-            resRow.addView(chip);
+            setChipActive(chip, h == targetHeight);
+            resRow.addView(chip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
         }
-        settingsCard.addView(resRow);
+        splitSettingsCard.addView(resRow);
 
-        addDivider(context, settingsCard);
+        addDivider(ctx, splitSettingsCard);
+        addSectionHeader(ctx, splitSettingsCard, "БИТРЕЙТ");
 
-        // 4. Раздел: ЧАСТОТА КАДРОВ
-        addSectionHeader(context, settingsCard, "ЧАСТОТА КАДРОВ");
-        LinearLayout fpsRow = new LinearLayout(context);
-        fpsRow.setOrientation(LinearLayout.HORIZONTAL);
-        fpsRow.setGravity(Gravity.CENTER_VERTICAL);
-        fpsRow.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
-
-        fpsChips.clear();
-        final int[] fpsVals = {30, 60, 90};
-        final String[] fpsNames = {"30 FPS", "60 FPS", "90 FPS"};
-        for (int i = 0; i < fpsVals.length; i++) {
-            final int f = fpsVals[i];
-            TextView chip = createChipButton(context, fpsNames[i], new Runnable() {
-                @Override
-                public void run() {
-                    applyVideoSettings(targetMonitor, targetHeight, f, targetBitrate);
-                }
-            });
-            chip.setTag(f);
-            fpsChips.put(f, chip);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
-            lp.setMargins(dpToPx(3), dpToPx(3), dpToPx(3), dpToPx(3));
-            chip.setLayoutParams(lp);
-            fpsRow.addView(chip);
-        }
-        settingsCard.addView(fpsRow);
-
-        addDivider(context, settingsCard);
-
-        // 5. Раздел: БИТРЕЙТ
-        addSectionHeader(context, settingsCard, "БИТРЕЙТ");
-        LinearLayout brRow = new LinearLayout(context);
+        LinearLayout brRow = new LinearLayout(ctx);
         brRow.setOrientation(LinearLayout.HORIZONTAL);
-        brRow.setGravity(Gravity.CENTER_VERTICAL);
-        brRow.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
-
         bitrateChips.clear();
-        final int[] brVals = {0, 5000000, 15000000, 30000000, 50000000};
-        final String[] brNames = {"Авто", "5M", "15M", "30M", "50M"};
-        for (int i = 0; i < brVals.length; i++) {
-            final int b = brVals[i];
-            TextView chip = createChipButton(context, brNames[i], new Runnable() {
+
+        final int[] bVals = {0, 5, 15, 30, 50};
+        final String[] bNames = {"Авто", "5M", "15M", "30M", "50M"};
+        for (int i = 0; i < bVals.length; i++) {
+            final int b = bVals[i];
+            TextView chip = createChipButton(ctx, bNames[i], new Runnable() {
                 @Override
                 public void run() {
                     applyVideoSettings(targetMonitor, targetHeight, targetFps, b);
                 }
             });
-            chip.setTag(b);
             bitrateChips.put(b, chip);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
-            lp.setMargins(dpToPx(2), dpToPx(3), dpToPx(2), dpToPx(3));
-            chip.setLayoutParams(lp);
-            brRow.addView(chip);
+            setChipActive(chip, b == targetBitrate);
+            brRow.addView(chip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
         }
-        settingsCard.addView(brRow);
+        splitSettingsCard.addView(brRow);
+    }
 
-        addDivider(context, settingsCard);
+    private void buildFpsSettingsSection(Context ctx) {
+        addBackToMainButton(ctx);
+        addSectionHeader(ctx, splitSettingsCard, "ЧАСТОТА КАДРОВ");
 
-        // 6. Раздел: ЗВУК КОМПЬЮТЕРА (WASAPI LOOPBACK)
-        addSectionHeader(context, settingsCard, "ЗВУК КОМПЬЮТЕРА (WASAPI LOOPBACK)");
+        LinearLayout fpsRow = new LinearLayout(ctx);
+        fpsRow.setOrientation(LinearLayout.HORIZONTAL);
+        fpsChips.clear();
 
-        soundStatusView = new TextView(context);
-        soundStatusView.setText("● " + audioStatus);
-        soundStatusView.setTextColor(audioStatusColor);
-        soundStatusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        soundStatusView.setTypeface(Typeface.DEFAULT_BOLD);
-        soundStatusView.setPadding(0, dpToPx(2), 0, dpToPx(8));
-        settingsCard.addView(soundStatusView);
+        final int[] fVals = {30, 60, 90};
+        final String[] fNames = {"30 FPS", "60 FPS", "90 FPS"};
+        for (int i = 0; i < fVals.length; i++) {
+            final int f = fVals[i];
+            TextView chip = createChipButton(ctx, fNames[i], new Runnable() {
+                @Override
+                public void run() {
+                    applyVideoSettings(targetMonitor, targetHeight, f, targetBitrate);
+                }
+            });
+            fpsChips.put(f, chip);
+            setChipActive(chip, f == targetFps);
+            fpsRow.addView(chip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        }
+        splitSettingsCard.addView(fpsRow);
+    }
 
-        soundToggleBtn = createToolbarButton(context, "Звук ПК: ВКЛЮЧЕН", "#16A34A", Color.WHITE, 13f);
-        LinearLayout.LayoutParams toggleLp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
-        toggleLp.bottomMargin = dpToPx(10);
-        soundToggleBtn.setLayoutParams(toggleLp);
-        soundToggleBtn.setOnClickListener(new OnClickListener() {
+    private void addBackToMainButton(Context ctx) {
+        TextView back = createToolbarButton(ctx, "← Назад к разделам", "#1E2530", Color.parseColor("#94A3B8"), 12f);
+        back.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
+        int pad = dpToPx(8);
+        back.setPadding(pad, pad, pad, pad);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dpToPx(12);
+        back.setLayoutParams(lp);
+        back.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
-                setAudioEnabled(!isAudioEnabled);
+                if (touchpadVisualEditor != null) {
+                    touchpadVisualEditor.setVisibility(View.GONE);
+                    isTouchpadEditing = false;
+                }
+                activeSettingsSection = 0;
+                renderSplitSettingsContent();
             }
         });
-        settingsCard.addView(soundToggleBtn);
+        splitSettingsCard.addView(back);
+    }
 
-        // Громкость воспроизведения на телефоне
-        soundVolumeLabel = new TextView(context);
-        soundVolumeLabel.setText("Громкость на телефоне: " + audioVolume + "%");
-        soundVolumeLabel.setTextColor(Color.parseColor("#E2E8F0"));
-        soundVolumeLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        settingsCard.addView(soundVolumeLabel);
+    private interface SeekBarCallback {
+        void onVal(int val);
+    }
 
-        soundVolumeBar = new SeekBar(context);
-        soundVolumeBar.setMax(100);
-        soundVolumeBar.setProgress(audioVolume);
-        soundVolumeBar.setPadding(dpToPx(8), dpToPx(10), dpToPx(8), dpToPx(10));
-        soundVolumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+    private SeekBar createSlider(Context ctx, int min, int max, int current, final SeekBarCallback cb) {
+        SeekBar sb = new SeekBar(ctx);
+        sb.setMax(max - min);
+        sb.setProgress(Math.max(0, current - min));
+        sb.setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8));
+        final int finalMin = min;
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (fromUser) {
-                    setAudioVolume(progress);
+                if (fromUser && cb != null) {
+                    cb.onVal(finalMin + progress);
                 }
             }
             @Override
@@ -691,253 +1291,789 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {}
         });
-        settingsCard.addView(soundVolumeBar);
-
-        addDivider(context, settingsCard);
-
-        // 7. Раздел: ДИАГНОСТИКА ПОТОКА
-        addSectionHeader(context, settingsCard, "ДИАГНОСТИКА И ТЕЛЕМЕТРИЯ");
-
-        TextView openDiagBtn = createToolbarButton(context, "📊 Показать диагностику и FPS", "#1E293B", Color.parseColor("#38BDF8"), 13f);
-        openDiagBtn.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
-        openDiagBtn.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setSettingsVisible(false);
-                setDiagnosticsVisible(true);
-            }
-        });
-        settingsCard.addView(openDiagBtn);
-
-        scroll.addView(settingsCard);
-        settingsOverlay.addView(scroll, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
-        addView(settingsOverlay, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        return sb;
     }
 
-    private void highlightSettingsChips() {
-        for (TextView chip : monitorChips) {
-            Object tag = chip.getTag();
-            if (tag instanceof Integer) {
-                setChipActive(chip, ((Integer) tag) == targetMonitor);
-            }
-        }
-        for (Map.Entry<Integer, TextView> e : resChips.entrySet()) {
-            setChipActive(e.getValue(), e.getKey() == targetHeight);
-        }
-        for (Map.Entry<Integer, TextView> e : fpsChips.entrySet()) {
-            setChipActive(e.getValue(), e.getKey() == targetFps);
-        }
-        for (Map.Entry<Integer, TextView> e : bitrateChips.entrySet()) {
-            setChipActive(e.getValue(), e.getKey() == targetBitrate);
-        }
+    // -----------------------------------------------------------------------
+    // СОБСТВЕННАЯ ЭКРАННАЯ КЛАВИАТУРА PC CONTROL
+    // -----------------------------------------------------------------------
+    private void buildCustomKeyboard(Context context) {
+        customKeyboardView = new CustomKeyboardView(context);
+        customKeyboardView.setVisibility(View.GONE);
+        addView(customKeyboardView, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
     }
 
-    private void updateSettingsDialogUI() {
-        if (soundStatusView != null) {
-            soundStatusView.setText("● " + audioStatus);
-            soundStatusView.setTextColor(audioStatusColor);
+    private void toggleCustomKeyboard() {
+        showCustomKeyboard(!isKeyboardVisible);
+    }
+
+    private void showCustomKeyboard(boolean show) {
+        isKeyboardVisible = show;
+        if (customKeyboardView != null) {
+            customKeyboardView.setVisibility(show ? View.VISIBLE : View.GONE);
+            if (show) {
+                customKeyboardView.setAlpha(0f);
+                customKeyboardView.animate().alpha(1f).setDuration(200).start();
+            }
         }
-        if (soundToggleBtn != null) {
-            if (isAudioEnabled) {
-                soundToggleBtn.setText("Звук ПК: ВКЛЮЧЕН");
-                GradientDrawable gd = new GradientDrawable();
-                gd.setColor(Color.parseColor("#16A34A"));
-                gd.setCornerRadius(dpToPx(14));
-                soundToggleBtn.setBackground(gd);
-                soundToggleBtn.setTextColor(Color.WHITE);
+        updateQuickActionStates();
+    }
+
+    /**
+     * Компонент экранной клавиатуры с поддержкой раскладок EN, RU, UK, Symbols и горячих клавиш.
+     */
+    private class CustomKeyboardView extends LinearLayout {
+        private LinearLayout specialBar;
+        private LinearLayout keyContainer;
+        private boolean isShiftActive = false;
+        private boolean isCtrlActive = false;
+        private boolean isAltActive = false;
+        private boolean isWinActive = false;
+
+        public CustomKeyboardView(Context context) {
+            super(context);
+            setOrientation(LinearLayout.VERTICAL);
+            initKbd(context);
+        }
+
+        private void initKbd(Context context) {
+            GradientDrawable gd = new GradientDrawable();
+            gd.setColor(Color.parseColor("#E6121622"));
+            gd.setCornerRadius(dpToPx(16));
+            gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
+            setBackground(gd);
+            int pad = dpToPx(6);
+            setPadding(pad, pad, pad, pad);
+
+            // Панель специальных клавиш (Esc, Tab, Del, Arrows)
+            specialBar = new LinearLayout(context);
+            specialBar.setOrientation(LinearLayout.HORIZONTAL);
+            specialBar.setGravity(Gravity.CENTER_VERTICAL);
+            buildSpecialBar(context);
+            addView(specialBar);
+
+            // Контейнер алфавитных рядов
+            keyContainer = new LinearLayout(context);
+            keyContainer.setOrientation(LinearLayout.VERTICAL);
+            addView(keyContainer);
+
+            renderKeyboardRows();
+            applyOpacity(opacityKbdBg / 100f, opacityKbdKeys / 100f);
+        }
+
+        public void updateLayoutSize() {
+            if (keyContainer != null) renderKeyboardRows();
+        }
+
+        public void applyOpacity(float bgOp, float keyOp) {
+            setAlpha(bgOp);
+        }
+
+        private void buildSpecialBar(Context ctx) {
+            specialBar.removeAllViews();
+            addSpecialKey(ctx, "ESC", new Runnable() {
+                @Override public void run() { sendKeyPress("esc"); }
+            });
+            addSpecialKey(ctx, "TAB", new Runnable() {
+                @Override public void run() { sendKeyPress("tab"); }
+            });
+            addSpecialKey(ctx, "DEL", new Runnable() {
+                @Override public void run() { sendKeyPress("delete"); }
+            });
+            addSpecialKey(ctx, "↑", new Runnable() {
+                @Override public void run() { sendKeyPress("up"); }
+            });
+            addSpecialKey(ctx, "↓", new Runnable() {
+                @Override public void run() { sendKeyPress("down"); }
+            });
+            addSpecialKey(ctx, "←", new Runnable() {
+                @Override public void run() { sendKeyPress("left"); }
+            });
+            addSpecialKey(ctx, "→", new Runnable() {
+                @Override public void run() { sendKeyPress("right"); }
+            });
+            addSpecialKey(ctx, "✕", new Runnable() {
+                @Override public void run() { showCustomKeyboard(false); }
+            });
+        }
+
+        private void addSpecialKey(Context ctx, String text, final Runnable act) {
+            TextView btn = createKeyView(ctx, text, 1.0f, false, act);
+            btn.setTextColor(Color.parseColor("#38BDF8"));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dpToPx(36), 1.0f);
+            lp.setMargins(dpToPx(2), dpToPx(2), dpToPx(2), dpToPx(4));
+            btn.setLayoutParams(lp);
+            specialBar.addView(btn);
+        }
+
+        private void renderKeyboardRows() {
+            keyContainer.removeAllViews();
+            Context ctx = getContext();
+
+            String[][] rows;
+            if (kbdLayoutIdx == 1) {
+                // RU раскладка
+                rows = new String[][] {
+                    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х", "Ъ"},
+                    {"Ф", "Ы", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Э"},
+                    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "⌫"},
+                    {"123", "CTRL", "ALT", "WIN", " ", "ENTER", "RU"}
+                };
+            } else if (kbdLayoutIdx == 2) {
+                // UK раскладка
+                rows = new String[][] {
+                    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х", "Ї"},
+                    {"Ф", "І", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Є"},
+                    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "⌫"},
+                    {"123", "CTRL", "ALT", "WIN", " ", "ENTER", "UK"}
+                };
+            } else if (kbdLayoutIdx == 3) {
+                // Цифры и спецсимволы
+                rows = new String[][] {
+                    {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+                    {"@", "#", "$", "%", "&", "*", "-", "+", "(", ")"},
+                    {"!", "\"", "'", ":", ";", "/", "\\", "?", "⌫"},
+                    {"ABC", "CTRL", "ALT", "WIN", " ", "ENTER", "SYM"}
+                };
             } else {
-                soundToggleBtn.setText("Звук ПК: ВЫКЛЮЧЕН");
-                GradientDrawable gd = new GradientDrawable();
-                gd.setColor(Color.parseColor("#242A35"));
-                gd.setCornerRadius(dpToPx(14));
-                soundToggleBtn.setBackground(gd);
-                soundToggleBtn.setTextColor(Color.parseColor("#94A3B8"));
+                // EN раскладка
+                rows = new String[][] {
+                    {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"},
+                    {"A", "S", "D", "F", "G", "H", "J", "K", "L"},
+                    {"Z", "X", "C", "V", "B", "N", "M", "⌫"},
+                    {"123", "CTRL", "ALT", "WIN", " ", "ENTER", "EN"}
+                };
+            }
+
+            for (String[] rowKeys : rows) {
+                LinearLayout rowLayout = new LinearLayout(ctx);
+                rowLayout.setOrientation(LinearLayout.HORIZONTAL);
+                rowLayout.setGravity(Gravity.CENTER);
+
+                for (final String key : rowKeys) {
+                    float weight = 1.0f;
+                    if (" ".equals(key)) weight = 3.5f;
+                    else if ("ENTER".equals(key)) weight = 1.8f;
+                    else if ("⌫".equals(key)) weight = 1.4f;
+
+                    boolean isMod = "CTRL".equals(key) || "ALT".equals(key) || "WIN".equals(key);
+                    boolean isModActive = ("CTRL".equals(key) && isCtrlActive)
+                            || ("ALT".equals(key) && isAltActive)
+                            || ("WIN".equals(key) && isWinActive);
+
+                    TextView kView = createKeyView(ctx, key, weight, isModActive, new Runnable() {
+                        @Override
+                        public void run() {
+                            handleKeyTap(key);
+                        }
+                    });
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dpToPx(38), weight);
+                    lp.setMargins(dpToPx(2), dpToPx(2), dpToPx(2), dpToPx(2));
+                    kView.setLayoutParams(lp);
+                    rowLayout.addView(kView);
+                }
+                keyContainer.addView(rowLayout);
             }
         }
-        if (soundVolumeLabel != null) {
-            soundVolumeLabel.setText("Громкость на телефоне: " + audioVolume + "%");
-        }
-        if (soundVolumeBar != null && soundVolumeBar.getProgress() != audioVolume) {
-            soundVolumeBar.setProgress(audioVolume);
-        }
-    }
 
-    public void toggleSettingsDialog() {
-        setSettingsVisible(!isSettingsVisible);
-    }
+        private TextView createKeyView(Context ctx, String text, float weight, boolean active, final Runnable act) {
+            TextView btn = new TextView(ctx);
+            btn.setText(" ".equals(text) ? "ПРОБЕЛ" : text);
+            btn.setTextColor(active ? Color.parseColor("#38BDF8") : Color.WHITE);
+            btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, text.length() > 2 ? 11f : 14f);
+            btn.setTypeface(Typeface.DEFAULT_BOLD);
+            btn.setGravity(Gravity.CENTER);
 
-    public void setSettingsVisible(boolean visible) {
-        isSettingsVisible = visible;
-        if (settingsOverlay != null) {
-            settingsOverlay.setVisibility(visible ? View.VISIBLE : View.GONE);
+            GradientDrawable gd = new GradientDrawable();
+            gd.setColor(active ? Color.parseColor("#0C4A6E") : Color.parseColor("#1E2530"));
+            gd.setCornerRadius(dpToPx(8));
+            gd.setStroke(dpToPx(1), active ? Color.parseColor("#38BDF8") : Color.parseColor("#334155"));
+            btn.setBackground(gd);
+
+            btn.setOnClickListener(new OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (act != null) act.run();
+                }
+            });
+            return btn;
         }
-        if (visible) {
-            mainHandler.removeCallbacks(hideControlsRunnable);
-            if (isDiagVisible) {
-                setDiagnosticsVisible(false);
+
+        private void handleKeyTap(String key) {
+            if ("⌫".equals(key)) {
+                sendKeyPress("backspace");
+            } else if ("ENTER".equals(key)) {
+                sendKeyPress("enter");
+            } else if (" ".equals(key)) {
+                sendKeyPress("space");
+            } else if ("123".equals(key)) {
+                kbdLayoutIdx = 3;
+                renderKeyboardRows();
+            } else if ("ABC".equals(key)) {
+                kbdLayoutIdx = 0;
+                renderKeyboardRows();
+            } else if ("EN".equals(key)) {
+                kbdLayoutIdx = 1; // переход на RU
+                renderKeyboardRows();
+            } else if ("RU".equals(key)) {
+                kbdLayoutIdx = 2; // переход на UK
+                renderKeyboardRows();
+            } else if ("UK".equals(key)) {
+                kbdLayoutIdx = 0; // переход на EN
+                renderKeyboardRows();
+            } else if ("SYM".equals(key)) {
+                kbdLayoutIdx = 0;
+                renderKeyboardRows();
+            } else if ("CTRL".equals(key)) {
+                isCtrlActive = !isCtrlActive;
+                sendModifierKey("ctrl", isCtrlActive);
+                renderKeyboardRows();
+            } else if ("ALT".equals(key)) {
+                isAltActive = !isAltActive;
+                sendModifierKey("alt", isAltActive);
+                renderKeyboardRows();
+            } else if ("WIN".equals(key)) {
+                isWinActive = !isWinActive;
+                sendModifierKey("win", isWinActive);
+                renderKeyboardRows();
+            } else {
+                // Обычный символ (Unicode)
+                String charToSend = isShiftActive ? key.toUpperCase() : key.toLowerCase();
+                sendUnicodeText(charToSend);
+                if (isShiftActive) {
+                    isShiftActive = false;
+                    renderKeyboardRows();
+                }
             }
-            highlightSettingsChips();
-            updateSettingsDialogUI();
-            loadServerMonitors();
-        } else {
-            scheduleControlsAutoHide();
         }
     }
 
-    private void applyVideoSettings(final int newMonitor, final int newHeight, final int newFps, final int newBitrate) {
-        if (this.targetMonitor == newMonitor && this.targetHeight == newHeight && this.targetFps == newFps && this.targetBitrate == newBitrate) {
-            return;
-        }
-        final int prevMon = this.targetMonitor;
-        final int prevH = this.targetHeight;
-        final int prevFps = this.targetFps;
-        final int prevBr = this.targetBitrate;
-
-        this.targetMonitor = newMonitor;
-        this.targetHeight = newHeight;
-        this.targetFps = newFps;
-        this.targetBitrate = newBitrate;
-        savePreferences();
-        updateSubtitle();
-        highlightSettingsChips();
-
-        if (playerCallback != null) {
-            playerCallback.onSettingsChanged(newMonitor, newHeight, newFps, newBitrate);
-        }
-
-        if (isStreaming.get()) {
-            restartVideoStreamOnly(prevMon, prevH, prevFps, prevBr);
+    private void sendKeyPress(final String keyName) {
+        if (inputDispatcherThread != null) {
+            inputDispatcherThread.enqueueKeyPress(keyName);
         }
     }
 
-    private void restartVideoStreamOnly(final int prevMon, final int prevH, final int prevFps, final int prevBr) {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                // Уведомляем сервер по HTTP о новых параметрах экрана
-                try {
-                    String cfgUrl = serverUrl + "/screen/config";
-                    URL u = new URL(cfgUrl);
-                    HttpURLConnection cfgConn = (HttpURLConnection) u.openConnection();
-                    cfgConn.setRequestMethod("POST");
-                    cfgConn.setConnectTimeout(2500);
-                    cfgConn.setReadTimeout(2500);
-                    cfgConn.setRequestProperty("Content-Type", "application/json");
-                    if (!authToken.isEmpty()) {
-                        cfgConn.setRequestProperty("X-Auth-Token", authToken);
+    private void sendModifierKey(final String keyName, final boolean isDown) {
+        if (inputDispatcherThread != null) {
+            inputDispatcherThread.enqueueKeyModifier(keyName, isDown);
+        }
+    }
+
+    private void sendUnicodeText(final String text) {
+        if (inputDispatcherThread != null) {
+            inputDispatcherThread.enqueueUnicodeText(text);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ВИЗУАЛЬНЫЙ РЕДАКТОР ТАЧПАДА НА ЭКРАНЕ (8 маркеров и центральный якорь)
+    // -----------------------------------------------------------------------
+    private class TouchpadVisualEditorView extends View {
+        private final RectF zoneRect = new RectF();
+        private int activeHandle = -1; // -1=none, 0=center, 1..8=handles
+        private float lastX, lastY;
+
+        public TouchpadVisualEditorView(Context context) {
+            super(context);
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas canvas) {
+            super.onDraw(canvas);
+            int w = getWidth();
+            int h = getHeight();
+            if (w <= 0 || h <= 0) return;
+
+            zoneRect.set(tpNormX * w, tpNormY * h, (tpNormX + tpNormW) * w, (tpNormY + tpNormH) * h);
+
+            // Полупрозрачная заливка рабочей области
+            android.graphics.Paint fillPaint = new android.graphics.Paint();
+            fillPaint.setColor(Color.parseColor("#2638BDF8"));
+            fillPaint.setStyle(android.graphics.Paint.Style.FILL);
+            canvas.drawRoundRect(zoneRect, dpToPx(16), dpToPx(16), fillPaint);
+
+            // Рамка зоны тачпада
+            android.graphics.Paint borderPaint = new android.graphics.Paint();
+            borderPaint.setColor(Color.parseColor("#38BDF8"));
+            borderPaint.setAlpha((int) ((opacityTpBorder / 100f) * 255));
+            borderPaint.setStyle(android.graphics.Paint.Style.STROKE);
+            borderPaint.setStrokeWidth(dpToPx(2));
+            canvas.drawRoundRect(zoneRect, dpToPx(16), dpToPx(16), borderPaint);
+
+            // Центральный маркер перетаскивания (✥)
+            android.graphics.Paint textPaint = new android.graphics.Paint();
+            textPaint.setColor(Color.WHITE);
+            textPaint.setTextSize(dpToPx(20));
+            textPaint.setTextAlign(android.graphics.Paint.Align.CENTER);
+            textPaint.setAlpha((int) ((opacityTpCenter / 100f) * 255));
+            canvas.drawText("✥", zoneRect.centerX(), zoneRect.centerY() + dpToPx(7), textPaint);
+
+            // Угловые и краевые маркеры изменения размеров (8 кружков)
+            android.graphics.Paint handlePaint = new android.graphics.Paint();
+            handlePaint.setColor(Color.WHITE);
+            handlePaint.setStyle(android.graphics.Paint.Style.FILL);
+
+            float r = dpToPx(6);
+            canvas.drawCircle(zoneRect.left, zoneRect.top, r, handlePaint);
+            canvas.drawCircle(zoneRect.right, zoneRect.top, r, handlePaint);
+            canvas.drawCircle(zoneRect.left, zoneRect.bottom, r, handlePaint);
+            canvas.drawCircle(zoneRect.right, zoneRect.bottom, r, handlePaint);
+            canvas.drawCircle(zoneRect.centerX(), zoneRect.top, r, handlePaint);
+            canvas.drawCircle(zoneRect.centerX(), zoneRect.bottom, r, handlePaint);
+            canvas.drawCircle(zoneRect.left, zoneRect.centerY(), r, handlePaint);
+            canvas.drawCircle(zoneRect.right, zoneRect.centerY(), r, handlePaint);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            float x = event.getX();
+            float y = event.getY();
+            int w = getWidth();
+            int h = getHeight();
+
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    lastX = x;
+                    lastY = y;
+                    float touchRadius = dpToPx(24);
+                    // Определение маркера: 0=Центр, 1..8=Границы
+                    if (Math.hypot(x - zoneRect.centerX(), y - zoneRect.centerY()) < touchRadius * 1.5) {
+                        activeHandle = 0; // Перетаскивание всего тачпада
+                    } else if (Math.hypot(x - zoneRect.right, y - zoneRect.bottom) < touchRadius) {
+                        activeHandle = 4; // Правый нижний угол
+                    } else if (Math.hypot(x - zoneRect.left, y - zoneRect.bottom) < touchRadius) {
+                        activeHandle = 3; // Левый нижний угол
+                    } else if (Math.hypot(x - zoneRect.right, y - zoneRect.top) < touchRadius) {
+                        activeHandle = 2; // Правый верхний угол
+                    } else if (Math.hypot(x - zoneRect.left, y - zoneRect.top) < touchRadius) {
+                        activeHandle = 1; // Левый верхний угол
+                    } else if (Math.abs(x - zoneRect.right) < touchRadius) {
+                        activeHandle = 6; // Правая граница
+                    } else if (Math.abs(x - zoneRect.left) < touchRadius) {
+                        activeHandle = 5; // Левая граница
+                    } else if (Math.abs(y - zoneRect.bottom) < touchRadius) {
+                        activeHandle = 8; // Нижняя граница
+                    } else if (Math.abs(y - zoneRect.top) < touchRadius) {
+                        activeHandle = 7; // Верхняя граница
+                    } else {
+                        activeHandle = 0;
                     }
-                    cfgConn.setDoOutput(true);
-                    String json = "{\"monitor\":" + targetMonitor + ",\"height\":" + targetHeight + ",\"fps\":" + targetFps + ",\"bitrate\":" + targetBitrate + "}";
-                    OutputStream out = cfgConn.getOutputStream();
-                    out.write(json.getBytes(StandardCharsets.UTF_8));
-                    out.flush();
-                    out.close();
-                    cfgConn.getResponseCode();
-                    cfgConn.disconnect();
-                } catch (Exception ignored) {}
+                    return true;
 
-                // Прерываем предыдущее видео-соединение (звуковой поток НЕ трогаем!)
-                HttpURLConnection conn = activeConn;
-                if (conn != null) {
-                    try { conn.disconnect(); } catch (Exception ignored) {}
-                    activeConn = null;
+                case MotionEvent.ACTION_MOVE:
+                    float dx = (x - lastX) / (float) w;
+                    float dy = (y - lastY) / (float) h;
+                    lastX = x;
+                    lastY = y;
+
+                    if (activeHandle == 0) {
+                        // Перемещение центра
+                        tpNormX = Math.max(0f, Math.min(1f - tpNormW, tpNormX + dx));
+                        tpNormY = Math.max(0f, Math.min(1f - tpNormH, tpNormY + dy));
+                    } else if (activeHandle == 4 || activeHandle == 6) {
+                        // Изменение ширины справа
+                        tpNormW = Math.max(0.15f, Math.min(1f - tpNormX, tpNormW + dx));
+                        if (activeHandle == 4) {
+                            tpNormH = Math.max(0.15f, Math.min(1f - tpNormY, tpNormH + dy));
+                        }
+                    } else if (activeHandle == 8) {
+                        // Изменение высоты снизу
+                        tpNormH = Math.max(0.15f, Math.min(1f - tpNormY, tpNormH + dy));
+                    }
+                    invalidate();
+                    return true;
+
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    activeHandle = -1;
+                    return true;
+            }
+            return super.onTouchEvent(event);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // МУЛЬТИТАЧ СЕНСОРНЫЙ КОНТРОЛЛЕР МЫШИ (ПРОЗРАЧНЫЙ ТАЧПАД)
+    // -----------------------------------------------------------------------
+    private boolean handleTouchEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        activePointerCount = event.getPointerCount();
+        float x = event.getX();
+        float y = event.getY();
+
+        if (operatingMode == MODE_VIEW) {
+            // В режиме просмотра тапы скрывают/показывают тулбар
+            if (action == MotionEvent.ACTION_UP) {
+                setControlsVisible(!isControlsVisible, true);
+            }
+            return true;
+        }
+
+        // В режиме Управление ПК проверяем, попадает ли касание в тачпад
+        int pW = getWidth();
+        int pH = getHeight();
+        if (pW <= 0 || pH <= 0 || !isTouchpadEnabled || isTouchpadEditing || isSplitSettingsOpen) {
+            return false;
+        }
+
+        float tpLeft = tpNormX * pW;
+        float tpTop = tpNormY * pH;
+        float tpRight = (tpNormX + tpNormW) * pW;
+        float tpBottom = (tpNormY + tpNormH) * pH;
+
+        // Если касание вне зоны тачпада — пропускаем для остальных элементов
+        if (action == MotionEvent.ACTION_DOWN) {
+            if (x < tpLeft || x > tpRight || y < tpTop || y > tpBottom) {
+                return false;
+            }
+        }
+
+        switch (action) {
+            case MotionEvent.ACTION_DOWN:
+                touchStartX = x;
+                touchStartY = y;
+                lastTouchX = x;
+                lastTouchY = y;
+                touchDownTime = SystemClock.uptimeMillis();
+                isDraggingMouse = false;
+                isMouseLongPressed = false;
+                mainHandler.postDelayed(longPressRunnable, 350);
+                break;
+
+            case MotionEvent.ACTION_MOVE:
+                float dx = x - lastTouchX;
+                float dy = y - lastTouchY;
+                lastTouchX = x;
+                lastTouchY = y;
+
+                if (Math.abs(x - touchStartX) > dpToPx(6) || Math.abs(y - touchStartY) > dpToPx(6)) {
+                    isDraggingMouse = true;
+                    mainHandler.removeCallbacks(longPressRunnable);
                 }
 
-                Thread wt = workerThread;
-                if (wt != null) {
-                    wt.interrupt();
-                    try { wt.join(400); } catch (Exception ignored) {}
-                }
-
-                releaseDecoder();
-
-                // Запускаем новый поток видео-декодера
-                workerThread = new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        runStreamWorker();
-                    }
-                }, "pc-native-stream-worker");
-                workerThread.start();
-            }
-        }).start();
-    }
-
-    private void loadServerMonitors() {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    if (serverUrl == null || serverUrl.isEmpty()) return;
-                    String mUrl = serverUrl + "/screen/monitors";
-                    URL u = new URL(mUrl);
-                    HttpURLConnection c = (HttpURLConnection) u.openConnection();
-                    c.setConnectTimeout(3000);
-                    c.setReadTimeout(3000);
-                    if (!authToken.isEmpty()) {
-                        c.setRequestProperty("X-Auth-Token", authToken);
-                    }
-                    c.connect();
-                    if (c.getResponseCode() == 200) {
-                        InputStream in = c.getInputStream();
-                        byte[] buf = new byte[8192];
-                        int r = in.read(buf);
-                        in.close();
-                        if (r > 0) {
-                            final String body = new String(buf, 0, r, StandardCharsets.UTF_8);
-                            mainHandler.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    parseAndUpdateMonitors(body);
-                                }
-                            });
+                if (activePointerCount == 1) {
+                    if (isMouseAbsolute) {
+                        float normX = Math.max(0f, Math.min(1f, (x - tpLeft) / (tpRight - tpLeft)));
+                        float normY = Math.max(0f, Math.min(1f, (y - tpTop) / (tpBottom - tpTop)));
+                        if (inputDispatcherThread != null) {
+                            inputDispatcherThread.enqueueMouseMoveNorm(normX, normY, targetMonitor);
+                        }
+                    } else {
+                        if (inputDispatcherThread != null) {
+                            inputDispatcherThread.enqueueMouseMoveRel(dx, dy, mouseSensitivity, mouseAccel);
                         }
                     }
-                    c.disconnect();
+                } else if (activePointerCount >= 2) {
+                    mainHandler.removeCallbacks(longPressRunnable);
+                    int scrollDelta = (int) (-dy / dpToPx(6));
+                    if (scrollDelta != 0 && inputDispatcherThread != null) {
+                        inputDispatcherThread.enqueueMouseScroll(scrollDelta);
+                    }
+                }
+                break;
+
+            case MotionEvent.ACTION_UP:
+                mainHandler.removeCallbacks(longPressRunnable);
+                long duration = SystemClock.uptimeMillis() - touchDownTime;
+
+                if (isMouseLongPressed) {
+                    isMouseLongPressed = false;
+                    if (inputDispatcherThread != null) {
+                        inputDispatcherThread.enqueueMouseUp("left");
+                    }
+                } else if (!isDraggingMouse && duration < 280) {
+                    long now = SystemClock.uptimeMillis();
+                    if (now - lastTapTime < 280) {
+                        // Двойной клик
+                        if (inputDispatcherThread != null) {
+                            inputDispatcherThread.enqueueMouseClick("left", true);
+                        }
+                        lastTapTime = 0;
+                    } else {
+                        // Одиночный левый клик
+                        if (inputDispatcherThread != null) {
+                            inputDispatcherThread.enqueueMouseClick("left", false);
+                        }
+                        lastTapTime = now;
+                    }
+                }
+                break;
+
+            case MotionEvent.ACTION_POINTER_UP:
+                mainHandler.removeCallbacks(longPressRunnable);
+                if (activePointerCount == 2 && !isDraggingMouse) {
+                    // Касание двумя пальцами — Правый клик
+                    if (inputDispatcherThread != null) {
+                        inputDispatcherThread.enqueueMouseClick("right", false);
+                    }
+                }
+                break;
+        }
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // НЕБЛОКИРУЮЩИЙ ДИСПЕТЧЕР КОМАНД ВВОДА (InputDispatcherThread)
+    // -----------------------------------------------------------------------
+    private static class InputCmd {
+        String json;
+        float relDx, relDy;
+        boolean isCoalescedMove = false;
+    }
+
+    private class InputDispatcherThread extends Thread {
+        private final LinkedBlockingQueue<InputCmd> queue = new LinkedBlockingQueue<>(250);
+        private final AtomicBoolean running = new AtomicBoolean(true);
+        private HttpURLConnection keepAliveConn = null;
+
+        public InputDispatcherThread() {
+            super("pc-control-input-dispatcher");
+        }
+
+        public void enqueueMouseMoveRel(float dx, float dy, float sens, boolean accel) {
+            InputCmd cmd = new InputCmd();
+            cmd.relDx = dx;
+            cmd.relDy = dy;
+            cmd.isCoalescedMove = true;
+            cmd.json = "{\"action\":\"move_rel\",\"dx\":" + dx + ",\"dy\":" + dy + ",\"sensitivity\":" + sens + ",\"accel\":" + accel + "}";
+            queue.offer(cmd);
+        }
+
+        public void enqueueMouseMoveNorm(float nx, float ny, int mon) {
+            InputCmd cmd = new InputCmd();
+            cmd.json = "{\"action\":\"move_norm\",\"x\":" + nx + ",\"y\":" + ny + ",\"monitor\":" + mon + "}";
+            queue.offer(cmd);
+        }
+
+        public void enqueueMouseClick(String btn, boolean dbl) {
+            InputCmd cmd = new InputCmd();
+            cmd.json = "{\"action\":\"" + (dbl ? "double_click" : "click") + "\",\"button\":\"" + btn + "\"}";
+            queue.offer(cmd);
+        }
+
+        public void enqueueMouseDown(String btn) {
+            InputCmd cmd = new InputCmd();
+            cmd.json = "{\"action\":\"down\",\"button\":\"" + btn + "\"}";
+            queue.offer(cmd);
+        }
+
+        public void enqueueMouseUp(String btn) {
+            InputCmd cmd = new InputCmd();
+            cmd.json = "{\"action\":\"up\",\"button\":\"" + btn + "\"}";
+            queue.offer(cmd);
+        }
+
+        public void enqueueMouseScroll(int dy) {
+            InputCmd cmd = new InputCmd();
+            cmd.json = "{\"action\":\"scroll\",\"dy\":" + dy + "}";
+            queue.offer(cmd);
+        }
+
+        public void enqueueKeyPress(String key) {
+            InputCmd cmd = new InputCmd();
+            cmd.json = "{\"action\":\"key_press\",\"key\":\"" + key + "\"}";
+            queue.offer(cmd);
+        }
+
+        public void enqueueKeyModifier(String key, boolean down) {
+            InputCmd cmd = new InputCmd();
+            cmd.json = "{\"action\":\"" + (down ? "key_down" : "key_up") + "\",\"key\":\"" + key + "\"}";
+            queue.offer(cmd);
+        }
+
+        public void enqueueUnicodeText(String text) {
+            InputCmd cmd = new InputCmd();
+            cmd.json = "{\"action\":\"text\",\"text\":\"" + text.replace("\"", "\\\"") + "\"}";
+            queue.offer(cmd);
+        }
+
+        public void enqueueReleaseAll() {
+            InputCmd cmd = new InputCmd();
+            cmd.json = "{\"action\":\"release_all\"}";
+            queue.offer(cmd);
+        }
+
+        @Override
+        public void run() {
+            while (running.get()) {
+                try {
+                    InputCmd cmd = queue.poll(500, TimeUnit.MILLISECONDS);
+                    if (cmd == null) continue;
+
+                    // Коалесцирование быстрых перемещений мыши: объединяем накопившиеся дельты
+                    if (cmd.isCoalescedMove) {
+                        float sumDx = cmd.relDx;
+                        float sumDy = cmd.relDy;
+                        while (!queue.isEmpty()) {
+                            InputCmd next = queue.peek();
+                            if (next != null && next.isCoalescedMove) {
+                                queue.poll();
+                                sumDx += next.relDx;
+                                sumDy += next.relDy;
+                            } else {
+                                break;
+                            }
+                        }
+                        cmd.json = "{\"action\":\"move_rel\",\"dx\":" + sumDx + ",\"dy\":" + sumDy + ",\"sensitivity\":" + mouseSensitivity + ",\"accel\":" + mouseAccel + "}";
+                    }
+
+                    sendJson(cmd.json);
+                } catch (InterruptedException e) {
+                    break;
                 } catch (Exception ignored) {}
             }
-        }).start();
+        }
+
+        private void sendJson(String json) {
+            if (serverUrl == null || serverUrl.isEmpty()) return;
+            try {
+                String targetPath = json.contains("\"text\"") || json.contains("\"key_") || json.contains("\"hotkey\"")
+                        ? "/api/keyboard"
+                        : "/api/mouse";
+
+                URL u = new URL(serverUrl + targetPath);
+                HttpURLConnection c = (HttpURLConnection) u.openConnection();
+                c.setRequestMethod("POST");
+                c.setConnectTimeout(400);
+                c.setReadTimeout(400);
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", "application/json");
+                c.setRequestProperty("Connection", "keep-alive");
+                if (!authToken.isEmpty()) {
+                    c.setRequestProperty("X-Auth-Token", authToken);
+                }
+
+                byte[] body = json.getBytes(StandardCharsets.UTF_8);
+                c.setFixedLengthStreamingMode(body.length);
+                try (OutputStream os = c.getOutputStream()) {
+                    os.write(body);
+                    os.flush();
+                }
+                c.getResponseCode();
+                c.disconnect();
+            } catch (Exception ignored) {}
+        }
+
+        public void shutdown() {
+            running.set(false);
+            interrupt();
+        }
     }
 
-    private void parseAndUpdateMonitors(String json) {
-        try {
-            if (json.contains("\"monitors\"") && monitorChips.size() >= 3) {
-                if (json.contains("\"id\":1")) {
-                    monitorChips.get(0).setVisibility(View.VISIBLE);
+    // -----------------------------------------------------------------------
+    // МИКРОФОН ТЕЛЕФОНА -> WINDOWS PC (MicSenderThread)
+    // -----------------------------------------------------------------------
+    private void toggleMicStreaming() {
+        if (isMicStreaming) {
+            stopMicStreaming();
+        } else {
+            startMicStreaming();
+        }
+    }
+
+    private void startMicStreaming() {
+        MainActivity act = MainActivity.getInstance();
+        if (act != null && !act.checkOrRequestRecordAudioPermission()) {
+            Toast.makeText(getContext(), "Требуется разрешение на запись звука", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        synchronized (micLock) {
+            if (isMicStreaming) return;
+            isMicStreaming = true;
+            updateQuickActionStates();
+
+            micSenderThread = new MicSenderThread();
+            micSenderThread.start();
+        }
+        Toast.makeText(getContext(), "Микрофон телефона подключён к ПК", Toast.LENGTH_SHORT).show();
+    }
+
+    private void stopMicStreaming() {
+        synchronized (micLock) {
+            isMicStreaming = false;
+            if (micSenderThread != null) {
+                micSenderThread.shutdown();
+                micSenderThread = null;
+            }
+            updateQuickActionStates();
+        }
+    }
+
+    private class MicSenderThread extends Thread {
+        private final AtomicBoolean active = new AtomicBoolean(true);
+        private AudioRecord recorder = null;
+
+        public MicSenderThread() {
+            super("pc-control-mic-sender");
+        }
+
+        @Override
+        public void run() {
+            int sampleRate = 16000;
+            int channelConfig = AudioFormat.CHANNEL_IN_MONO;
+            int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
+            int bufferSize = Math.max(AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat) * 2, 2048);
+
+            try {
+                recorder = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, audioFormat, bufferSize);
+                if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+                    post(new Runnable() {
+                        @Override public void run() { stopMicStreaming(); }
+                    });
+                    return;
                 }
-                if (json.contains("\"id\":2")) {
-                    monitorChips.get(1).setVisibility(View.VISIBLE);
-                } else {
-                    monitorChips.get(1).setVisibility(View.GONE);
+                recorder.startRecording();
+
+                URL url = new URL(serverUrl + "/api/mic/stream?rate=" + sampleRate + "&channels=1");
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setDoOutput(true);
+                conn.setChunkedStreamingMode(1024);
+                conn.setRequestProperty("Content-Type", "application/octet-stream");
+                if (!authToken.isEmpty()) {
+                    conn.setRequestProperty("X-Auth-Token", authToken);
+                }
+
+                try (OutputStream os = conn.getOutputStream()) {
+                    byte[] buf = new byte[1024];
+                    while (active.get() && isStreaming.get()) {
+                        int read = recorder.read(buf, 0, buf.length);
+                        if (read > 0) {
+                            os.write(buf, 0, read);
+                            os.flush();
+                        }
+                    }
+                }
+                conn.disconnect();
+            } catch (Exception ignored) {
+            } finally {
+                if (recorder != null) {
+                    try {
+                        recorder.stop();
+                        recorder.release();
+                    } catch (Exception ignored) {}
+                    recorder = null;
                 }
             }
-        } catch (Exception ignored) {}
+        }
+
+        public void shutdown() {
+            active.set(false);
+            interrupt();
+        }
     }
 
-    // =========================================================================
-    // Native WASAPI Loopback Audio Engine (48 kHz Stereo 16-bit PCM AudioTrack)
-    // =========================================================================
+    // -----------------------------------------------------------------------
+    // СТАНДАРТНЫЙ АУДИОДВИЖОК WASAPI LOOPBACK (AudioPlayerThread)
+    // -----------------------------------------------------------------------
     private class AudioPlayerThread extends Thread {
         private final AtomicBoolean running = new AtomicBoolean(true);
         private AudioTrack audioTrack;
-        private volatile HttpURLConnection audioConn;
 
         public AudioPlayerThread() {
-            super("pc-native-audio-player");
-        }
-
-        public void stopAudio() {
-            running.set(false);
-            final HttpURLConnection c = audioConn;
-            if (c != null) {
-                new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        try { c.disconnect(); } catch (Exception ignored) {}
-                    }
-                }).start();
-            }
-            interrupt();
+            super("pc-control-wasapi-audio");
         }
 
         @Override
@@ -945,11 +2081,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             int sampleRate = 48000;
             int channelConfig = AudioFormat.CHANNEL_OUT_STEREO;
             int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
-            int minBuf = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat);
-            if (minBuf <= 0) minBuf = 4096;
-            int trackBufSize = Math.max(minBuf, 8192);
-
-            updateAudioStatusOnMain("Подключение...", Color.parseColor("#F59E0B"));
+            int minBufSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat);
+            int bufSize = Math.max(minBufSize * 2, 8192);
 
             try {
                 audioTrack = new AudioTrack(
@@ -957,499 +2090,205 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         sampleRate,
                         channelConfig,
                         audioFormat,
-                        trackBufSize,
+                        bufSize,
                         AudioTrack.MODE_STREAM
                 );
-                float vol = (isAudioMuted || !isAudioEnabled) ? 0f : (audioVolume / 100.0f);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    audioTrack.setVolume(vol);
-                } else {
-                    audioTrack.setStereoVolume(vol, vol);
-                }
+                float vol = isAudioMuted ? 0f : (audioVolume / 100.0f);
+                audioTrack.setVolume(vol);
                 audioTrack.play();
-            } catch (Exception ex) {
-                updateAudioStatusOnMain("Ошибка AudioTrack: " + ex.getMessage(), Color.parseColor("#EF4444"));
-                return;
-            }
 
-            HttpURLConnection conn = null;
-            InputStream in = null;
-            try {
-                String audioEndpoint = serverUrl + "/audio";
-                if (!authToken.isEmpty()) {
-                    audioEndpoint += "?token=" + URLEncoder.encode(authToken, "UTF-8");
-                }
+                updateAudioStatusOnMain("Подключение...", Color.parseColor("#38BDF8"));
 
-                URL url = new URL(audioEndpoint);
-                conn = (HttpURLConnection) url.openConnection();
-                audioConn = conn;
-                conn.setRequestMethod("GET");
-                conn.setConnectTimeout(6000);
-                conn.setReadTimeout(12000);
-                conn.setUseCaches(false);
-                conn.setRequestProperty("User-Agent", "PCControl-NativeAudio/2.4");
-                if (!authToken.isEmpty()) {
-                    conn.setRequestProperty("X-Auth-Token", authToken);
-                    conn.setRequestProperty("Cookie", "token=" + authToken);
-                }
+                String aUrl = serverUrl + "/audio?token=" + URLEncoder.encode(authToken, "UTF-8") + "&t=" + System.currentTimeMillis();
+                URL u = new URL(aUrl);
+                HttpURLConnection c = (HttpURLConnection) u.openConnection();
+                c.setConnectTimeout(4000);
+                c.setReadTimeout(10000);
+                c.setRequestProperty("Accept", "audio/wav");
 
-                conn.connect();
-                int respCode = conn.getResponseCode();
-                if (respCode == 401) {
-                    updateAudioStatusOnMain("Ошибка авторизации (401)", Color.parseColor("#EF4444"));
-                    return;
-                } else if (respCode != 200) {
-                    updateAudioStatusOnMain("Ошибка сервера (HTTP " + respCode + ")", Color.parseColor("#EF4444"));
+                if (c.getResponseCode() != 200) {
+                    updateAudioStatusOnMain("Ошибка (" + c.getResponseCode() + ")", Color.parseColor("#EF4444"));
                     return;
                 }
 
-                in = new BufferedInputStream(conn.getInputStream(), 16384);
+                updateAudioStatusOnMain("Подключен (48 kHz)", Color.parseColor("#22C55E"));
 
-                // Читаем 44-байтный стандартный WAV RIFF заголовок
-                byte[] wavHeader = new byte[44];
-                int totalHdr = 0;
-                while (totalHdr < 44 && running.get()) {
-                    int r = in.read(wavHeader, totalHdr, 44 - totalHdr);
-                    if (r < 0) break;
-                    totalHdr += r;
-                }
+                try (InputStream raw = c.getInputStream();
+                     BufferedInputStream bis = new BufferedInputStream(raw, 16384)) {
 
-                if (totalHdr == 44 && wavHeader[0] == 'R' && wavHeader[1] == 'I' && wavHeader[2] == 'F' && wavHeader[3] == 'F') {
-                    int channels = (wavHeader[22] & 0xFF) | ((wavHeader[23] & 0xFF) << 8);
-                    int sRate = (wavHeader[24] & 0xFF) | ((wavHeader[25] & 0xFF) << 8) | ((wavHeader[26] & 0xFF) << 16) | ((wavHeader[27] & 0xFF) << 24);
-                    if (sRate >= 8000 && sRate <= 96000 && (sRate != sampleRate || (channels == 1 && channelConfig != AudioFormat.CHANNEL_OUT_MONO))) {
-                        sampleRate = sRate;
-                        channelConfig = (channels == 1) ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO;
-                        try {
-                            audioTrack.stop();
-                            audioTrack.release();
-                        } catch (Exception ignored) {}
-                        minBuf = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat);
-                        trackBufSize = Math.max(minBuf, 8192);
-                        audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, channelConfig, audioFormat, trackBufSize, AudioTrack.MODE_STREAM);
-                        float vol = (isAudioMuted || !isAudioEnabled) ? 0f : (audioVolume / 100.0f);
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                            audioTrack.setVolume(vol);
-                        } else {
-                            audioTrack.setStereoVolume(vol, vol);
+                    // Пропуск 44-байтного заголовка WAV при наличии
+                    bis.mark(44);
+                    byte[] hdr = new byte[44];
+                    int rHdr = bis.read(hdr, 0, 44);
+                    if (rHdr == 44 && hdr[0] == 'R' && hdr[1] == 'I' && hdr[2] == 'F' && hdr[3] == 'F') {
+                        // Заголовок пропущен
+                    } else {
+                        bis.reset();
+                    }
+
+                    byte[] chunk = new byte[1920];
+                    long totalBytesWritten = 0;
+
+                    while (running.get() && isStreaming.get()) {
+                        int r = bis.read(chunk, 0, chunk.length);
+                        if (r <= 0) break;
+
+                        // Компенсация дрифта (порог 100 мс = 9600 сэмплов)
+                        long playHead = audioTrack.getPlaybackHeadPosition();
+                        long writtenFrames = totalBytesWritten / 4;
+                        long latencyFrames = writtenFrames - playHead;
+                        if (latencyFrames > 48000 * 0.10) {
+                            audioTrack.flush();
+                            totalBytesWritten = playHead * 4;
                         }
-                        audioTrack.play();
+
+                        int written = audioTrack.write(chunk, 0, r);
+                        if (written > 0) totalBytesWritten += written;
                     }
                 }
-
-                updateAudioStatusOnMain("Включен (" + (sampleRate / 1000) + " кГц Стерео)", Color.parseColor("#22C55E"));
-
-                byte[] pcmBuffer = new byte[2048];
-                long framesWritten = 0;
-
-                while (running.get() && isStreaming.get()) {
-                    int readBytes = in.read(pcmBuffer, 0, pcmBuffer.length);
-                    if (readBytes < 0) break;
-
-                    if (readBytes > 0 && audioTrack != null) {
-                        if (!isAudioMuted && isAudioEnabled) {
-                            int headPos = audioTrack.getPlaybackHeadPosition();
-                            long lagFrames = framesWritten - headPos;
-                            // Компенсация задержки (drift compensation): если накопленный буфер превышает 100 мс, пропускаем старый чанк
-                            if (lagFrames > (sampleRate * 100 / 1000)) {
-                                continue;
-                            }
-                            int written = audioTrack.write(pcmBuffer, 0, readBytes);
-                            if (written > 0) {
-                                framesWritten += (written / (2 * (channelConfig == AudioFormat.CHANNEL_OUT_MONO ? 1 : 2)));
-                            }
-                        }
-                    }
-                }
-            } catch (Exception ex) {
-                if (running.get() && isStreaming.get()) {
-                    updateAudioStatusOnMain("Сбой звука: " + ex.getClass().getSimpleName(), Color.parseColor("#EF4444"));
-                }
+                c.disconnect();
+            } catch (Exception e) {
+                updateAudioStatusOnMain("Отключен", Color.parseColor("#94A3B8"));
             } finally {
                 if (audioTrack != null) {
                     try {
                         audioTrack.stop();
-                        audioTrack.flush();
                         audioTrack.release();
                     } catch (Exception ignored) {}
                     audioTrack = null;
                 }
-                if (in != null) {
-                    try { in.close(); } catch (Exception ignored) {}
-                }
-                if (conn != null) {
-                    try { conn.disconnect(); } catch (Exception ignored) {}
-                }
-                audioConn = null;
             }
+        }
+
+        public void shutdown() {
+            running.set(false);
+            interrupt();
         }
     }
 
     private void updateAudioStatusOnMain(final String status, final int color) {
         audioStatus = status;
         audioStatusColor = color;
-        mainHandler.post(new Runnable() {
-            @Override
-            public void run() {
-                updateSettingsDialogUI();
-            }
-        });
     }
 
-    public void startAudioStream() {
-        if (!isAudioEnabled) {
-            updateAudioStatusOnMain("Выключен", Color.parseColor("#94A3B8"));
-            return;
-        }
-        synchronized (audioLock) {
-            if (audioThread != null) {
-                audioThread.stopAudio();
-                audioThread = null;
-            }
-            audioThread = new AudioPlayerThread();
-            audioThread.start();
-        }
-    }
-
-    public void stopAudioStream() {
-        synchronized (audioLock) {
-            if (audioThread != null) {
-                audioThread.stopAudio();
-                audioThread = null;
-            }
-        }
-        updateAudioStatusOnMain("Выключен", Color.parseColor("#94A3B8"));
-    }
-
-    public void setAudioEnabled(boolean enabled) {
+    private void setAudioEnabled(boolean enabled) {
         this.isAudioEnabled = enabled;
         savePreferences();
         if (enabled) {
             startAudioStream();
         } else {
             stopAudioStream();
+            updateAudioStatusOnMain("Выключен", Color.parseColor("#94A3B8"));
         }
-        updateSettingsDialogUI();
     }
 
-    public void setAudioVolume(int volume) {
-        this.audioVolume = Math.max(0, Math.min(100, volume));
-        this.isAudioMuted = (this.audioVolume == 0);
-        savePreferences();
+    private void startAudioStream() {
         synchronized (audioLock) {
-            if (audioThread != null && audioThread.audioTrack != null) {
-                float vol = (isAudioMuted || !isAudioEnabled) ? 0f : (this.audioVolume / 100.0f);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    audioThread.audioTrack.setVolume(vol);
-                } else {
-                    audioThread.audioTrack.setStereoVolume(vol, vol);
-                }
+            stopAudioStream();
+            audioThread = new AudioPlayerThread();
+            audioThread.start();
+        }
+    }
+
+    private void stopAudioStream() {
+        synchronized (audioLock) {
+            if (audioThread != null) {
+                audioThread.shutdown();
+                audioThread = null;
             }
         }
-        updateSettingsDialogUI();
     }
 
+    // -----------------------------------------------------------------------
+    // СОХРАНЕНИЕ И ВОССТАНОВЛЕНИЕ НАСТРОЕК (SharedPreferences)
+    // -----------------------------------------------------------------------
     private void loadPreferences() {
         try {
-            SharedPreferences sp = getContext().getSharedPreferences("pc_control_screen_player", Context.MODE_PRIVATE);
+            SharedPreferences sp = getContext().getSharedPreferences("pc_control_settings", Context.MODE_PRIVATE);
+            scaleMode = sp.getInt("scale_mode", SCALE_MODE_FIT);
+            targetMonitor = sp.getInt("target_monitor", 1);
+            targetHeight = sp.getInt("target_height", 1080);
+            targetFps = sp.getInt("target_fps", 60);
+            targetBitrate = sp.getInt("target_bitrate", 0);
             isAudioEnabled = sp.getBoolean("audio_enabled", true);
             audioVolume = sp.getInt("audio_volume", 80);
-            targetMonitor = sp.getInt("screen_monitor", targetMonitor);
-            targetHeight = sp.getInt("screen_height", targetHeight);
-            targetFps = sp.getInt("screen_fps", targetFps);
-            targetBitrate = sp.getInt("screen_bitrate", targetBitrate);
+
+            tpNormX = sp.getFloat("tp_x", 0.55f);
+            tpNormY = sp.getFloat("tp_y", 0.10f);
+            tpNormW = sp.getFloat("tp_w", 0.42f);
+            tpNormH = sp.getFloat("tp_h", 0.80f);
+            mouseSensitivity = sp.getFloat("mouse_sens", 1.0f);
+            mouseAccel = sp.getBoolean("mouse_accel", true);
+            isMouseAbsolute = sp.getBoolean("mouse_abs", false);
+
+            opacityGear = sp.getInt("op_gear", 85);
+            opacityArrow = sp.getInt("op_arrow", 85);
+            opacityQuickDrawer = sp.getInt("op_quick", 90);
+            opacityBtnKeyboard = sp.getInt("op_b_kbd", 100);
+            opacityBtnMic = sp.getInt("op_b_mic", 100);
+            opacityBtnSound = sp.getInt("op_b_snd", 100);
+            opacityBtnTouchpad = sp.getInt("op_b_tp", 100);
+            opacitySettings = sp.getInt("op_sett", 95);
+            opacityDiag = sp.getInt("op_diag", 90);
+            opacityKbdBg = sp.getInt("op_kbd_bg", 92);
+            opacityKbdKeys = sp.getInt("op_kbd_keys", 95);
+            opacityKbdSpecial = sp.getInt("op_kbd_sp", 95);
+            opacityTpBorder = sp.getInt("op_tp_bord", 80);
+            opacityTpCenter = sp.getInt("op_tp_cent", 80);
+
+            kbdWidthPct = sp.getInt("kbd_w", 100);
+            kbdHeightDp = sp.getInt("kbd_h", 220);
+            kbdLayoutIdx = sp.getInt("kbd_layout", 0);
+
+            gearPosX = sp.getFloat("gear_x", -1f);
+            gearPosY = sp.getFloat("gear_y", -1f);
         } catch (Exception ignored) {}
     }
 
     private void savePreferences() {
         try {
-            SharedPreferences sp = getContext().getSharedPreferences("pc_control_screen_player", Context.MODE_PRIVATE);
+            SharedPreferences sp = getContext().getSharedPreferences("pc_control_settings", Context.MODE_PRIVATE);
             sp.edit()
+                    .putInt("scale_mode", scaleMode)
+                    .putInt("target_monitor", targetMonitor)
+                    .putInt("target_height", targetHeight)
+                    .putInt("target_fps", targetFps)
+                    .putInt("target_bitrate", targetBitrate)
                     .putBoolean("audio_enabled", isAudioEnabled)
                     .putInt("audio_volume", audioVolume)
-                    .putInt("screen_monitor", targetMonitor)
-                    .putInt("screen_height", targetHeight)
-                    .putInt("screen_fps", targetFps)
-                    .putInt("screen_bitrate", targetBitrate)
+                    .putFloat("tp_x", tpNormX)
+                    .putFloat("tp_y", tpNormY)
+                    .putFloat("tp_w", tpNormW)
+                    .putFloat("tp_h", tpNormH)
+                    .putFloat("mouse_sens", mouseSensitivity)
+                    .putBoolean("mouse_accel", mouseAccel)
+                    .putBoolean("mouse_abs", isMouseAbsolute)
+                    .putInt("op_gear", opacityGear)
+                    .putInt("op_arrow", opacityArrow)
+                    .putInt("op_quick", opacityQuickDrawer)
+                    .putInt("op_b_kbd", opacityBtnKeyboard)
+                    .putInt("op_b_mic", opacityBtnMic)
+                    .putInt("op_b_snd", opacityBtnSound)
+                    .putInt("op_b_tp", opacityBtnTouchpad)
+                    .putInt("op_sett", opacitySettings)
+                    .putInt("op_diag", opacityDiag)
+                    .putInt("op_kbd_bg", opacityKbdBg)
+                    .putInt("op_kbd_keys", opacityKbdKeys)
+                    .putInt("op_kbd_sp", opacityKbdSpecial)
+                    .putInt("op_tp_bord", opacityTpBorder)
+                    .putInt("op_tp_cent", opacityTpCenter)
+                    .putInt("kbd_w", kbdWidthPct)
+                    .putInt("kbd_h", kbdHeightDp)
+                    .putInt("kbd_layout", kbdLayoutIdx)
+                    .putFloat("gear_x", gearPosX)
+                    .putFloat("gear_y", gearPosY)
                     .apply();
         } catch (Exception ignored) {}
     }
 
-    /**
-     * Построение отдельной скрытой панели диагностики видеопотока.
-     */
-    private void buildDiagnosticsDialog(Context context) {
-        diagOverlay = new FrameLayout(context);
-        diagOverlay.setBackgroundColor(Color.parseColor("#99000000")); // Полупрозрачный бэкдроп
-        diagOverlay.setVisibility(View.GONE);
-        diagOverlay.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setDiagnosticsVisible(false);
-            }
-        });
-
-        diagCard = new LinearLayout(context);
-        diagCard.setOrientation(LinearLayout.VERTICAL);
-
-        GradientDrawable cardBg = new GradientDrawable();
-        cardBg.setColor(Color.parseColor("#EB121622"));
-        cardBg.setCornerRadius(dpToPx(20));
-        cardBg.setStroke(dpToPx(1), Color.parseColor("#334155"));
-        diagCard.setBackground(cardBg);
-
-        int pad = dpToPx(18);
-        diagCard.setPadding(pad, pad, pad, pad);
-
-        FrameLayout.LayoutParams cardParams = new FrameLayout.LayoutParams(
-                dpToPx(340),
-                LayoutParams.WRAP_CONTENT
-        );
-        cardParams.gravity = Gravity.CENTER;
-        diagCard.setLayoutParams(cardParams);
-        diagCard.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // Блокируем клик на карточке от закрытия бэкдропа
-            }
-        });
-
-        // Заголовок диалога
-        LinearLayout head = new LinearLayout(context);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView diagTitle = new TextView(context);
-        diagTitle.setText("ДИАГНОСТИКА ПОТОКА");
-        diagTitle.setTextColor(Color.parseColor("#38BDF8")); // Sky blue
-        diagTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        diagTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
-        head.addView(diagTitle, titleLp);
-
-        TextView closeDiag = new TextView(context);
-        closeDiag.setText("✕");
-        closeDiag.setTextColor(Color.parseColor("#94A3B8"));
-        closeDiag.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
-        closeDiag.setPadding(dpToPx(6), dpToPx(4), dpToPx(6), dpToPx(4));
-        closeDiag.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                setDiagnosticsVisible(false);
-            }
-        });
-        head.addView(closeDiag);
-        diagCard.addView(head);
-
-        addDivider(context, diagCard);
-
-        // Таблица метрик
-        ScrollView scroll = new ScrollView(context);
-        LinearLayout list = new LinearLayout(context);
-        list.setOrientation(LinearLayout.VERTICAL);
-
-        diagCodecVal = addDiagRow(context, list, "Кодек / Декодер", "Hardware H.264");
-        diagResVal = addDiagRow(context, list, "Разрешение потока", "1920 × 1080");
-        diagDispVal = addDiagRow(context, list, "Экран / Режим", "Fit Center");
-        diagColorVal = addDiagRow(context, list, "Цветовое пространство", "BT.709 Limited");
-
-        addDivider(context, list);
-
-        diagFpsTargetVal = addDiagRow(context, list, "Целевой FPS", "60 FPS");
-        diagFpsRecvVal = addDiagRow(context, list, "Частота приёма", "0.0 FPS");
-        diagFpsDecVal = addDiagRow(context, list, "Декодирование", "0.0 FPS");
-        diagFpsRendVal = addDiagRow(context, list, "Рендеринг (Display)", "0.0 FPS");
-        diagFpsMinVal = addDiagRow(context, list, "Мин. FPS (3 сек)", "0.0 FPS");
-
-        addDivider(context, list);
-
-        diagBitrateVal = addDiagRow(context, list, "Битрейт сети", "0.0 Mbps");
-        diagDroppedVal = addDiagRow(context, list, "Потери кадров", "0 кадров");
-        diagLatencyVal = addDiagRow(context, list, "Задержка конвейера", "8-12 мс");
-
-        scroll.addView(list);
-        diagCard.addView(scroll, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, dpToPx(280)));
-
-        diagOverlay.addView(diagCard);
-        addView(diagOverlay, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
-    }
-
-    private TextView addDiagRow(Context context, LinearLayout parent, String label, String defaultVal) {
-        LinearLayout row = new LinearLayout(context);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dpToPx(3), 0, dpToPx(3));
-
-        TextView lbl = new TextView(context);
-        lbl.setText(label);
-        lbl.setTextColor(Color.parseColor("#94A3B8"));
-        lbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-        LinearLayout.LayoutParams lp1 = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
-        row.addView(lbl, lp1);
-
-        TextView val = new TextView(context);
-        val.setText(defaultVal);
-        val.setTextColor(Color.parseColor("#F8FAFC"));
-        val.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-        val.setTypeface(Typeface.DEFAULT_BOLD);
-        val.setGravity(Gravity.END);
-        row.addView(val);
-
-        parent.addView(row);
-        return val;
-    }
-
-    private void addDivider(Context context, LinearLayout parent) {
-        View div = new View(context);
-        div.setBackgroundColor(Color.parseColor("#1E293B"));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, dpToPx(1));
-        lp.topMargin = dpToPx(8);
-        lp.bottomMargin = dpToPx(8);
-        parent.addView(div, lp);
-    }
-
-    /**
-     * Построение оверлея сообщений об ошибках демонстрации экрана.
-     */
-    private void buildErrorDialog(Context context) {
-        errorOverlay = new FrameLayout(context);
-        errorOverlay.setBackgroundColor(Color.parseColor("#CC030712"));
-        errorOverlay.setVisibility(View.GONE);
-
-        LinearLayout card = new LinearLayout(context);
-        card.setOrientation(LinearLayout.VERTICAL);
-
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor("#1E1B24"));
-        bg.setCornerRadius(dpToPx(20));
-        bg.setStroke(dpToPx(1), Color.parseColor("#451A22"));
-        card.setBackground(bg);
-
-        int pad = dpToPx(20);
-        card.setPadding(pad, pad, pad, pad);
-
-        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(
-                dpToPx(340),
-                LayoutParams.WRAP_CONTENT
-        );
-        cardLp.gravity = Gravity.CENTER;
-        card.setLayoutParams(cardLp);
-
-        // Заголовок ошибки
-        errorTitleView = new TextView(context);
-        errorTitleView.setText("Ошибка стрима");
-        errorTitleView.setTextColor(Color.parseColor("#F87171")); // Soft red
-        errorTitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
-        errorTitleView.setTypeface(Typeface.DEFAULT_BOLD);
-        card.addView(errorTitleView);
-
-        // Сообщение ошибки
-        errorMsgView = new TextView(context);
-        errorMsgView.setText("");
-        errorMsgView.setTextColor(Color.parseColor("#E2E8F0"));
-        errorMsgView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        LinearLayout.LayoutParams msgLp = new LinearLayout.LayoutParams(
-                LayoutParams.MATCH_PARENT,
-                LayoutParams.WRAP_CONTENT
-        );
-        msgLp.topMargin = dpToPx(10);
-        msgLp.bottomMargin = dpToPx(18);
-        card.addView(errorMsgView, msgLp);
-
-        // Кнопки действий
-        LinearLayout btnRow = new LinearLayout(context);
-        btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setGravity(Gravity.END);
-
-        errorCloseBtn = createToolbarButton(context, "Закрыть", "#2B2D38", Color.parseColor("#CBD5E1"));
-        errorCloseBtn.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                hidePlaybackError();
-                closeStreamAndExit();
-            }
-        });
-        btnRow.addView(errorCloseBtn);
-
-        addToolbarSpacer(context, btnRow, 10);
-
-        errorRetryBtn = createToolbarButton(context, "Повторить", "#0284C7", Color.WHITE);
-        errorRetryBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        errorRetryBtn.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                hidePlaybackError();
-                startStream();
-            }
-        });
-        btnRow.addView(errorRetryBtn);
-
-        card.addView(btnRow);
-        errorOverlay.addView(card);
-        addView(errorOverlay, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
-    }
-
-    public void showPlaybackError(final String title, final String message, final boolean allowRetry) {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(new Runnable() {
-                @Override
-                public void run() {
-                    showPlaybackError(title, message, allowRetry);
-                }
-            });
-            return;
-        }
-
-        isErrorVisible = true;
-        mainHandler.removeCallbacks(hideControlsRunnable);
-        if (errorTitleView != null) errorTitleView.setText(title);
-        if (errorMsgView != null) errorMsgView.setText(message);
-        if (errorRetryBtn != null) {
-            errorRetryBtn.setVisibility(allowRetry ? View.VISIBLE : View.GONE);
-        }
-        if (errorOverlay != null) {
-            errorOverlay.setVisibility(View.VISIBLE);
-        }
-    }
-
-    public void hidePlaybackError() {
-        if (Looper.myLooper() != Looper.getMainLooper()) {
-            mainHandler.post(new Runnable() {
-                @Override
-                public void run() {
-                    hidePlaybackError();
-                }
-            });
-            return;
-        }
-        isErrorVisible = false;
-        if (errorOverlay != null) {
-            errorOverlay.setVisibility(View.GONE);
-        }
-        scheduleControlsAutoHide();
-    }
-
-    public void setPlayerCallback(PlayerCallback callback) {
-        this.playerCallback = callback;
-    }
-
-    // Совместимость с OnCloseListener
-    public interface OnCloseListener {
-        void onCloseRequested();
-    }
-    public void setOnCloseListener(final OnCloseListener listener) {
-        this.playerCallback = new PlayerCallback() {
-            @Override
-            public void onCloseRequested() {
-                if (listener != null) listener.onCloseRequested();
-            }
-            @Override
-            public void onFullscreenToggled(boolean isFullscreen) {}
-            @Override
-            public void onSettingsChanged(int monitor, int height, int fps, int bitrate) {}
-        };
-    }
-
+    // -----------------------------------------------------------------------
+    // ДЕКОДИРОВАНИЕ ВИДЕО (MediaCodec + SurfaceView)
+    // -----------------------------------------------------------------------
     public void configure(String url, String token, int monitor, int height, int fps, int bitrate, String quality, String codec) {
         this.serverUrl = (url != null) ? url.trim() : "";
         while (this.serverUrl.endsWith("/")) {
@@ -1464,14 +2303,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         this.targetFps = fps;
         this.targetBitrate = bitrate;
 
-        // Предварительный расчёт пропорций до приёма первого кадра
         this.videoHeight = (targetHeight > 0) ? targetHeight : 1080;
         this.videoWidth = (int) Math.round(this.videoHeight * (16.0 / 9.0));
-
         updateSubtitle();
     }
 
     private void updateSubtitle() {
+        if (subtitleView == null) return;
         String resStr = (targetHeight > 0) ? (targetHeight + "p") : "Native";
         subtitleView.setText(resStr + " · " + targetFps + " FPS · " + (scaleMode == SCALE_MODE_FIT ? "Fit" : "Fill"));
     }
@@ -1482,8 +2320,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         hidePlaybackError();
         setVisibility(View.VISIBLE);
 
-        setControlsVisible(true, false);
-        scheduleControlsAutoHide();
+        applyOperatingModeUI();
+        if (operatingMode == MODE_VIEW) {
+            setControlsVisible(true, false);
+            scheduleControlsAutoHide();
+        }
 
         if (isAudioEnabled) {
             startAudioStream();
@@ -1506,6 +2347,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         mainHandler.removeCallbacks(diagUpdateRunnable);
 
         stopAudioStream();
+        stopMicStreaming();
+
+        if (inputDispatcherThread != null) {
+            inputDispatcherThread.enqueueReleaseAll();
+        }
 
         synchronized (surfaceLock) {
             surfaceLock.notifyAll();
@@ -1513,18 +2359,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         HttpURLConnection conn = activeConn;
         if (conn != null) {
-            try {
-                conn.disconnect();
-            } catch (Exception ignored) {}
+            try { conn.disconnect(); } catch (Exception ignored) {}
             activeConn = null;
         }
 
         Thread wt = workerThread;
         if (wt != null) {
             wt.interrupt();
-            try {
-                wt.join(600);
-            } catch (InterruptedException ignored) {}
+            try { wt.join(600); } catch (InterruptedException ignored) {}
             workerThread = null;
         }
 
@@ -1534,7 +2376,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             @Override
             public void run() {
                 setDiagnosticsVisible(false);
-                setSettingsVisible(false);
+                if (isSplitSettingsOpen) closeSplitSettingsWithAnimation();
                 hidePlaybackError();
                 setVisibility(View.GONE);
             }
@@ -1548,18 +2390,22 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         }
     }
 
-    /**
-     * Обработка кнопки "Назад": закрывает сначала ошибки, затем настройки, затем диагностику, затем Fullscreen, затем стрим.
-     * @return true, если событие обработано внутренне.
-     */
     public boolean handleBackPressed() {
         if (isErrorVisible) {
             hidePlaybackError();
             closeStreamAndExit();
             return true;
         }
-        if (isSettingsVisible) {
-            setSettingsVisible(false);
+        if (isKeyboardVisible) {
+            showCustomKeyboard(false);
+            return true;
+        }
+        if (isQuickDrawerOpen) {
+            toggleQuickDrawer();
+            return true;
+        }
+        if (isSplitSettingsOpen) {
+            closeSplitSettingsWithAnimation();
             return true;
         }
         if (isDiagVisible) {
@@ -1573,53 +2419,33 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         return false;
     }
 
-    /**
-     * Переключение режима масштабирования (Fit Center vs Fill).
-     */
     public void toggleScaleMode() {
         scaleMode = (scaleMode == SCALE_MODE_FIT) ? SCALE_MODE_FILL : SCALE_MODE_FIT;
-        scaleModeBtn.setText(scaleMode == SCALE_MODE_FIT ? "Fit" : "Fill");
+        if (scaleModeBtn != null) {
+            scaleModeBtn.setText(scaleMode == SCALE_MODE_FIT ? "Fit" : "Fill");
+        }
         updateSubtitle();
+        savePreferences();
         requestLayout();
     }
 
-    /**
-     * Переключение настоящего Fullscreen (Immersive Sticky Mode).
-     */
     public void toggleFullscreen() {
         isFullscreen = !isFullscreen;
-        fullscreenBtn.setText(isFullscreen ? "⊡" : "⛶");
+        if (fullscreenBtn != null) {
+            fullscreenBtn.setText(isFullscreen ? "⊡" : "⛶");
+        }
         if (playerCallback != null) {
             playerCallback.onFullscreenToggled(isFullscreen);
         }
         requestLayout();
     }
 
-    /**
-     * Переключение видимости панели диагностики.
-     */
-    public void toggleDiagnosticsDialog() {
-        setDiagnosticsVisible(!isDiagVisible);
+    public void setPlayerCallback(PlayerCallback callback) {
+        this.playerCallback = callback;
     }
 
-    public void setDiagnosticsVisible(boolean visible) {
-        isDiagVisible = visible;
-        diagOverlay.setVisibility(visible ? View.VISIBLE : View.GONE);
-        if (visible) {
-            mainHandler.removeCallbacks(hideControlsRunnable);
-            mainHandler.removeCallbacks(diagUpdateRunnable);
-            mainHandler.post(diagUpdateRunnable);
-        } else {
-            mainHandler.removeCallbacks(diagUpdateRunnable);
-            scheduleControlsAutoHide();
-        }
-    }
-
-    /**
-     * Управление видимостью панели управления с плавной анимацией.
-     */
     private void setControlsVisible(boolean visible, boolean animate) {
-        if (isControlsVisible == visible) return;
+        if (isControlsVisible == visible || topToolbar == null) return;
         isControlsVisible = visible;
         mainHandler.removeCallbacks(hideControlsRunnable);
 
@@ -1643,126 +2469,224 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private void scheduleControlsAutoHide() {
         mainHandler.removeCallbacks(hideControlsRunnable);
-        if (isDiagVisible || isErrorVisible) {
-            return;
-        }
+        if (isDiagVisible || isErrorVisible) return;
         mainHandler.postDelayed(hideControlsRunnable, 5000);
     }
 
-    /**
-     * Ключевое исправление: Масштабирование видео с сохранением пропорций (Fit Center).
-     * Предотвращает горизонтальное растягивание на широких дисплеях 19.5:9 и 20:9.
-     */
-    @Override
-    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        int widthSize = MeasureSpec.getSize(widthMeasureSpec);
-        int heightSize = MeasureSpec.getSize(heightMeasureSpec);
+    private void applyVideoSettings(final int newMon, final int newH, final int newFps, final int newBr) {
+        if (targetMonitor == newMon && targetHeight == newH && targetFps == newFps && targetBitrate == newBr) return;
+        targetMonitor = newMon;
+        targetHeight = newH;
+        targetFps = newFps;
+        targetBitrate = newBr;
+        savePreferences();
+        updateSubtitle();
 
-        if (widthSize <= 0 || heightSize <= 0) {
-            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-            return;
+        if (playerCallback != null) {
+            playerCallback.onSettingsChanged(newMon, newH, newFps, newBr);
         }
 
-        float videoAspect = (videoWidth > 0 && videoHeight > 0)
-                ? (videoWidth / (float) videoHeight)
-                : (16.0f / 9.0f);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    URL u = new URL(serverUrl + "/screen/config");
+                    HttpURLConnection c = (HttpURLConnection) u.openConnection();
+                    c.setRequestMethod("POST");
+                    c.setDoOutput(true);
+                    c.setRequestProperty("Content-Type", "application/json");
+                    if (!authToken.isEmpty()) c.setRequestProperty("X-Auth-Token", authToken);
+                    String body = "{\"monitor\":" + newMon + ",\"height\":" + newH + ",\"fps\":" + newFps + ",\"bitrate\":" + newBr + "}";
+                    c.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
+                    c.getResponseCode();
+                    c.disconnect();
+                } catch (Exception ignored) {}
 
-        int surfW = widthSize;
-        int surfH = heightSize;
-
-        if (scaleMode == SCALE_MODE_FIT) {
-            float containerAspect = widthSize / (float) heightSize;
-            if (containerAspect > videoAspect) {
-                // Экран шире видео (pillarbox: чёрные полосы слева и справа)
-                surfH = heightSize;
-                surfW = Math.round(heightSize * videoAspect);
-            } else {
-                // Экран уже/выше видео (letterbox: чёрные полосы сверху и снизу)
-                surfW = widthSize;
-                surfH = Math.round(widthSize / videoAspect);
+                // Мягкий перезапуск видеопотока
+                mainHandler.post(new Runnable() {
+                    @Override public void run() {
+                        HttpURLConnection conn = activeConn;
+                        if (conn != null) {
+                            try { conn.disconnect(); } catch (Exception ignored) {}
+                        }
+                    }
+                });
             }
-        } else if (scaleMode == SCALE_MODE_FILL) {
-            float containerAspect = widthSize / (float) heightSize;
-            if (containerAspect > videoAspect) {
-                surfW = widthSize;
-                surfH = Math.round(widthSize / videoAspect);
-            } else {
-                surfH = heightSize;
-                surfW = Math.round(heightSize * videoAspect);
-            }
-        }
-
-        // Измеряем SurfaceView с точными пропорциональными размерами
-        if (surfaceView != null) {
-            surfaceView.measure(
-                    MeasureSpec.makeMeasureSpec(surfW, MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(surfH, MeasureSpec.EXACTLY)
-            );
-        }
-
-        // Измеряем верхнюю панель и диагностику с учётом отступов и адаптивности
-        if (topToolbar != null && topToolbar.getVisibility() != View.GONE) {
-            int maxTbWidth = Math.max(dpToPx(280), widthSize - dpToPx(32));
-            topToolbar.measure(
-                    MeasureSpec.makeMeasureSpec(maxTbWidth, MeasureSpec.AT_MOST),
-                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.AT_MOST)
-            );
-        }
-        if (diagOverlay != null && diagOverlay.getVisibility() != View.GONE) {
-            diagOverlay.measure(
-                    MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY)
-            );
-        }
-        if (settingsOverlay != null && settingsOverlay.getVisibility() != View.GONE) {
-            settingsOverlay.measure(
-                    MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY)
-            );
-        }
-        if (errorOverlay != null && errorOverlay.getVisibility() != View.GONE) {
-            errorOverlay.measure(
-                    MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY)
-            );
-        }
-
-        setMeasuredDimension(widthSize, heightSize);
+        }).start();
     }
 
-    @Override
-    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
-        int parentW = right - left;
-        int parentH = bottom - top;
+    // -----------------------------------------------------------------------
+    // WORKER ПОТОК ПРИЕМА H.264 СТРИМА
+    // -----------------------------------------------------------------------
+    private void runStreamWorker() {
+        byte[] magic = new byte[4];
+        byte[] header13 = new byte[13];
+        byte[] frameBuf = new byte[512 * 1024];
 
-        if (surfaceView != null) {
-            int surfW = surfaceView.getMeasuredWidth();
-            int surfH = surfaceView.getMeasuredHeight();
-            int surfLeft = (parentW - surfW) / 2;
-            int surfTop = (parentH - surfH) / 2;
-            surfaceView.layout(surfLeft, surfTop, surfLeft + surfW, surfTop + surfH);
+        while (isStreaming.get() && !Thread.currentThread().isInterrupted()) {
+            synchronized (surfaceLock) {
+                while (!surfaceReady && isStreaming.get()) {
+                    try { surfaceLock.wait(200); } catch (InterruptedException e) { return; }
+                }
+            }
+            if (!isStreaming.get()) break;
 
-            // Сохраняем реальный прямоугольник видео для сенсорного маппинга
-            videoViewportRect.set(surfLeft, surfTop, surfLeft + surfW, surfTop + surfH);
-        }
+            HttpURLConnection conn = null;
+            InputStream in = null;
+            try {
+                String streamUrl = serverUrl + "/screen/h264_stream?format=framed"
+                        + "&monitor=" + targetMonitor
+                        + "&height=" + targetHeight
+                        + "&fps=" + targetFps
+                        + "&bitrate=" + targetBitrate
+                        + "&token=" + URLEncoder.encode(authToken, "UTF-8");
 
-        if (topToolbar != null && topToolbar.getVisibility() != View.GONE) {
-            int tbW = topToolbar.getMeasuredWidth();
-            int tbH = topToolbar.getMeasuredHeight();
-            int tbLeft = Math.max(dpToPx(16), (parentW - tbW) / 2);
-            int tbRight = Math.min(parentW - dpToPx(16), tbLeft + tbW);
-            int tbTop = dpToPx(16);
-            topToolbar.layout(tbLeft, tbTop, tbRight, tbTop + tbH);
-        }
+                URL u = new URL(streamUrl);
+                conn = (HttpURLConnection) u.openConnection();
+                conn.setConnectTimeout(4000);
+                conn.setReadTimeout(12000);
+                conn.setRequestProperty("Accept", "video/x-h264");
+                conn.setRequestProperty("Cache-Control", "no-cache");
+                conn.setRequestProperty("Connection", "keep-alive");
+                if (!authToken.isEmpty()) conn.setRequestProperty("X-Auth-Token", authToken);
 
-        if (diagOverlay != null && diagOverlay.getVisibility() != View.GONE) {
-            diagOverlay.layout(0, 0, parentW, parentH);
+                activeConn = conn;
+                int respCode = conn.getResponseCode();
+                if (respCode != 200) throw new Exception("HTTP " + respCode);
+
+                in = new BufferedInputStream(conn.getInputStream(), 128 * 1024);
+                initDecoder();
+
+                lastBitrateSampleTime = SystemClock.elapsedRealtime();
+                lastBitrateBytes = 0;
+
+                while (isStreaming.get() && !Thread.currentThread().isInterrupted()) {
+                    readFully(in, magic, 0, 4);
+                    if (magic[0] != 'P' || magic[1] != 'C' || magic[2] != '0' || magic[3] != '1') {
+                        throw new Exception("Bad magic");
+                    }
+                    readFully(in, header13, 0, 13);
+                    int payloadLen = ((header13[0] & 0xFF) << 24)
+                            | ((header13[1] & 0xFF) << 16)
+                            | ((header13[2] & 0xFF) << 8)
+                            | (header13[3] & 0xFF);
+                    int flags = header13[4] & 0xFF;
+                    long ptsUs = ((long) (header13[5] & 0xFF) << 56)
+                            | ((long) (header13[6] & 0xFF) << 48)
+                            | ((long) (header13[7] & 0xFF) << 40)
+                            | ((long) (header13[8] & 0xFF) << 32)
+                            | ((long) (header13[9] & 0xFF) << 24)
+                            | ((long) (header13[10] & 0xFF) << 16)
+                            | ((long) (header13[11] & 0xFF) << 8)
+                            | ((long) (header13[12] & 0xFF));
+
+                    if (payloadLen <= 0 || payloadLen > 10 * 1024 * 1024) throw new Exception("Invalid length");
+                    if (frameBuf.length < payloadLen) frameBuf = new byte[payloadLen + 64 * 1024];
+
+                    readFully(in, frameBuf, 0, payloadLen);
+                    totalBytesReceived += (payloadLen + 17);
+                    receivedFpsTracker.recordEvent();
+
+                    feedDecoder(frameBuf, payloadLen, flags, ptsUs);
+                    drainDecoder(false);
+                }
+            } catch (Exception e) {
+                if (isStreaming.get()) {
+                    try { Thread.sleep(600); } catch (InterruptedException ignored) { break; }
+                }
+            } finally {
+                if (in != null) { try { in.close(); } catch (Exception ignored) {} }
+                if (conn != null) { try { conn.disconnect(); } catch (Exception ignored) {} }
+                activeConn = null;
+            }
         }
-        if (settingsOverlay != null && settingsOverlay.getVisibility() != View.GONE) {
-            settingsOverlay.layout(0, 0, parentW, parentH);
+        releaseDecoder();
+    }
+
+    private void readFully(InputStream in, byte[] b, int off, int len) throws Exception {
+        int n = 0;
+        while (n < len) {
+            int count = in.read(b, off + n, len - n);
+            if (count < 0) throw new EOFException("Stream closed");
+            n += count;
         }
-        if (errorOverlay != null && errorOverlay.getVisibility() != View.GONE) {
-            errorOverlay.layout(0, 0, parentW, parentH);
+    }
+
+    private void initDecoder() throws Exception {
+        synchronized (decoderLock) {
+            releaseDecoder();
+            decoder = MediaCodec.createDecoderByType("video/avc");
+            MediaFormat format = MediaFormat.createVideoFormat("video/avc", videoWidth, videoHeight);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                format.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE);
+                format.setInteger(MediaFormat.KEY_PRIORITY, 0);
+            }
+            decoder.configure(format, surfaceHolder.getSurface(), null, 0);
+            decoder.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
+            decoder.start();
+        }
+    }
+
+    private void releaseDecoder() {
+        synchronized (decoderLock) {
+            if (decoder != null) {
+                try {
+                    decoder.stop();
+                    decoder.release();
+                } catch (Exception ignored) {}
+                decoder = null;
+            }
+        }
+    }
+
+    private void feedDecoder(byte[] data, int length, int flags, long ptsUs) {
+        synchronized (decoderLock) {
+            if (decoder == null) return;
+            try {
+                int inIdx = decoder.dequeueInputBuffer(4000);
+                if (inIdx >= 0) {
+                    ByteBuffer inBuf = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+                            ? decoder.getInputBuffer(inIdx)
+                            : decoder.getInputBuffers()[inIdx];
+                    if (inBuf != null) {
+                        inBuf.clear();
+                        inBuf.put(data, 0, length);
+                        int bufFlags = 0;
+                        if ((flags & 0x02) != 0) bufFlags |= MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
+                        if ((flags & 0x01) != 0) bufFlags |= MediaCodec.BUFFER_FLAG_KEY_FRAME;
+                        decoder.queueInputBuffer(inIdx, 0, length, ptsUs, bufFlags);
+                        decodedFpsTracker.recordEvent();
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void drainDecoder(boolean endOfStream) {
+        synchronized (decoderLock) {
+            if (decoder == null) return;
+            try {
+                MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+                while (true) {
+                    int outIdx = decoder.dequeueOutputBuffer(info, 1500);
+                    if (outIdx >= 0) {
+                        decoder.releaseOutputBuffer(outIdx, true);
+                        renderedFpsTracker.recordEvent();
+                        minFpsTracker.recordEvent();
+                    } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        MediaFormat f = decoder.getOutputFormat();
+                        if (f.containsKey(MediaFormat.KEY_WIDTH) && f.containsKey(MediaFormat.KEY_HEIGHT)) {
+                            videoWidth = f.getInteger(MediaFormat.KEY_WIDTH);
+                            videoHeight = f.getInteger(MediaFormat.KEY_HEIGHT);
+                            post(new Runnable() {
+                                @Override public void run() { requestLayout(); }
+                            });
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            } catch (Exception ignored) {}
         }
     }
 
@@ -1788,675 +2712,451 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     public void surfaceDestroyed(SurfaceHolder holder) {
         synchronized (surfaceLock) {
             this.surfaceReady = false;
-            this.surfaceHolder = null;
-            surfaceLock.notifyAll();
-        }
-        stopStream();
-    }
-
-    /**
-     * Потоковый сетевой воркер: получает низколатентный поток и декодирует через MediaCodec.
-     */
-    private void runStreamWorker() {
-        HttpURLConnection conn = null;
-        InputStream in = null;
-        try {
-            synchronized (surfaceLock) {
-                while (!surfaceReady || surfaceHolder == null || surfaceHolder.getSurface() == null || !surfaceHolder.getSurface().isValid()) {
-                    if (!isStreaming.get()) return;
-                    surfaceLock.wait(100);
-                }
-            }
-
-            int w = (targetHeight > 0) ? (int) Math.round(targetHeight * (16.0 / 9.0)) : 1920;
-            int h = (targetHeight > 0) ? targetHeight : 1080;
-            w = (w / 2) * 2;
-            h = (h / 2) * 2;
-
-            try {
-                initDecoder(w, h);
-            } catch (Exception ex) {
-                if (isStreaming.get()) {
-                    showPlaybackError(
-                            "Ошибка кодека MediaCodec",
-                            "Не удалось инициализировать декодер H.264 (" + ex.getClass().getSimpleName() + ": " + ex.getMessage() + ").",
-                            true
-                    );
-                }
-                return;
-            }
-
-            if (serverUrl.isEmpty()) {
-                showPlaybackError("Ошибка параметров", "URL сервера не указан.", false);
-                return;
-            }
-
-            String streamEndpoint = serverUrl + "/screen/h264_stream"
-                    + "?format=framed"
-                    + "&monitor=" + targetMonitor
-                    + "&height=" + targetHeight
-                    + "&fps=" + targetFps
-                    + "&bitrate=" + targetBitrate
-                    + "&token=" + java.net.URLEncoder.encode(authToken, "UTF-8");
-
-            URL url = new URL(streamEndpoint);
-            conn = (HttpURLConnection) url.openConnection();
-            activeConn = conn;
-            conn.setRequestMethod("GET");
-            conn.setConnectTimeout(6000);
-            conn.setReadTimeout(10000);
-            conn.setUseCaches(false);
-            conn.setRequestProperty("User-Agent", "PCControl-NativePlayer/2.4");
-            if (!authToken.isEmpty()) {
-                conn.setRequestProperty("X-Auth-Token", authToken);
-                conn.setRequestProperty("Cookie", "token=" + authToken);
-            }
-
-            conn.connect();
-            int respCode = conn.getResponseCode();
-            if (respCode == 401) {
-                showPlaybackError(
-                        "Ошибка авторизации (HTTP 401)",
-                        "Токен доступа недействителен или сессия завершена. Выполните повторную авторизацию.",
-                        false
-                );
-                return;
-            } else if (respCode != 200) {
-                showPlaybackError(
-                        "Ошибка сервера (HTTP " + respCode + ")",
-                        "Сервер вернул код ошибки HTTP " + respCode + " при запросе демонстрации экрана.",
-                        true
-                );
-                return;
-            }
-
-            in = new BufferedInputStream(conn.getInputStream(), 262144);
-
-            byte[] frameBuffer = new byte[2 * 1024 * 1024];
-            byte[] headerBuf = new byte[17];
-            byte[] ringBuffer = new byte[2 * 1024 * 1024];
-            int ringHead = 0;
-
-            lastBitrateSampleTime = SystemClock.elapsedRealtime();
-            lastBitrateBytes = 0;
-            totalBytesReceived = 0;
-
-            readFully(in, headerBuf, 0, 4);
-            totalBytesReceived += 4;
-
-            boolean isFramed = (headerBuf[0] == 0x50 && headerBuf[1] == 0x43 && headerBuf[2] == 0x30 && headerBuf[3] == 0x31); // 'PC01'
-
-            if (isFramed) {
-                while (isStreaming.get()) {
-                    readFully(in, headerBuf, 4, 13);
-                    totalBytesReceived += 13;
-
-                    int frameLen = ((headerBuf[4] & 0xFF) << 24)
-                            | ((headerBuf[5] & 0xFF) << 16)
-                            | ((headerBuf[6] & 0xFF) << 8)
-                            | (headerBuf[7] & 0xFF);
-
-                    int frameFlags = headerBuf[8] & 0xFF;
-
-                    if (frameLen <= 0 || frameLen > frameBuffer.length) {
-                        break;
-                    }
-
-                    long frameRecvStart = SystemClock.elapsedRealtime();
-                    readFully(in, frameBuffer, 0, frameLen);
-                    totalBytesReceived += frameLen;
-
-                    // Фиксация принятого полного кадра
-                    receivedFpsTracker.onFrame();
-
-                    // Монотонный PTS локального времени смартфона
-                    long ptsUs = SystemClock.elapsedRealtimeNanos() / 1000;
-                    feedDecoderFrame(frameBuffer, frameLen, frameFlags, ptsUs);
-                    drainOutputBuffers();
-
-                    long latency = SystemClock.elapsedRealtime() - frameRecvStart;
-                    if (latency > 0) estimatedLatencyMs = latency + 4;
-
-                    updateBitrateStats();
-
-                    readFully(in, headerBuf, 0, 4);
-                    totalBytesReceived += 4;
-                    if (headerBuf[0] != 0x50 || headerBuf[1] != 0x43 || headerBuf[2] != 0x30 || headerBuf[3] != 0x31) {
-                        break;
-                    }
-                }
-            } else {
-                System.arraycopy(headerBuf, 0, ringBuffer, 0, 4);
-                ringHead = 4;
-                byte[] chunk = new byte[32768];
-
-                while (isStreaming.get()) {
-                    int r = in.read(chunk, 0, chunk.length);
-                    if (r == -1) break;
-                    totalBytesReceived += r;
-
-                    if (ringHead + r > ringBuffer.length) {
-                        ringHead = 0;
-                    }
-                    System.arraycopy(chunk, 0, ringBuffer, ringHead, r);
-                    ringHead += r;
-
-                    int curPos = 0;
-                    while (curPos < ringHead - 4) {
-                        int startCodeLen = 0;
-                        if (ringBuffer[curPos] == 0 && ringBuffer[curPos + 1] == 0) {
-                            if (ringBuffer[curPos + 2] == 1) {
-                                startCodeLen = 3;
-                            } else if (curPos + 3 < ringHead && ringBuffer[curPos + 2] == 0 && ringBuffer[curPos + 3] == 1) {
-                                startCodeLen = 4;
-                            }
-                        }
-
-                        if (startCodeLen > 0) {
-                            int nextPos = curPos + startCodeLen;
-                            int nextStartCodeLen = 0;
-                            while (nextPos < ringHead - 3) {
-                                if (ringBuffer[nextPos] == 0 && ringBuffer[nextPos + 1] == 0) {
-                                    if (ringBuffer[nextPos + 2] == 1) {
-                                        nextStartCodeLen = 3;
-                                        break;
-                                    } else if (nextPos + 3 < ringHead && ringBuffer[nextPos + 2] == 0 && ringBuffer[nextPos + 3] == 1) {
-                                        nextStartCodeLen = 4;
-                                        break;
-                                    }
-                                }
-                                nextPos++;
-                            }
-
-                            if (nextStartCodeLen > 0) {
-                                int naluLen = nextPos - curPos;
-                                feedDecoderNalu(ringBuffer, curPos, naluLen, startCodeLen);
-                                curPos = nextPos;
-                            } else {
-                                break;
-                            }
-                        } else {
-                            curPos++;
-                        }
-                    }
-
-                    if (curPos > 0) {
-                        int remaining = ringHead - curPos;
-                        if (remaining > 0) {
-                            System.arraycopy(ringBuffer, curPos, ringBuffer, 0, remaining);
-                        }
-                        ringHead = remaining;
-                    }
-
-                    drainOutputBuffers();
-                    updateBitrateStats();
-                }
-            }
-
-        } catch (EOFException eof) {
-            if (isStreaming.get()) {
-                showPlaybackError("Поток прерван", "Сервер завершил передачу видеопотока.", true);
-            }
-        } catch (java.net.ConnectException ce) {
-            if (isStreaming.get()) {
-                showPlaybackError("Ошибка подключения", "Не удалось соединиться с сервером PC Control по адресу " + serverUrl + ".", true);
-            }
-        } catch (java.net.SocketTimeoutException ste) {
-            if (isStreaming.get()) {
-                showPlaybackError("Таймаут соединения", "Сервер не отвечает в течение установленного таймаута.", true);
-            }
-        } catch (Exception e) {
-            if (isStreaming.get()) {
-                showPlaybackError("Сбой воспроизведения", "Ошибка: " + e.getClass().getSimpleName() + " (" + e.getMessage() + ")", true);
-            }
-        } finally {
-            if (in != null) {
-                try { in.close(); } catch (Exception ignored) {}
-            }
-            if (conn != null) {
-                try { conn.disconnect(); } catch (Exception ignored) {}
-            }
-            activeConn = null;
-            releaseDecoder();
         }
     }
 
-    private void feedDecoderFrame(byte[] data, int len, int flags, long ptsUs) {
-        synchronized (decoderLock) {
-            if (decoder == null || !isStreaming.get()) return;
-            try {
-                int inIndex = decoder.dequeueInputBuffer(8000);
-                if (inIndex >= 0) {
-                    ByteBuffer inputBuffer;
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        inputBuffer = decoder.getInputBuffer(inIndex);
-                    } else {
-                        inputBuffer = decoder.getInputBuffers()[inIndex];
-                    }
-                    if (inputBuffer != null) {
-                        inputBuffer.clear();
-                        inputBuffer.put(data, 0, len);
-                        int codecFlags = 0;
-                        if ((flags & 1) != 0) {
-                            codecFlags |= MediaCodec.BUFFER_FLAG_KEY_FRAME;
-                        }
-                        decoder.queueInputBuffer(inIndex, 0, len, ptsUs, codecFlags);
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
+    // -----------------------------------------------------------------------
+    // ПОСТРОЕНИЕ ТУЛБАРА, ДИАГНОСТИКИ И ОШИБОК
+    // -----------------------------------------------------------------------
+    private void buildTopToolbar(Context context) {
+        topToolbar = new LinearLayout(context);
+        topToolbar.setOrientation(LinearLayout.HORIZONTAL);
+        topToolbar.setGravity(Gravity.CENTER_VERTICAL);
+
+        GradientDrawable tbBg = new GradientDrawable();
+        tbBg.setColor(Color.parseColor("#E612161F"));
+        tbBg.setCornerRadius(dpToPx(24));
+        tbBg.setStroke(dpToPx(1), Color.parseColor("#33FFFFFF"));
+        topToolbar.setBackground(tbBg);
+
+        int padH = dpToPx(16);
+        int padV = dpToPx(8);
+        topToolbar.setPadding(padH, padV, padH, padV);
+
+        FrameLayout.LayoutParams tbParams = new FrameLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
+        tbParams.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        tbParams.topMargin = dpToPx(16);
+        topToolbar.setLayoutParams(tbParams);
+
+        TextView backBtn = createToolbarButton(context, "←", "#242A35", Color.WHITE, 17f);
+        backBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { closeStreamAndExit(); }
+        });
+        topToolbar.addView(backBtn);
+
+        LinearLayout titleBox = new LinearLayout(context);
+        titleBox.setOrientation(LinearLayout.VERTICAL);
+        titleBox.setPadding(dpToPx(12), 0, dpToPx(14), 0);
+        titleBox.setGravity(Gravity.CENTER_VERTICAL);
+
+        titleView = new TextView(context);
+        titleView.setText("Демонстрация экрана");
+        titleView.setTextColor(Color.WHITE);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+        titleView.setTypeface(Typeface.DEFAULT_BOLD);
+        titleBox.addView(titleView);
+
+        subtitleView = new TextView(context);
+        subtitleView.setText("1080p · 60 FPS");
+        subtitleView.setTextColor(Color.parseColor("#94A3B8"));
+        subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        titleBox.addView(subtitleView);
+        topToolbar.addView(titleBox);
+
+        scaleModeBtn = createToolbarButton(context, "Fit", "#242A35", Color.parseColor("#E2E8F0"), 13f);
+        scaleModeBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { toggleScaleMode(); }
+        });
+        topToolbar.addView(scaleModeBtn);
+
+        addToolbarSpacer(context, topToolbar, 8);
+
+        fullscreenBtn = createToolbarButton(context, "⛶", "#242A35", Color.WHITE, 17f);
+        fullscreenBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { toggleFullscreen(); }
+        });
+        topToolbar.addView(fullscreenBtn);
+
+        addToolbarSpacer(context, topToolbar, 8);
+
+        settingsBtn = createToolbarButton(context, "⚙", "#242A35", Color.WHITE, 17f);
+        settingsBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { toggleSplitSettings(); }
+        });
+        topToolbar.addView(settingsBtn);
+
+        addToolbarSpacer(context, topToolbar, 8);
+
+        closeBtn = createToolbarButton(context, "✕", "#3A2024", Color.parseColor("#FF5252"), 17f);
+        closeBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { closeStreamAndExit(); }
+        });
+        topToolbar.addView(closeBtn);
+
+        addView(topToolbar);
     }
 
-    private void feedDecoderNalu(byte[] data, int offset, int len, int startCodeLen) {
-        synchronized (decoderLock) {
-            if (decoder == null || !isStreaming.get()) return;
-            try {
-                int inIndex = decoder.dequeueInputBuffer(8000);
-                if (inIndex >= 0) {
-                    ByteBuffer inputBuffer;
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        inputBuffer = decoder.getInputBuffer(inIndex);
-                    } else {
-                        inputBuffer = decoder.getInputBuffers()[inIndex];
-                    }
-                    if (inputBuffer != null) {
-                        inputBuffer.clear();
-                        inputBuffer.put(data, offset, len);
-                        int nalType = data[offset + startCodeLen] & 0x1F;
-                        int flags = 0;
-                        if (nalType == 7 || nalType == 8) {
-                            flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
-                        } else if (nalType == 5) {
-                            flags = MediaCodec.BUFFER_FLAG_KEY_FRAME;
-                        }
-                        if (nalType == 1 || nalType == 5) {
-                            receivedFpsTracker.onFrame();
-                        }
-                        long presentationTimeUs = SystemClock.elapsedRealtimeNanos() / 1000;
-                        decoder.queueInputBuffer(inIndex, 0, len, presentationTimeUs, flags);
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
+    private TextView createToolbarButton(Context context, String text, String bgColorHex, int textColor, float textSizeSp) {
+        TextView btn = new TextView(context);
+        btn.setText(text);
+        btn.setTextColor(textColor);
+        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSizeSp);
+        btn.setTypeface(Typeface.DEFAULT_BOLD);
+        btn.setGravity(Gravity.CENTER);
+        btn.setMinWidth(dpToPx(48));
+        btn.setMinHeight(dpToPx(48));
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.parseColor(bgColorHex));
+        bg.setCornerRadius(dpToPx(14));
+        btn.setBackground(bg);
+        int pad = dpToPx(8);
+        btn.setPadding(pad, pad, pad, pad);
+        return btn;
     }
 
-    private void initDecoder(int width, int height) throws Exception {
-        synchronized (decoderLock) {
-            String mime = MediaFormat.MIMETYPE_VIDEO_AVC;
-            decoder = MediaCodec.createDecoderByType(mime);
-            activeCodecName = decoder.getName();
-
-            Surface targetSurface = null;
-            synchronized (surfaceLock) {
-                if (surfaceHolder != null && surfaceHolder.getSurface() != null && surfaceHolder.getSurface().isValid()) {
-                    targetSurface = surfaceHolder.getSurface();
-                }
-            }
-            if (targetSurface == null) {
-                throw new IllegalStateException("SurfaceView surface is not valid for MediaCodec");
-            }
-
-            boolean configured = false;
-            try {
-                MediaFormat format = MediaFormat.createVideoFormat(mime, width, height);
-                format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    format.setInteger(MediaFormat.KEY_PRIORITY, 0);
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    format.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
-                    format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
-                    format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
-                }
-
-                decoder.configure(format, targetSurface, null, 0);
-                configured = true;
-            } catch (Exception e) {
-                try {
-                    if (decoder != null) decoder.release();
-                } catch (Exception ignored) {}
-                decoder = MediaCodec.createDecoderByType(mime);
-                activeCodecName = decoder.getName();
-                MediaFormat fallbackFormat = MediaFormat.createVideoFormat(mime, width, height);
-                fallbackFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-                decoder.configure(fallbackFormat, targetSurface, null, 0);
-                configured = true;
-            }
-
-            if (configured) {
-                decoder.start();
-            }
-        }
+    private void addToolbarSpacer(Context context, LinearLayout parent, int dp) {
+        View sp = new View(context);
+        parent.addView(sp, new LinearLayout.LayoutParams(dpToPx(dp), 1));
     }
 
-    /**
-     * Выгрузка раскодированных кадров с динамической детекцией разрешения и кроп-области.
-     */
-    private void drainOutputBuffers() {
-        synchronized (decoderLock) {
-            if (decoder == null || !isStreaming.get()) return;
-            try {
-                MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-                int attempts = 0;
-                // Начальный таймаут 1500 мкс (1.5 мс) дает аппаратному декодеру успеть выдать кадр
-                // сразу после ввода NALU, не откладывая рендер до прихода следующего сетевого пакета.
-                int outIndex = decoder.dequeueOutputBuffer(info, 1500);
+    private TextView createChipButton(Context context, String text, final Runnable onClick) {
+        TextView chip = new TextView(context);
+        chip.setText(text);
+        chip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        chip.setTypeface(Typeface.DEFAULT_BOLD);
+        chip.setGravity(Gravity.CENTER);
+        chip.setTextColor(Color.parseColor("#CBD5E1"));
+        chip.setMinWidth(dpToPx(48));
+        chip.setMinHeight(dpToPx(48));
+        int pad = dpToPx(8);
+        chip.setPadding(pad, pad, pad, pad);
 
-                while (outIndex >= 0 && attempts < 8) {
-                    attempts++;
-                    decodedFpsTracker.onFrame();
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(Color.parseColor("#1E2530"));
+        gd.setCornerRadius(dpToPx(12));
+        gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
+        chip.setBackground(gd);
 
-                    boolean canRender = false;
-                    synchronized (surfaceLock) {
-                        canRender = surfaceReady && surfaceHolder != null && surfaceHolder.getSurface() != null && surfaceHolder.getSurface().isValid();
-                    }
-
-                    // Рендерим кадр на Surface только если поверхность валидна
-                    decoder.releaseOutputBuffer(outIndex, canRender);
-                    if (canRender) {
-                        renderedFpsTracker.onFrame();
-                        minFpsTracker.onRenderedFrame();
-                    }
-
-                    outIndex = decoder.dequeueOutputBuffer(info, 0);
-                }
-
-                if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    MediaFormat newFormat = decoder.getOutputFormat();
-                    int w = newFormat.getInteger(MediaFormat.KEY_WIDTH);
-                    int h = newFormat.getInteger(MediaFormat.KEY_HEIGHT);
-                    if (newFormat.containsKey("crop-left") && newFormat.containsKey("crop-right")) {
-                        w = newFormat.getInteger("crop-right") - newFormat.getInteger("crop-left") + 1;
-                    }
-                    if (newFormat.containsKey("crop-top") && newFormat.containsKey("crop-bottom")) {
-                        h = newFormat.getInteger("crop-bottom") - newFormat.getInteger("crop-top") + 1;
-                    }
-                    if (w > 0 && h > 0 && (w != videoWidth || h != videoHeight)) {
-                        videoWidth = w;
-                        videoHeight = h;
-                        mainHandler.post(new Runnable() {
-                            @Override
-                            public void run() {
-                                requestLayout();
-                            }
-                        });
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
+        chip.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { if (onClick != null) onClick.run(); }
+        });
+        return chip;
     }
 
-    private void releaseDecoder() {
-        synchronized (decoderLock) {
-            if (decoder != null) {
-                try { decoder.stop(); } catch (Exception ignored) {}
-                try { decoder.release(); } catch (Exception ignored) {}
-                decoder = null;
-            }
+    private void setChipActive(TextView chip, boolean active) {
+        if (chip == null) return;
+        GradientDrawable gd = new GradientDrawable();
+        gd.setCornerRadius(dpToPx(12));
+        if (active) {
+            gd.setColor(Color.parseColor("#0C4A6E"));
+            gd.setStroke(dpToPx(1), Color.parseColor("#38BDF8"));
+            chip.setTextColor(Color.parseColor("#38BDF8"));
+        } else {
+            gd.setColor(Color.parseColor("#1E2530"));
+            gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
+            chip.setTextColor(Color.parseColor("#CBD5E1"));
         }
+        chip.setBackground(gd);
     }
 
-    private void updateBitrateStats() {
-        long now = SystemClock.elapsedRealtime();
-        long diff = now - lastBitrateSampleTime;
-        if (diff >= 1000) {
-            long bytesInSec = totalBytesReceived - lastBitrateBytes;
-            currentKbps = (bytesInSec * 8.0f) / diff;
-            lastBitrateBytes = totalBytesReceived;
-            lastBitrateSampleTime = now;
-        }
+    private void addSectionHeader(Context context, LinearLayout parent, String text) {
+        TextView label = new TextView(context);
+        label.setText(text);
+        label.setTextColor(Color.parseColor("#94A3B8"));
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        label.setTypeface(Typeface.DEFAULT_BOLD);
+        label.setPadding(0, dpToPx(4), 0, dpToPx(4));
+        parent.addView(label);
     }
 
-    /**
-     * Обновление показателей в скрытой диагностической панели.
-     */
+    private void addDivider(Context context, LinearLayout parent) {
+        View d = new View(context);
+        d.setBackgroundColor(Color.parseColor("#22334155"));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, dpToPx(1));
+        lp.setMargins(0, dpToPx(10), 0, dpToPx(10));
+        d.setLayoutParams(lp);
+        parent.addView(d);
+    }
+
+    private void buildDiagnosticsDialog(Context context) {
+        diagOverlay = new FrameLayout(context);
+        diagOverlay.setBackgroundColor(Color.parseColor("#80000000"));
+        diagOverlay.setVisibility(View.GONE);
+
+        diagCard = new LinearLayout(context);
+        diagCard.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.parseColor("#EE121622"));
+        bg.setCornerRadius(dpToPx(16));
+        bg.setStroke(dpToPx(1), Color.parseColor("#334155"));
+        diagCard.setBackground(bg);
+        int pad = dpToPx(16);
+        diagCard.setPadding(pad, pad, pad, pad);
+
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dpToPx(340), LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+        diagCard.setLayoutParams(lp);
+
+        TextView head = new TextView(context);
+        head.setText("📊 ТЕЛЕМЕТРИЯ ПОТОКА");
+        head.setTextColor(Color.parseColor("#38BDF8"));
+        head.setTypeface(Typeface.DEFAULT_BOLD);
+        diagCard.addView(head);
+
+        diagFpsRendVal = addDiagRow(context, diagCard, "FPS Отрисовки:");
+        diagFpsRecvVal = addDiagRow(context, diagCard, "FPS Приёма:");
+        diagBitrateVal = addDiagRow(context, diagCard, "Битрейт:");
+        diagResVal = addDiagRow(context, diagCard, "Разрешение:");
+
+        TextView closeDiag = createToolbarButton(context, "Закрыть", "#242A35", Color.WHITE, 12f);
+        closeDiag.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { setDiagnosticsVisible(false); }
+        });
+        diagCard.addView(closeDiag);
+
+        diagOverlay.addView(diagCard);
+        addView(diagOverlay, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+    }
+
+    private TextView addDiagRow(Context context, LinearLayout parent, String label) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        TextView l = new TextView(context);
+        l.setText(label);
+        l.setTextColor(Color.parseColor("#94A3B8"));
+        TextView v = new TextView(context);
+        v.setTextColor(Color.WHITE);
+        v.setTypeface(Typeface.MONOSPACE);
+        row.addView(l, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        row.addView(v);
+        parent.addView(row);
+        return v;
+    }
+
     private void refreshDiagValues() {
-        float rFps = receivedFpsTracker.getFps();
-        float dFps = decodedFpsTracker.getFps();
-        float renFps = renderedFpsTracker.getFps();
-        float mFps = minFpsTracker.getMinFps(renFps);
-
-        diagCodecVal.setText("H.264 · " + activeCodecName);
-        diagResVal.setText(videoWidth + " × " + videoHeight + " (запрос " + (targetHeight > 0 ? targetHeight + "p" : "Native") + ")");
-
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        diagDispVal.setText(dm.widthPixels + "×" + dm.heightPixels + " · " + (scaleMode == SCALE_MODE_FIT ? "Fit (16:9)" : "Fill"));
-        diagColorVal.setText("ITU-T BT.709 Limited");
-
-        diagFpsTargetVal.setText(targetFps + " FPS");
-        diagFpsRecvVal.setText(String.format("%.1f FPS", rFps));
-        diagFpsDecVal.setText(String.format("%.1f FPS", dFps));
-        diagFpsRendVal.setText(String.format("%.1f FPS", renFps));
-        diagFpsMinVal.setText(String.format("%.1f FPS", mFps));
-
-        diagBitrateVal.setText(String.format("%.2f Mbps", currentKbps / 1000.0f));
-        diagDroppedVal.setText(droppedFramesCount + " кадров");
-        diagLatencyVal.setText("~" + estimatedLatencyMs + " мс (Zero-GC)");
+        if (diagFpsRendVal != null) diagFpsRendVal.setText(String.format("%.1f", renderedFpsTracker.getFps()));
+        if (diagFpsRecvVal != null) diagFpsRecvVal.setText(String.format("%.1f", receivedFpsTracker.getFps()));
+        if (diagResVal != null) diagResVal.setText(videoWidth + "x" + videoHeight);
     }
 
-    private static void readFully(InputStream in, byte[] b, int off, int len) throws Exception {
-        int n = 0;
-        while (n < len) {
-            int count = in.read(b, off + n, len - n);
-            if (count < 0) throw new EOFException("End of stream reached");
-            n += count;
+    public void setDiagnosticsVisible(boolean visible) {
+        isDiagVisible = visible;
+        if (diagOverlay != null) diagOverlay.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (visible) {
+            mainHandler.post(diagUpdateRunnable);
+        } else {
+            mainHandler.removeCallbacks(diagUpdateRunnable);
         }
     }
 
-    /**
-     * Обработка сенсорных событий (Moonlight Touch Controller):
-     * Координаты касания аккуратно проецируются строго на область видео с учётом Letterbox/Pillarbox.
-     */
-    private boolean handleTouchEvent(MotionEvent event) {
-        int action = event.getActionMasked();
-        activePointerCount = event.getPointerCount();
+    private void buildErrorDialog(Context context) {
+        errorOverlay = new FrameLayout(context);
+        errorOverlay.setBackgroundColor(Color.parseColor("#B3000000"));
+        errorOverlay.setVisibility(View.GONE);
+        addView(errorOverlay, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+    }
 
-        float x = event.getX();
-        float y = event.getY();
+    private void hidePlaybackError() {
+        isErrorVisible = false;
+        if (errorOverlay != null) errorOverlay.setVisibility(View.GONE);
+    }
 
-        // Проверяем клик по видимой верхней панели
-        if (isControlsVisible && topToolbar != null && topToolbar.getVisibility() == View.VISIBLE) {
-            if (x >= topToolbar.getLeft() && x <= topToolbar.getRight()
-                    && y >= topToolbar.getTop() && y <= topToolbar.getBottom()) {
-                scheduleControlsAutoHide();
-                return false; // Пусть тулбар обработает клик
+    // -----------------------------------------------------------------------
+    // ИЗМЕРЕНИЕ И РАСПОЛОЖЕНИЕ ЭЛЕМЕНТОВ (onMeasure, onLayout)
+    // -----------------------------------------------------------------------
+    @Override
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        int widthSize = MeasureSpec.getSize(widthMeasureSpec);
+        int heightSize = MeasureSpec.getSize(heightMeasureSpec);
+        if (widthSize <= 0 || heightSize <= 0) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            return;
+        }
+
+        // Расчёт пропорций видео 16:9
+        float videoAspect = (videoWidth > 0 && videoHeight > 0) ? (videoWidth / (float) videoHeight) : (16.0f / 9.0f);
+        int surfW = widthSize;
+        int surfH = heightSize;
+
+        if (scaleMode == SCALE_MODE_FIT) {
+            float containerAspect = widthSize / (float) heightSize;
+            if (containerAspect > videoAspect) {
+                surfH = heightSize;
+                surfW = Math.round(heightSize * videoAspect);
+            } else {
+                surfW = widthSize;
+                surfH = Math.round(widthSize / videoAspect);
             }
         }
 
-        // Проекция координат на прямоугольник видео
-        int vW = videoViewportRect.width();
-        int vH = videoViewportRect.height();
-        if (vW <= 0 || vH <= 0) return true;
-
-        float relX = x - videoViewportRect.left;
-        float relY = y - videoViewportRect.top;
-        float normX = Math.max(0f, Math.min(1f, relX / (float) vW));
-        float normY = Math.max(0f, Math.min(1f, relY / (float) vH));
-
-        switch (action) {
-            case MotionEvent.ACTION_DOWN:
-                touchStartX = x;
-                touchStartY = y;
-                lastTouchX = x;
-                lastTouchY = y;
-                touchDownTime = SystemClock.uptimeMillis();
-                isDraggingMouse = false;
-                sendMouseCommand("move", normX, normY, 0);
-                break;
-
-            case MotionEvent.ACTION_MOVE:
-                float dx = x - lastTouchX;
-                float dy = y - lastTouchY;
-                lastTouchX = x;
-                lastTouchY = y;
-
-                if (Math.abs(x - touchStartX) > dpToPx(6) || Math.abs(y - touchStartY) > dpToPx(6)) {
-                    isDraggingMouse = true;
-                }
-
-                if (activePointerCount == 1) {
-                    sendMouseCommand("move", normX, normY, 0);
-                } else if (activePointerCount >= 2) {
-                    int scrollDelta = (int) (-dy / 4);
-                    if (scrollDelta != 0) {
-                        sendMouseCommand("scroll", 0, 0, scrollDelta);
-                    }
-                }
-                break;
-
-            case MotionEvent.ACTION_UP:
-                long duration = SystemClock.uptimeMillis() - touchDownTime;
-                if (!isDraggingMouse && duration < 280) {
-                    // Короткий тап: если панель была скрыта, показываем её на 5 сек
-                    if (!isControlsVisible) {
-                        setControlsVisible(true, true);
-                    } else {
-                        // Если была видна и тапнули в видео — скрываем панель
-                        setControlsVisible(false, true);
-                    }
-                    sendMouseCommand("click", normX, normY, 0);
-                } else {
-                    scheduleControlsAutoHide();
-                }
-                break;
-
-            case MotionEvent.ACTION_POINTER_UP:
-                if (activePointerCount == 2) {
-                    sendMouseCommand("right_click", normX, normY, 0);
-                }
-                break;
+        if (videoContainer != null) {
+            videoContainer.measure(MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY));
         }
-        return true;
+
+        if (surfaceView != null) {
+            surfaceView.measure(MeasureSpec.makeMeasureSpec(surfW, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(surfH, MeasureSpec.EXACTLY));
+        }
+
+        if (topToolbar != null && topToolbar.getVisibility() != View.GONE) {
+            topToolbar.measure(MeasureSpec.makeMeasureSpec(widthSize - dpToPx(32), MeasureSpec.AT_MOST),
+                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.AT_MOST));
+        }
+
+        if (floatingControlsGroup != null && floatingControlsGroup.getVisibility() != View.GONE) {
+            floatingControlsGroup.measure(MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.AT_MOST),
+                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.AT_MOST));
+        }
+
+        if (splitSettingsContainer != null && splitSettingsContainer.getVisibility() != View.GONE) {
+            int panelW = isSplitSettingsOpen ? (int) (widthSize * 0.48f) : widthSize;
+            splitSettingsContainer.measure(MeasureSpec.makeMeasureSpec(panelW, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY));
+        }
+
+        if (customKeyboardView != null && customKeyboardView.getVisibility() != View.GONE) {
+            int kWidth = (int) (widthSize * (kbdWidthPct / 100f));
+            customKeyboardView.measure(MeasureSpec.makeMeasureSpec(kWidth, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(dpToPx(kbdHeightDp), MeasureSpec.EXACTLY));
+        }
+
+        if (diagOverlay != null && diagOverlay.getVisibility() != View.GONE) {
+            diagOverlay.measure(MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY));
+        }
+        if (errorOverlay != null && errorOverlay.getVisibility() != View.GONE) {
+            errorOverlay.measure(MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY));
+        }
+
+        setMeasuredDimension(widthSize, heightSize);
     }
 
-    private void sendMouseCommand(final String act, final float nx, final float ny, final int scrollVal) {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    String cmdUrl = serverUrl + "/api/mouse";
-                    URL url = new URL(cmdUrl);
-                    HttpURLConnection c = (HttpURLConnection) url.openConnection();
-                    c.setRequestMethod("POST");
-                    c.setConnectTimeout(400);
-                    c.setReadTimeout(400);
-                    c.setDoOutput(true);
-                    c.setRequestProperty("Content-Type", "application/json");
-                    if (!authToken.isEmpty()) {
-                        c.setRequestProperty("X-Auth-Token", authToken);
-                    }
+    @Override
+    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+        int parentW = right - left;
+        int parentH = bottom - top;
 
-                    String json;
-                    if ("scroll".equals(act)) {
-                        json = "{\"action\":\"scroll\",\"dy\":" + scrollVal + "}";
-                    } else if ("right_click".equals(act)) {
-                        json = "{\"action\":\"right_click\"}";
-                    } else if ("click".equals(act)) {
-                        json = "{\"action\":\"click\"}";
-                    } else {
-                        json = "{\"action\":\"move_norm\",\"x\":" + nx + ",\"y\":" + ny + "}";
-                    }
+        if (videoContainer != null) {
+            videoContainer.layout(0, 0, parentW, parentH);
+        }
 
-                    byte[] out = json.getBytes(StandardCharsets.UTF_8);
-                    c.setFixedLengthStreamingMode(out.length);
-                    try (OutputStream os = c.getOutputStream()) {
-                        os.write(out);
-                    }
-                    c.getResponseCode();
-                    c.disconnect();
-                } catch (Exception ignored) {}
-            }
-        }).start();
+        if (surfaceView != null) {
+            int sW = surfaceView.getMeasuredWidth();
+            int sH = surfaceView.getMeasuredHeight();
+            int sLeft = (parentW - sW) / 2;
+            int sTop = (parentH - sH) / 2;
+            surfaceView.layout(sLeft, sTop, sLeft + sW, sTop + sH);
+            videoViewportRect.set(sLeft, sTop, sLeft + sW, sTop + sH);
+        }
+
+        if (touchpadVisualEditor != null && touchpadVisualEditor.getVisibility() != View.GONE) {
+            touchpadVisualEditor.layout(0, 0, parentW, parentH);
+        }
+
+        if (topToolbar != null && topToolbar.getVisibility() != View.GONE) {
+            int tbW = topToolbar.getMeasuredWidth();
+            int tbH = topToolbar.getMeasuredHeight();
+            int tbLeft = Math.max(dpToPx(16), (parentW - tbW) / 2);
+            topToolbar.layout(tbLeft, dpToPx(16), tbLeft + tbW, dpToPx(16) + tbH);
+        }
+
+        if (floatingControlsGroup != null && floatingControlsGroup.getVisibility() != View.GONE) {
+            int gW = floatingControlsGroup.getMeasuredWidth();
+            int gH = floatingControlsGroup.getMeasuredHeight();
+            float defX = (gearPosX >= 0) ? gearPosX : (parentW - gW - dpToPx(16));
+            float defY = (gearPosY >= 0) ? gearPosY : dpToPx(16);
+            floatingControlsGroup.layout((int) defX, (int) defY, (int) (defX + gW), (int) (defY + gH));
+        }
+
+        if (splitSettingsContainer != null && splitSettingsContainer.getVisibility() != View.GONE) {
+            int sW = splitSettingsContainer.getMeasuredWidth();
+            int sH = splitSettingsContainer.getMeasuredHeight();
+            int sLeft = parentW - sW;
+            splitSettingsContainer.layout(sLeft, 0, parentW, sH);
+        }
+
+        if (customKeyboardView != null && customKeyboardView.getVisibility() != View.GONE) {
+            int kW = customKeyboardView.getMeasuredWidth();
+            int kH = customKeyboardView.getMeasuredHeight();
+            int kLeft = (parentW - kW) / 2;
+            customKeyboardView.layout(kLeft, parentH - kH - dpToPx(8), kLeft + kW, parentH - dpToPx(8));
+        }
+
+        if (diagOverlay != null && diagOverlay.getVisibility() != View.GONE) {
+            diagOverlay.layout(0, 0, parentW, parentH);
+        }
+        if (errorOverlay != null && errorOverlay.getVisibility() != View.GONE) {
+            errorOverlay.layout(0, 0, parentW, parentH);
+        }
     }
 
     private int dpToPx(int dp) {
-        return Math.round(dp * getResources().getDisplayMetrics().density);
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        return Math.round(dp * dm.density);
     }
 
-    /**
-     * Высокоточный кольцевой трекер FPS на базе скользящего временного окна (без скачков).
-     */
-    public static class FpsTracker {
+    // -----------------------------------------------------------------------
+    // ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ ТРЕКИНГА FPS
+    // -----------------------------------------------------------------------
+    private static class FpsTracker {
         private final long[] timestamps;
+        private final long windowMs;
         private int head = 0;
         private int count = 0;
-        private final long windowNs;
 
         public FpsTracker(int capacity, long windowMs) {
-            timestamps = new long[capacity];
-            windowNs = windowMs * 1_000_000L;
+            this.timestamps = new long[capacity];
+            this.windowMs = windowMs;
         }
 
-        public synchronized void onFrame() {
-            timestamps[head] = SystemClock.elapsedRealtimeNanos();
+        public synchronized void recordEvent() {
+            long now = SystemClock.uptimeMillis();
+            timestamps[head] = now;
             head = (head + 1) % timestamps.length;
             if (count < timestamps.length) count++;
         }
 
         public synchronized float getFps() {
             if (count < 2) return 0f;
-            long now = SystemClock.elapsedRealtimeNanos();
-            long threshold = now - windowNs;
-            int valid = 0;
-            long oldest = now;
-
+            long now = SystemClock.uptimeMillis();
+            int validCount = 0;
             for (int i = 0; i < count; i++) {
                 int idx = (head - 1 - i + timestamps.length) % timestamps.length;
-                long t = timestamps[idx];
-                if (t >= threshold) {
-                    valid++;
-                    if (t < oldest) oldest = t;
+                if (now - timestamps[idx] <= windowMs) {
+                    validCount++;
                 } else {
                     break;
                 }
             }
-            if (valid < 2) return 0f;
-            long durationNs = now - oldest;
-            if (durationNs <= 0) return 0f;
-            return (valid * 1_000_000_000.0f) / durationNs;
+            if (validCount < 2) return 0f;
+            return (validCount * 1000f) / (float) windowMs;
         }
     }
 
-    /**
-     * Трекер минимального FPS на 3-секундном интервале для выявления реальных просадок.
-     */
-    public static class MinFpsTracker {
+    private static class MinFpsTracker {
         private final long windowMs;
-        private long lastSecTime = 0;
-        private int framesInCurrentSec = 0;
-        private final float[] secRates = new float[3];
-        private int secIdx = 0;
+        private long lastCheck = 0;
+        private int frames = 0;
+        private float minFps = 60f;
 
         public MinFpsTracker(long windowMs) {
             this.windowMs = windowMs;
-            for (int i = 0; i < secRates.length; i++) secRates[i] = -1f;
         }
 
-        public synchronized void onRenderedFrame() {
-            long now = SystemClock.elapsedRealtime();
-            if (lastSecTime == 0) lastSecTime = now;
-            framesInCurrentSec++;
-            if (now - lastSecTime >= 1000) {
-                float fps = (framesInCurrentSec * 1000f) / (now - lastSecTime);
-                secRates[secIdx] = fps;
-                secIdx = (secIdx + 1) % secRates.length;
-                framesInCurrentSec = 0;
-                lastSecTime = now;
+        public synchronized void recordEvent() {
+            frames++;
+            long now = SystemClock.uptimeMillis();
+            if (lastCheck == 0) lastCheck = now;
+            if (now - lastCheck >= 1000) {
+                float fps = (frames * 1000f) / (float) (now - lastCheck);
+                if (fps < minFps && fps > 5f) minFps = fps;
+                frames = 0;
+                lastCheck = now;
             }
         }
 
-        public synchronized float getMinFps(float currentAverage) {
-            float min = -1f;
-            for (float r : secRates) {
-                if (r >= 0) {
-                    if (min < 0 || r < min) min = r;
-                }
-            }
-            return (min >= 0) ? min : currentAverage;
+        public synchronized float getMinFps() {
+            return minFps;
         }
     }
 }

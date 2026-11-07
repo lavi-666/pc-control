@@ -47,6 +47,7 @@ from modules.power import power_bp
 from modules.streaming import streaming_bp
 from modules.media import media_bp
 from modules.presets import presets_bp
+from modules.input_controller import input_bp
 
 # Безопасный парсинг JSON с защитой от UTF-8 BOM и обрывов соединения
 _orig_get_json = Request.get_json
@@ -81,6 +82,7 @@ app.register_blueprint(system_bp)
 app.register_blueprint(streaming_bp)
 app.register_blueprint(media_bp)
 app.register_blueprint(presets_bp)
+app.register_blueprint(input_bp)
 
 
 @app.errorhandler(Exception)
@@ -179,7 +181,7 @@ def _ensure_interactive_desktop():
     req_id = request.headers.get("X-Request-Id")
     if req_id and request.method in ("POST", "PUT", "DELETE", "PATCH"):
         p = request.path
-        if not p.startswith(("/webrtc/", "/screen/", "/audio", "/api/mouse", "/keyboard/")):
+        if not p.startswith(("/webrtc/", "/screen/", "/audio", "/api/mouse", "/api/keyboard", "/keyboard/", "/api/mic")):
             cached = check_idempotency_request(req_id)
             if cached is not None:
                 if cached.get("error"):

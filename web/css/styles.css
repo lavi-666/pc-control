@@ -113,6 +113,27 @@
   }
   button.danger-soft:hover{background:rgba(255,69,58,0.22);}
 
+  /* ---- Кнопка режима «Управление ПК» ---- */
+  button.btn-pc-control{
+    border:1px solid rgba(56,189,248,0.24);
+    background:linear-gradient(135deg, rgba(56,189,248,0.08), var(--surface2));
+    color:var(--text);
+    transition:all .2s ease;
+  }
+  button.btn-pc-control:hover{
+    background:linear-gradient(135deg, rgba(56,189,248,0.16), var(--surface3));
+    border-color:rgba(56,189,248,0.45);
+  }
+  button.btn-pc-control:active{
+    transform:scale(0.97);
+  }
+  button.btn-pc-control.active{
+    background:rgba(56,189,248,0.18) !important;
+    border-color:#38bdf8 !important;
+    color:#ffffff !important;
+    box-shadow:0 0 16px rgba(56,189,248,0.28);
+  }
+
   /* ---- Кнопка фонового режима (Background Mode) ---- */
   button.bg-mode-btn{
     border:1px solid rgba(255,255,255,0.14);

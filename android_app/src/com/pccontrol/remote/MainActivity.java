@@ -49,6 +49,20 @@ public class MainActivity extends Activity {
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
 
+    public static MainActivity getInstance() {
+        return instance;
+    }
+
+    public boolean checkOrRequestRecordAudioPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 102);
+                return false;
+            }
+        }
+        return true;
+    }
+
     public static void notifyBackgroundStateChanged(final boolean active) {
         if (instance != null && instance.webView != null) {
             instance.runOnUiThread(new Runnable() {
@@ -253,6 +267,21 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     if (nativeScreenView != null) {
+                        nativeScreenView.setOperatingMode(NativeScreenView.MODE_VIEW);
+                        nativeScreenView.configure(serverUrl, token, monitor, height, fps, bitrate, quality, codec);
+                        nativeScreenView.startStream();
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void startNativePcControl(final String serverUrl, final String token, final int monitor, final int height, final int fps, final int bitrate, final String quality, final String codec) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (nativeScreenView != null) {
+                        nativeScreenView.setOperatingMode(NativeScreenView.MODE_PC_CONTROL);
                         nativeScreenView.configure(serverUrl, token, monitor, height, fps, bitrate, quality, codec);
                         nativeScreenView.startStream();
                     }
