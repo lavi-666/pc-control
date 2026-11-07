@@ -620,6 +620,12 @@ def set_windows_hello_state(enabled: bool) -> tuple[bool, str]:
     if current_status.get("supported") and current_status.get("enabled") == enabled:
         return (True, f"Настройка Windows Hello уже {'включена' if enabled else 'отключена'}.")
 
+    try:
+        from core.system_state import capture_windows_hello_before_change
+        capture_windows_hello_before_change(enabled)
+    except Exception:
+        pass
+
     ps_cmd = (
         f"$p = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\PasswordLess\\Device'; "
         f"if (-not (Test-Path $p)) {{ New-Item -Path $p -Force | Out-Null }}; "

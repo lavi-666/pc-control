@@ -8,14 +8,50 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
 import zipfile
 from pathlib import Path
 from PIL import Image, ImageDraw
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-SDK_DIR = BASE_DIR / ".android_sdk"
+DEFAULT_SDK_DIR = BASE_DIR / ".android_sdk"
+SDK_DIR = DEFAULT_SDK_DIR
 APP_DIR = BASE_DIR / "android_app"
 OUT_APK = BASE_DIR / "PC_Control.apk"
+
+PORTABLE_SDK_URLS = {
+    "build-tools": "https://dl.google.com/android/repository/build-tools_r34-windows.zip",
+    "platform": "https://dl.google.com/android/repository/platform-34-ext7_r03.zip",
+    "jdk": "https://aka.ms/download-jdk/microsoft-jdk-17-windows-x64.zip",
+}
+
+REQUIRED_TOOL_PATTERNS = {
+    "aapt2": "build-tools/**/aapt2.exe",
+    "zipalign": "build-tools/**/zipalign.exe",
+    "d8_jar": "build-tools/**/lib/d8.jar",
+    "apksigner_jar": "build-tools/**/lib/apksigner.jar",
+    "android_jar": "platform/**/android.jar",
+    "javac": "jdk/**/bin/javac.exe",
+    "java": "jdk/**/bin/java.exe",
+    "keytool": "jdk/**/bin/keytool.exe",
+}
+
+
+def _get_shared_sdk_candidates() -> list[Path]:
+    """Возвращает дополнительные локальные пути поиска портативного SDK (кэш в AppData или соседние директории)."""
+    candidates: list[Path] = []
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "PCControl" / "android_sdk")
+    try:
+        for parent in (BASE_DIR.parent, BASE_DIR.parent.parent):
+            cand = parent / ".android_sdk"
+            if cand != SDK_DIR and cand.is_dir():
+                candidates.append(cand)
+    except Exception:
+        pass
+    return candidates
 
 
 def _find_first(pattern: str) -> Path:
@@ -23,6 +59,13 @@ def _find_first(pattern: str) -> Path:
         matches = list(SDK_DIR.glob(pattern))
         if matches:
             return matches[0].resolve()
+    # Look in shared portable SDK locations only when SDK_DIR is not overridden by an isolated unit test
+    if SDK_DIR == DEFAULT_SDK_DIR:
+        for cand_dir in _get_shared_sdk_candidates():
+            if cand_dir.exists():
+                matches = list(cand_dir.glob(pattern))
+                if matches:
+                    return matches[0].resolve()
     for env_var in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
         val = os.environ.get(env_var)
         if val and Path(val).exists():
@@ -41,6 +84,115 @@ def _find_first(pattern: str) -> Path:
     if which_path:
         return Path(which_path).resolve()
     raise FileNotFoundError(f"Tool not found matching pattern: {pattern}")
+
+
+def is_sdk_ready() -> tuple[bool, list[str]]:
+    """Проверяет доступность всех компонентов Android SDK и JDK 17."""
+    missing = []
+    for name, pattern in REQUIRED_TOOL_PATTERNS.items():
+        try:
+            _find_first(pattern)
+        except FileNotFoundError:
+            missing.append(name)
+    return (len(missing) == 0, missing)
+
+
+def _download_archive(url: str, dest: Path, label: str):
+    print(f"[SDK] Downloading {label} from {url} ...", flush=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "PCControl-SDK-Bootstrap/1.0"})
+    with urllib.request.urlopen(req, timeout=180) as resp, open(dest, "wb") as out_f:
+        total = int(resp.headers.get("Content-Length") or 0)
+        downloaded = 0
+        last_pct = -10
+        while True:
+            chunk = resp.read(256 * 1024)
+            if not chunk:
+                break
+            out_f.write(chunk)
+            downloaded += len(chunk)
+            if total > 0:
+                pct = int(downloaded * 100 / total)
+                if pct >= last_pct + 20:
+                    last_pct = pct
+                    print(f"[SDK]   {label}: {pct}% ({downloaded // (1024 * 1024)} MB / {total // (1024 * 1024)} MB)", flush=True)
+
+
+def ensure_portable_sdk(target_sdk_dir: Path | None = None) -> Path:
+    """Автоматически разворачивает портативный Android SDK (build-tools, platform-34) и OpenJDK 17,
+    если они отсутствуют на компьютере пользователя."""
+    sdk_root = target_sdk_dir or SDK_DIR
+    ready, missing = is_sdk_ready()
+    if ready:
+        return sdk_root
+
+    sdk_root.mkdir(parents=True, exist_ok=True)
+    need_build_tools = any(m in missing for m in ("aapt2", "zipalign", "d8_jar", "apksigner_jar"))
+    need_platform = "android_jar" in missing
+    need_jdk = any(m in missing for m in ("javac", "java", "keytool"))
+
+    with tempfile.TemporaryDirectory(prefix="pccontrol_sdk_dl_") as tmp_dl:
+        tmp_path = Path(tmp_dl)
+        if need_build_tools:
+            bt_zip = tmp_path / "build-tools.zip"
+            _download_archive(PORTABLE_SDK_URLS["build-tools"], bt_zip, "Android Build-Tools 34")
+            bt_dir = sdk_root / "build-tools"
+            bt_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(bt_zip, "r") as zf:
+                zf.extractall(bt_dir)
+            print("[SDK] Android Build-Tools 34 unpacked.", flush=True)
+
+        if need_platform:
+            plat_zip = tmp_path / "platform.zip"
+            _download_archive(PORTABLE_SDK_URLS["platform"], plat_zip, "Android Platform 34 (android.jar)")
+            plat_dir = sdk_root / "platform"
+            plat_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(plat_zip, "r") as zf:
+                jar_members = [m for m in zf.namelist() if m.endswith("/android.jar") or m == "android.jar"]
+                if jar_members:
+                    target_jar = plat_dir / "android-34" / "android.jar"
+                    target_jar.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(jar_members[0]) as src_f, open(target_jar, "wb") as dst_f:
+                        shutil.copyfileobj(src_f, dst_f)
+                else:
+                    zf.extractall(plat_dir)
+            print("[SDK] Android Platform 34 unpacked.", flush=True)
+
+        if need_jdk:
+            jdk_zip = tmp_path / "jdk17.zip"
+            _download_archive(PORTABLE_SDK_URLS["jdk"], jdk_zip, "Microsoft OpenJDK 17")
+            jdk_dir = sdk_root / "jdk"
+            jdk_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(jdk_zip, "r") as zf:
+                zf.extractall(jdk_dir)
+            print("[SDK] OpenJDK 17 unpacked.", flush=True)
+
+    return sdk_root
+
+
+def _is_ascii_Safe(p: Path) -> bool:
+    try:
+        str(p).encode("ascii")
+        return " " not in str(p)
+    except UnicodeEncodeError:
+        return False
+
+
+def _get_ascii_temp_root() -> Path:
+    """Возвращает гарантированно ASCII-путь без пробелов для временной сборки aapt2/javac/d8,
+    чтобы кириллица или пробелы в пути к проекту/профилю пользователя не ломали утилиты Android SDK."""
+    candidates = [
+        Path(tempfile.gettempdir()),
+        Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "AppData" / "Local" / "Temp",
+        Path(os.environ.get("SystemDrive", "C:") + "\\Temp"),
+    ]
+    for c in candidates:
+        try:
+            str(c).encode("ascii")
+            c.mkdir(parents=True, exist_ok=True)
+            return c
+        except Exception:
+            continue
+    return Path(tempfile.gettempdir())
 
 
 def generate_app_icons(res_dir: Path):
@@ -661,7 +813,28 @@ public class MainActivity extends Activity {
         setContentView(rootLayout);
 
         String html = loadAssetHtml("index.html");
-        webView.loadDataWithBaseURL("http://pccontrol.local/", html, "text/html", "UTF-8", null);
+        webView.loadDataWithBaseURL(buildBaseUrl(getIntent()), html, "text/html", "UTF-8", null);
+    }
+
+    @Override
+    protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (webView != null && intent != null && intent.getData() != null) {
+            String html = loadAssetHtml("index.html");
+            webView.loadDataWithBaseURL(buildBaseUrl(intent), html, "text/html", "UTF-8", null);
+        }
+    }
+
+    private String buildBaseUrl(android.content.Intent intent) {
+        if (intent != null && intent.getData() != null) {
+            Uri uri = intent.getData();
+            String query = uri.getEncodedQuery();
+            if (query != null && !query.isEmpty()) {
+                return "http://pccontrol.local/?" + query;
+            }
+        }
+        return "http://pccontrol.local/";
     }
 
     private String loadAssetHtml(String name) {
@@ -779,6 +952,12 @@ ANDROID_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="pccontrol" android:host="connect" />
+            </intent-filter>
         </activity>
 
         <service
@@ -791,7 +970,13 @@ ANDROID_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
-def build():
+def build(
+    bootstrap_sdk: bool = False,
+    embed_token: bool = False,
+    lan_override: str | None = None,
+    mac_override: str | None = None,
+    token_override: str | None = None,
+):
     try:
         aapt2 = _find_first("build-tools/**/aapt2.exe")
         zipalign = _find_first("build-tools/**/zipalign.exe")
@@ -802,20 +987,32 @@ def build():
         java = _find_first("jdk/**/bin/java.exe")
         keytool = _find_first("jdk/**/bin/keytool.exe")
     except FileNotFoundError as e:
-        raise FileNotFoundError(
-            f"Cannot rebuild APK: {e}. Install Android build-tools/platforms and JDK 17 "
-            "or configure ANDROID_HOME and JAVA_HOME. The existing APK was not rebuilt."
-        ) from e
+        if bootstrap_sdk:
+            print("[SDK] Portable Android SDK/JDK not found locally. Starting automatic download...", flush=True)
+            ensure_portable_sdk(SDK_DIR)
+            aapt2 = _find_first("build-tools/**/aapt2.exe")
+            zipalign = _find_first("build-tools/**/zipalign.exe")
+            d8_jar = _find_first("build-tools/**/lib/d8.jar")
+            apksigner_jar = _find_first("build-tools/**/lib/apksigner.jar")
+            android_jar = _find_first("platform/**/android.jar")
+            javac = _find_first("jdk/**/bin/javac.exe")
+            java = _find_first("jdk/**/bin/java.exe")
+            keytool = _find_first("jdk/**/bin/keytool.exe")
+        else:
+            raise FileNotFoundError(
+                f"Cannot rebuild APK: {e}. Install Android build-tools/platforms and JDK 17 "
+                "or configure ANDROID_HOME and JAVA_HOME. The existing APK was not rebuilt."
+            ) from e
 
     web_file = BASE_DIR / "web" / "index.html"
+    if not web_file.exists():
+        alt_web = Path(__file__).resolve().parent.parent / "web" / "index.html"
+        if alt_web.exists():
+            web_file = alt_web
     if web_file.exists():
         raw_html = web_file.read_text(encoding="utf-8")
     else:
-        try:
-            import server
-            raw_html = getattr(server, "PAGE", "")
-        except Exception:
-            raw_html = "" 
+        raw_html = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>PC Control</title></head><body><script>const DEFAULT_APP_TOKEN=''; const DEFAULT_LAN_HOST=''; const PC_MAC_ADDRESS='';</script></body></html>"
 
     # android_app contains tracked Java sources. Clean generated output only;
     # never erase user changes to the application when rebuilding from the UI.
@@ -843,24 +1040,52 @@ def build():
         manifest_path.write_text(ANDROID_MANIFEST, encoding="utf-8")
 
     # 2. Embed up-to-date web interface from web/index.html into assets/index.html
-    # В целях безопасности токен НИКОГДА не зашивается в бинарный APK.
-    is_clean_build = "--clean" in sys.argv
-    cfg_file = BASE_DIR / "config.json"
-    if cfg_file.exists() and not is_clean_build:
+    is_clean_build = ("--clean" in sys.argv) and not (embed_token or lan_override or mac_override or token_override)
+    should_embed_token = embed_token or bool(token_override) or ("--embed-token" in sys.argv)
+    if not is_clean_build:
         try:
             import json as _json
             import re as _re
-            cfg = _json.loads(cfg_file.read_text(encoding="utf-8"))
+            cfg_file = BASE_DIR / "config.json"
+            cfg = {}
+            if cfg_file.exists():
+                cfg = _json.loads(cfg_file.read_text(encoding="utf-8"))
+            else:
+                try:
+                    if str(BASE_DIR) not in sys.path:
+                        sys.path.insert(0, str(BASE_DIR))
+                    from core.config import load_app_config
+                    cfg = load_app_config() or {}
+                except Exception:
+                    cfg = {}
+
+            lan_ip = lan_override or str(cfg.get("lan_ip") or "").strip()
+            mac_addr = mac_override or str(cfg.get("mac_address") or "").strip()
+            if not lan_ip or lan_ip == "127.0.0.1" or not mac_addr:
+                try:
+                    if str(BASE_DIR) not in sys.path:
+                        sys.path.insert(0, str(BASE_DIR))
+                    from scripts.network_setup import detect_network
+                    net_info = detect_network()
+                    if not lan_ip or lan_ip == "127.0.0.1":
+                        lan_ip = net_info.get("lan_ip", "")
+                    if not mac_addr:
+                        mac_addr = net_info.get("mac_address", "")
+                except Exception:
+                    pass
+
             port = cfg.get("port", 5000)
             relay_port = cfg.get("relay_port", 5050)
+            app_token = token_override or (str(cfg.get("token") or "").strip() if should_embed_token else "")
+
             raw_html = _re.sub(
                 r"const\s+DEFAULT_APP_TOKEN\s*=\s*['\"][^'\"]*['\"];",
-                "const DEFAULT_APP_TOKEN = '';",
+                f"const DEFAULT_APP_TOKEN = {_json.dumps(app_token)};",
                 raw_html,
                 count=1,
             )
-            if cfg.get("lan_ip"):
-                lan_url = "http://{}:{}".format(cfg["lan_ip"], port)
+            if lan_ip and lan_ip != "127.0.0.1":
+                lan_url = "http://{}:{}".format(lan_ip, port)
                 raw_html = _re.sub(
                     r"const\s+DEFAULT_LAN_HOST\s*=\s*['\"][^'\"]*['\"];",
                     "const DEFAULT_LAN_HOST = {};".format(_json.dumps(lan_url)),
@@ -883,10 +1108,10 @@ def build():
                     raw_html,
                     count=1,
                 )
-            if cfg.get("mac_address"):
+            if mac_addr:
                 raw_html = _re.sub(
                     r"const\s+PC_MAC_ADDRESS\s*=\s*['\"][^'\"]*['\"];",
-                    f"const PC_MAC_ADDRESS = {_json.dumps(str(cfg['mac_address']).strip())};",
+                    f"const PC_MAC_ADDRESS = {_json.dumps(mac_addr)};",
                     raw_html,
                     count=1,
                 )
@@ -916,117 +1141,176 @@ def build():
         if not source.exists():
             source.write_text(template, encoding="utf-8")
 
-    # 4. Compile resources via aapt2
-    compiled_flata = APP_DIR / "compiled_res.zip"
-    subprocess.run(
-        [str(aapt2), "compile", "--dir", str(res_dir), "-o", str(compiled_flata)],
-        check=True,
-    )
+    # Stage build inside an ASCII-safe temporary directory so aapt2/javac/d8/apksigner
+    # work reliably even when the project resides in a folder with Cyrillic characters or spaces.
+    ascii_temp_root = _get_ascii_temp_root()
+    with tempfile.TemporaryDirectory(prefix="pccontrol_apk_", dir=str(ascii_temp_root)) as stage_str:
+        stage_dir = Path(stage_str)
+        st_res = stage_dir / "res"
+        st_assets = stage_dir / "assets"
+        st_src = stage_dir / "src"
+        st_classes = stage_dir / "classes"
+        st_manifest = stage_dir / "AndroidManifest.xml"
 
-    # 5. Link resources, manifest and assets into unsigned.apk + generate R.java
-    unsigned_apk = APP_DIR / "unsigned.apk"
-    subprocess.run(
-        [
-            str(aapt2), "link",
-            "-I", str(android_jar),
-            "--manifest", str(manifest_path),
-            "-A", str(assets_dir),
-            "--java", str(APP_DIR / "src"),
-            "-o", str(unsigned_apk),
-            str(compiled_flata),
-        ],
-        check=True,
-    )
+        shutil.copytree(res_dir, st_res)
+        shutil.copytree(assets_dir, st_assets)
+        shutil.copytree(APP_DIR / "src", st_src)
+        shutil.copy2(manifest_path, st_manifest)
+        st_classes.mkdir(parents=True, exist_ok=True)
 
-    # 6. Compile Java code into .class files (Java 8 compatibility for d8)
-    java_sources = [str(p) for p in (APP_DIR / "src").rglob("*.java")]
-    subprocess.run(
-        [
-            str(javac),
-            "-source", "1.8",
-            "-target", "1.8",
-            "-encoding", "UTF-8",
-            "-cp", str(android_jar),
-            "-d", str(classes_dir),
-            *java_sources,
-        ],
-        check=True,
-    )
+        # If SDK jars are on a non-ASCII path, stage them in the ASCII work dir as well
+        st_android_jar = android_jar
+        st_d8_jar = d8_jar
+        st_apksigner_jar = apksigner_jar
+        if not _is_ascii_Safe(android_jar):
+            st_android_jar = stage_dir / "android.jar"
+            shutil.copy2(android_jar, st_android_jar)
+        if not _is_ascii_Safe(d8_jar):
+            st_d8_jar = stage_dir / "d8.jar"
+            shutil.copy2(d8_jar, st_d8_jar)
+        if not _is_ascii_Safe(apksigner_jar):
+            st_apksigner_jar = stage_dir / "apksigner.jar"
+            shutil.copy2(apksigner_jar, st_apksigner_jar)
 
-    # 7. Build classes.dex via d8.jar
-    class_files = [str(p) for p in classes_dir.rglob("*.class")]
-    subprocess.run(
-        [
-            str(java), "-cp", str(d8_jar),
-            "com.android.tools.r8.D8",
-            "--lib", str(android_jar),
-            "--min-api", "24",
-            "--output", str(APP_DIR),
-            *class_files,
-        ],
-        check=True,
-    )
+        # 4. Compile resources via aapt2
+        compiled_flata = stage_dir / "compiled_res.zip"
+        subprocess.run(
+            [str(aapt2), "compile", "--dir", str(st_res), "-o", str(compiled_flata)],
+            check=True,
+        )
 
-    # 8. Pack classes.dex into unsigned.apk
-    dex_path = APP_DIR / "classes.dex"
-    with zipfile.ZipFile(unsigned_apk, "a", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.write(dex_path, arcname="classes.dex")
-
-    # 9. Align APK via zipalign (required for Android 11-15)
-    aligned_apk = APP_DIR / "aligned.apk"
-    subprocess.run(
-        [str(zipalign), "-f", "-p", "4", str(unsigned_apk), str(aligned_apk)],
-        check=True,
-    )
-
-    # 10. Generate signing key (if missing) and sign APK (v1 + v2 + v3)
-    keystore = BASE_DIR / ".android_sdk" / "pccontrol_release.jks"
-    if not keystore.exists():
-        keystore.parent.mkdir(parents=True, exist_ok=True)
+        # 5. Link resources, manifest and assets into unsigned.apk + generate R.java
+        unsigned_apk = stage_dir / "unsigned.apk"
         subprocess.run(
             [
-                str(keytool), "-genkeypair",
-                "-v",
-                "-keystore", str(keystore),
-                "-alias", "pccontrol",
-                "-keyalg", "RSA",
-                "-keysize", "2048",
-                "-validity", "10000",
-                "-storepass", "pccontrol123",
-                "-keypass", "pccontrol123",
-                "-dname", "CN=PC Control, OU=Remote, O=PCControl, L=City, S=State, C=US",
+                str(aapt2), "link",
+                "-I", str(st_android_jar),
+                "--manifest", str(st_manifest),
+                "-A", str(st_assets),
+                "--java", str(st_src),
+                "-o", str(unsigned_apk),
+                str(compiled_flata),
             ],
             check=True,
         )
 
-    subprocess.run(
-        [
-            str(java), "-jar", str(apksigner_jar),
-            "sign",
-            "--ks", str(keystore),
-            "--ks-key-alias", "pccontrol",
-            "--ks-pass", "pass:pccontrol123",
-            "--key-pass", "pass:pccontrol123",
-            "--v1-signing-enabled", "true",
-            "--v2-signing-enabled", "true",
-            "--v3-signing-enabled", "true",
-            "--out", str(OUT_APK),
-            str(aligned_apk),
-        ],
-        check=True,
-    )
+        # 6. Compile Java code into .class files (Java 8 compatibility for d8)
+        java_sources = [str(p) for p in st_src.rglob("*.java")]
+        subprocess.run(
+            [
+                str(javac),
+                "-source", "1.8",
+                "-target", "1.8",
+                "-encoding", "UTF-8",
+                "-cp", str(st_android_jar),
+                "-d", str(st_classes),
+                *java_sources,
+            ],
+            check=True,
+        )
 
-    # 11. Verify signature of the resulting APK
-    verify_res = subprocess.run(
-        [str(java), "-jar", str(apksigner_jar), "verify", "--verbose", str(OUT_APK)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+        # 7. Build classes.dex via d8.jar
+        class_files = [str(p) for p in st_classes.rglob("*.class")]
+        subprocess.run(
+            [
+                str(java), "-cp", str(st_d8_jar),
+                "com.android.tools.r8.D8",
+                "--lib", str(st_android_jar),
+                "--min-api", "24",
+                "--output", str(stage_dir),
+                *class_files,
+            ],
+            check=True,
+        )
+
+        # 8. Pack classes.dex into unsigned.apk
+        dex_path = stage_dir / "classes.dex"
+        with zipfile.ZipFile(unsigned_apk, "a", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.write(dex_path, arcname="classes.dex")
+
+        # 9. Align APK via zipalign (required for Android 11-15)
+        aligned_apk = stage_dir / "aligned.apk"
+        subprocess.run(
+            [str(zipalign), "-f", "-p", "4", str(unsigned_apk), str(aligned_apk)],
+            check=True,
+        )
+
+        # 10. Generate signing key (if missing) and sign APK (v1 + v2 + v3)
+        repo_keystore = SDK_DIR / "pccontrol_release.jks"
+        st_keystore = stage_dir / "pccontrol_release.jks"
+        if repo_keystore.exists():
+            shutil.copy2(repo_keystore, st_keystore)
+        else:
+            subprocess.run(
+                [
+                    str(keytool), "-genkeypair",
+                    "-v",
+                    "-keystore", str(st_keystore),
+                    "-alias", "pccontrol",
+                    "-keyalg", "RSA",
+                    "-keysize", "2048",
+                    "-validity", "10000",
+                    "-storepass", "pccontrol123",
+                    "-keypass", "pccontrol123",
+                    "-dname", "CN=PC Control, OU=Remote, O=PCControl, L=City, S=State, C=US",
+                ],
+                check=True,
+            )
+            try:
+                repo_keystore.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(st_keystore, repo_keystore)
+            except Exception:
+                pass
+
+        signed_apk = stage_dir / "PC_Control_signed.apk"
+        subprocess.run(
+            [
+                str(java), "-jar", str(st_apksigner_jar),
+                "sign",
+                "--ks", str(st_keystore),
+                "--ks-key-alias", "pccontrol",
+                "--ks-pass", "pass:pccontrol123",
+                "--key-pass", "pass:pccontrol123",
+                "--v1-signing-enabled", "true",
+                "--v2-signing-enabled", "true",
+                "--v3-signing-enabled", "true",
+                "--out", str(signed_apk),
+                str(aligned_apk),
+            ],
+            check=True,
+        )
+
+        # 11. Verify signature of the resulting APK
+        verify_res = subprocess.run(
+            [str(java), "-jar", str(st_apksigner_jar), "verify", "--verbose", str(signed_apk)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        OUT_APK.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(signed_apk, OUT_APK)
+
     print("APK successfully built and signed:", OUT_APK, f"({OUT_APK.stat().st_size // 1024} KB)")
     for line in verify_res.stdout.splitlines()[:6]:
         print(" ", line)
 
 
 if __name__ == "__main__":
-    build()
+    import argparse
+    parser = argparse.ArgumentParser(description="PC Control APK Builder")
+    parser.add_argument("--clean", action="store_true", help="Build clean release APK")
+    parser.add_argument("--bootstrap-sdk", action="store_true", default=True, help="Download portable SDK if missing")
+    parser.add_argument("--no-bootstrap-sdk", dest="bootstrap_sdk", action="store_false")
+    parser.add_argument("--embed-token", action="store_true", help="Embed security token")
+    parser.add_argument("--token", type=str, default=None, help="Explicit token to embed")
+    parser.add_argument("--lan", type=str, default=None, help="Explicit LAN IP to embed")
+    parser.add_argument("--mac", type=str, default=None, help="Explicit MAC address to embed")
+    args, unknown = parser.parse_known_args()
+
+    build(
+        bootstrap_sdk=args.bootstrap_sdk,
+        embed_token=args.embed_token or bool(args.token),
+        lan_override=args.lan,
+        mac_override=args.mac,
+        token_override=args.token,
+    )

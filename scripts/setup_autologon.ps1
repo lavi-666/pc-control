@@ -1,136 +1,120 @@
-# ==============================================================================
-# PC Control - Universal Windows Auto-Setup:
-# 1. Automatic logon (standard netplwiz + Windows Hello bypass)
-# 2. Wake-on-LAN (power on PC via network: adapters, power cfg, disable Fast Startup)
-# 3. Windows Firewall (open port 5000)
-# 4. Auto-start server on Windows boot
-# Runs with Administrator privileges.
-# ==============================================================================
-
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Continue'
-$projectRoot = (Get-Item $PSScriptRoot).Parent.FullName
-$log = Join-Path $PSScriptRoot 'setup_autologon.log'
-"=== PC Control AutoSetup: $(Get-Date -Format s) ===" | Out-File $log -Encoding utf8
 
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "       PC CONTROL - AUTOMATIC WINDOWS SETUP               " -ForegroundColor Yellow
-Write-Host "==========================================================" -ForegroundColor Cyan
-
-# 1. Enable password sign-in (disable Windows Hello PasswordLess requirement)
-Write-Host "[1/5] Configuring autologon (bypassing Windows Hello)..." -ForegroundColor Green
-try {
-    $pl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device'
-    if (-not (Test-Path $pl)) { New-Item -Path $pl -Force | Out-Null }
-    Set-ItemProperty -Path $pl -Name 'DevicePasswordLessBuildVersion' -Value 0 -Type DWord
-    "DevicePasswordLessBuildVersion = 0 (OK)" | Out-File $log -Append -Encoding utf8
-    Write-Host "  -> Windows Hello requirement successfully disabled." -ForegroundColor Gray
-} catch {
-    "Error setting PasswordLess: $_" | Out-File $log -Append -Encoding utf8
+$ScriptsDir = $PSScriptRoot
+$BaseDir = Split-Path -Parent $ScriptsDir
+$PyExe = Join-Path $BaseDir "runtime\python.exe"
+$PywExe = Join-Path $BaseDir "runtime\pythonw.exe"
+if (-not (Test-Path -LiteralPath $PyExe)) {
+    & (Join-Path $ScriptsDir "bootstrap_runtime.ps1") -BaseDir $BaseDir
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-# 2. Disable Fast Startup (Hiberboot)
-Write-Host "[2/5] Disabling Windows Fast Startup (critical for Wake-on-LAN)..." -ForegroundColor Green
-try {
-    $pw = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power'
-    if (-not (Test-Path $pw)) { New-Item -Path $pw -Force | Out-Null }
-    Set-ItemProperty -Path $pw -Name 'HiberbootEnabled' -Value 0 -Type DWord
-    "HiberbootEnabled = 0 (OK)" | Out-File $log -Append -Encoding utf8
-    Write-Host "  -> Fast Startup disabled (network adapter will listen for wake packet)." -ForegroundColor Gray
-} catch {
-    "Error setting HiberbootEnabled: $_" | Out-File $log -Append -Encoding utf8
-}
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host "   ПОЛНАЯ АВТОНАСТРОЙКА ПК ДЛЯ УДАЛЁННОГО УПРАВЛЕНИЯ" -ForegroundColor Cyan
+Write-Host "========================================================" -ForegroundColor Cyan
+Write-Host ""
 
-# 3. Find network adapters and enable Wake-on-LAN
-Write-Host "[3/5] Enabling Wake-on-LAN on network adapters..." -ForegroundColor Green
+# 1. Разблокируем галочку в netplwiz (отключаем принудительный Windows Hello для входа)
+Write-Host "[1/6] Открываем доступ к галочке «Требовать ввод имени пользователя и пароля»..." -ForegroundColor Yellow
+if (Test-Path -LiteralPath $PyExe) {
+    & $PyExe -E -s -m core.system_state capture-hello --enabled 0 2>$null
+}
+$regPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device"
+if (-not (Test-Path $regPath)) {
+    New-Item -Path $regPath -Force | Out-Null
+}
+Set-ItemProperty -Path $regPath -Name "DevicePasswordLessBuildVersion" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+Write-Host "  [OK] Галочка в netplwiz успешно разблокирована." -ForegroundColor Green
+
+# 2. Открываем стандартное окно Windows netplwiz
+Write-Host ""
+Write-Host "[2/6] Сейчас откроется системное окно «Учетные записи пользователей» (netplwiz)!" -ForegroundColor Yellow
+Write-Host "  -> Снимите галочку «Требовать ввод имени пользователя и пароля»" -ForegroundColor White
+Write-Host "  -> Нажмите «ОК» и введите ваш пароль от Microsoft аккаунта (или локального ПК)." -ForegroundColor White
+Start-Process "netplwiz.exe"
+
+# 3. Отключаем Быстрый запуск Windows (Fast Startup / Hiberboot), который блокирует Wake-on-LAN в Windows 10/11
+Write-Host ""
+Write-Host "[3/6] Отключение «Быстрого запуска Windows» (чтобы сетевая карта слушала Magic Packet)..." -ForegroundColor Yellow
+if (Test-Path -LiteralPath $PyExe) {
+    & $PyExe -E -s -m core.system_state capture-hiberboot --value 0 2>$null
+}
+$powerReg = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power"
+Set-ItemProperty -Path $powerReg -Name "HiberbootEnabled" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+Write-Host "  [OK] Быстрый запуск отключён (ПК будет корректно просыпаться по сети)." -ForegroundColor Green
+
+# 4. Включаем Wake-on-LAN (пробуждение по Magic Packet) на активных сетевых картах
+Write-Host ""
+Write-Host "[4/6] Включение Wake-on-LAN (Magic Packet) в настройках сетевого адаптера Windows..." -ForegroundColor Yellow
 try {
-    $wakeable = powercfg /devicequery wake_from_any
-    $enabledCount = 0
-    foreach ($line in $wakeable) {
-        $dev = $line.Trim()
-        if ($dev -match 'Ethernet|LAN|Network|Realtek|Intel|Killer|Broadcom|Family Controller') {
-            powercfg /deviceenablewake "$dev" 2>$null
-            "Enabled wake for: $dev" | Out-File $log -Append -Encoding utf8
-            Write-Host "  -> Enabled wake for: $dev" -ForegroundColor Gray
-            $enabledCount++
-        }
+    $adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false }
+    foreach ($nic in $adapters) {
+        Write-Host "  -> Настройка адаптера: $($nic.Name) ($($nic.InterfaceDescription))" -ForegroundColor Gray
+        Set-NetAdapterAdvancedProperty -Name $nic.Name -RegistryKeyword "*WakeOnMagicPacket" -RegistryValue 1 -ErrorAction SilentlyContinue
+        Set-NetAdapterAdvancedProperty -Name $nic.Name -RegistryKeyword "*WakeOnPattern" -RegistryValue 1 -ErrorAction SilentlyContinue
+        powercfg /deviceenablewake "$($nic.InterfaceDescription)" 2>&1 | Out-Null
     }
-    
-    Get-NetAdapter -Physical -ErrorAction SilentlyContinue | ForEach-Object {
-        Set-NetAdapterAdvancedProperty -Name $_.Name -RegistryKeyword '*WakeOnMagicPacket' -RegistryValue '1' -ErrorAction SilentlyContinue
-        Set-NetAdapterAdvancedProperty -Name $_.Name -RegistryKeyword '*WakeOnPattern' -RegistryValue '1' -ErrorAction SilentlyContinue
-        "Advanced WOL enabled on adapter: $($_.Name)" | Out-File $log -Append -Encoding utf8
-    }
+    Write-Host "  [OK] Сетевая карта настроена на приём сигнала включения." -ForegroundColor Green
 } catch {
-    "Error enabling WOL devices: $_" | Out-File $log -Append -Encoding utf8
+    Write-Host "  [i] Примечание: убедитесь, что Wake-on-LAN (PCI-E Wake) также включён в BIOS материнской платы." -ForegroundColor Gray
 }
 
-# 4. Open configured ports in Windows Firewall (restricted to Private/LocalSubnet and Tailscale 100.64.0.0/10)
-$srvPort = 5000
-$relayPort = 5050
+# 5. Создаём ярлык тихого автозапуска сервера в папке Автозагрузки Windows (Startup)
+Write-Host ""
+Write-Host "[5/6] Добавление сервера управления в Автозагрузку Windows (без чёрного окна)..." -ForegroundColor Yellow
 try {
-    $cfgFile = Join-Path $projectRoot 'config.json'
-    if (Test-Path -LiteralPath $cfgFile) {
-        $cfgObj = Get-Content -LiteralPath $cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($cfgObj.port) { $srvPort = [int]$cfgObj.port }
-        if ($cfgObj.relay_port) { $relayPort = [int]$cfgObj.relay_port }
-    }
-} catch {}
-Write-Host "[4/5] Configuring Windows Firewall rules for ports $srvPort and $relayPort (LocalSubnet + Tailscale only)..." -ForegroundColor Green
-try {
-    netsh advfirewall firewall delete rule name="PC Control Server" 2>$null | Out-Null
-    netsh advfirewall firewall delete rule name="PC Control WOL Relay" 2>$null | Out-Null
-    netsh advfirewall firewall add rule name="PC Control Server" dir=in action=allow protocol=TCP localport=$srvPort profile=any remoteip="LocalSubnet,100.64.0.0/10" | Out-Null
-    netsh advfirewall firewall add rule name="PC Control WOL Relay" dir=in action=allow protocol=TCP localport=$relayPort profile=any remoteip="LocalSubnet,100.64.0.0/10" | Out-Null
-    "Firewall rules added: TCP $srvPort and $relayPort (remoteip=LocalSubnet,100.64.0.0/10)" | Out-File -LiteralPath $log -Append -Encoding utf8
-    Write-Host "  -> Ports $srvPort and $relayPort restricted to LocalSubnet / Tailscale (100.64.0.0/10)." -ForegroundColor Gray
-} catch {
-    "Error configuring firewall: $_" | Out-File -LiteralPath $log -Append -Encoding utf8
-}
-
-# 5. Add startup shortcut
-Write-Host "[5/5] Adding server to Windows Startup..." -ForegroundColor Green
-try {
-    $wsh = New-Object -ComObject WScript.Shell
     $startupDir = [Environment]::GetFolderPath('Startup')
-    $shortcutPath = Join-Path $startupDir 'PC_Control_Server.lnk'
-    $vbsPath = Join-Path $PSScriptRoot 'start_silent.vbs'
-    $icoPath = Join-Path $projectRoot 'pc_control.ico'
-    
-    $shortcut = $wsh.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = 'wscript.exe'
-    $shortcut.Arguments = "`"$vbsPath`""
-    $shortcut.WorkingDirectory = $projectRoot
-    $shortcut.WindowStyle = 7
-    $shortcut.Description = 'PC Control Server Autostart'
-    if (Test-Path -LiteralPath $icoPath) {
-        $shortcut.IconLocation = $icoPath
+    $shortcutPath = Join-Path $startupDir "PC_Control_Server.lnk"
+    $vbsPath = Join-Path $ScriptsDir "start_silent.vbs"
+    $targetPath = if (Test-Path -LiteralPath $PywExe) { $PywExe } else { "wscript.exe" }
+    $targetArgs = if (Test-Path -LiteralPath $PywExe) { "-E -s `"$(Join-Path $ScriptsDir 'watchdog.pyw')`"" } else { "`"$vbsPath`"" }
+
+    if (Test-Path -LiteralPath $PyExe) {
+        & $PyExe -E -s -m core.system_state capture-shortcut --id "shortcut.startup" --path "$shortcutPath" --target "$targetPath" --desc "Ярлык автозагрузки PC_Control_Server.lnk" 2>$null
     }
-    $shortcut.Save()
-    "Autostart shortcut created at $shortcutPath" | Out-File -LiteralPath $log -Append -Encoding utf8
-    Write-Host "  -> Server added to Windows Startup folder." -ForegroundColor Gray
+
+    $WshShell = New-Object -ComObject WScript.Shell
+    $Shortcut = $WshShell.CreateShortcut($shortcutPath)
+    $Shortcut.TargetPath = $targetPath
+    $Shortcut.Arguments = $targetArgs
+    $Shortcut.WorkingDirectory = $BaseDir
+    $Shortcut.Description = "PC Control Server Auto-Start"
+    $Shortcut.Save()
+    Write-Host "  [OK] Ярлык автозапуска создан: $shortcutPath" -ForegroundColor Green
 } catch {
-    "Error creating autostart shortcut: $_" | Out-File -LiteralPath $log -Append -Encoding utf8
+    Write-Host "  [!] Не удалось создать ярлык автозагрузки: $_" -ForegroundColor Red
 }
 
-# Launch standard Windows user account panel (netplwiz)
-Write-Host "`n----------------------------------------------------------" -ForegroundColor Yellow
-Write-Host "Windows 'User Accounts' window is now opening." -ForegroundColor Yellow
-Write-Host "1. Select your user account from the list." -ForegroundColor Yellow
-Write-Host "2. UNCHECK: 'Users must enter a user name and password to use this computer'." -ForegroundColor Yellow
-Write-Host "3. Click 'Apply'." -ForegroundColor Yellow
-Write-Host "4. Enter your Windows password (twice) and click OK." -ForegroundColor Yellow
-Write-Host "----------------------------------------------------------`n" -ForegroundColor Yellow
-
-if (-not $env:PC_CONTROL_NO_PAUSE) {
-    Start-Process "netplwiz.exe"
-    "netplwiz launched (OK)" | Out-File -LiteralPath $log -Append -Encoding utf8
+# 6. Открываем порты в Брандмауэре Windows
+Write-Host ""
+Write-Host "[6/6] Открытие портов в Брандмауэре Windows для телефона и Tailscale..." -ForegroundColor Yellow
+$srvPort = 5000
+$relPort = 5050
+$cfgFile = Join-Path $BaseDir "config.json"
+if (Test-Path -LiteralPath $cfgFile) {
+    try {
+        $cfg = Get-Content -LiteralPath $cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($cfg.port) { $srvPort = [int]$cfg.port }
+        if ($cfg.relay_port) { $relPort = [int]$cfg.relay_port }
+    } catch {}
 }
+if (Test-Path -LiteralPath $PyExe) {
+    & $PyExe -E -s -m core.system_state capture-firewall --server-port $srvPort --relay-port $relPort 2>$null
+}
+$allowedSubnets = "LocalSubnet,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10"
+netsh advfirewall firewall delete rule name="PC Control Server" 2>&1 | Out-Null
+netsh advfirewall firewall add rule name="PC Control Server" dir=in action=allow protocol=TCP localport=$srvPort profile=any remoteip=$allowedSubnets | Out-Null
+netsh advfirewall firewall delete rule name="PC Control WOL Relay" 2>&1 | Out-Null
+netsh advfirewall firewall add rule name="PC Control WOL Relay" dir=in action=allow protocol=TCP localport=$relPort profile=any remoteip=$allowedSubnets | Out-Null
+Write-Host "  [OK] Порты $srvPort и $relPort открыты для локальной сети и Tailscale." -ForegroundColor Green
 
-Write-Host "All system settings applied successfully!" -ForegroundColor Green
-Write-Host "Log saved to: setup_autologon.log" -ForegroundColor Gray
-Write-Host "`n==========================================================" -ForegroundColor Cyan
-Write-Host "[ГОТОВО / DONE] Нажмите Enter, чтобы закрыть это окно..." -ForegroundColor Yellow
-Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "========================================================" -ForegroundColor Green
+Write-Host " ГОТОВО! Теперь при подаче питания ПК сам войдёт в систему" -ForegroundColor Green
+Write-Host " и в фоне запустит сервер управления для вашего телефона." -ForegroundColor Green
+Write-Host "========================================================" -ForegroundColor Green
+Write-Host ""
 if (-not $env:PC_CONTROL_NO_PAUSE) {
-    $null = Read-Host
+    Read-Host "Нажмите Enter, чтобы закрыть это окно"
 }

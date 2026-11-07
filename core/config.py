@@ -89,7 +89,9 @@ def auto_detect_network_params() -> dict:
         "cors_allowed_origins": [
             "http://localhost:*",
             "http://127.0.0.1:*",
+            "http://pccontrol.local",
             "http://192.168.*",
+            "http://172.*",
             "http://100.*",
             "http://10.*"
         ]
@@ -217,7 +219,9 @@ def get_cors_allowed_origins() -> list[str]:
     return [
         "http://localhost:*",
         "http://127.0.0.1:*",
+        "http://pccontrol.local",
         "http://192.168.*",
+        "http://172.*",
         "http://100.*",
         "http://10.*"
     ]

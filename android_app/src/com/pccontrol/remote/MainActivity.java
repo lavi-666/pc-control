@@ -410,7 +410,28 @@ public class MainActivity extends Activity {
         setContentView(rootLayout);
 
         String html = loadAssetHtml("index.html");
-        webView.loadDataWithBaseURL("http://pccontrol.local/", html, "text/html", "UTF-8", null);
+        webView.loadDataWithBaseURL(buildBaseUrl(getIntent()), html, "text/html", "UTF-8", null);
+    }
+
+    @Override
+    protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (webView != null && intent != null && intent.getData() != null) {
+            String html = loadAssetHtml("index.html");
+            webView.loadDataWithBaseURL(buildBaseUrl(intent), html, "text/html", "UTF-8", null);
+        }
+    }
+
+    private String buildBaseUrl(android.content.Intent intent) {
+        if (intent != null && intent.getData() != null) {
+            Uri uri = intent.getData();
+            String query = uri.getEncodedQuery();
+            if (query != null && !query.isEmpty()) {
+                return "http://pccontrol.local/?" + query;
+            }
+        }
+        return "http://pccontrol.local/";
     }
 
     private String loadAssetHtml(String name) {

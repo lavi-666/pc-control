@@ -77,10 +77,48 @@ def main():
     os.environ["SAFE_TEST_MODE"] = "1"
     from core.config import get_auth_token
     auth_tok = os.environ.get("PC_REMOTE_TOKEN") or get_auth_token()
+    os.environ["PC_REMOTE_TOKEN"] = auth_tok
 
+    server_proc = None
+    server_up = False
     try:
+        import json, urllib.request
         try:
-            import json, urllib.request
+            req = urllib.request.Request('http://127.0.0.1:5000/status', headers={'X-Auth-Token': auth_tok})
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                if resp.getcode() == 200:
+                    server_up = True
+        except Exception:
+            pass
+
+        if not server_up:
+            import subprocess
+            server_env = os.environ.copy()
+            server_env["PC_CONTROL_TEST_MODE"] = "1"
+            server_env["SAFE_TEST_MODE"] = "1"
+            server_env["PC_REMOTE_TOKEN"] = auth_tok
+            server_env["PYTHONPATH"] = str(BASE_DIR)
+            server_proc = subprocess.Popen(
+                [sys.executable, str(BASE_DIR / "server.py")],
+                cwd=str(BASE_DIR),
+                env=server_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            t_deadline = time.time() + 10.0
+            while time.time() < t_deadline:
+                try:
+                    with urllib.request.urlopen('http://127.0.0.1:5000/status', timeout=0.5) as resp:
+                        if resp.getcode() == 200:
+                            server_up = True
+                            break
+                except Exception:
+                    time.sleep(0.2)
+            if not server_up:
+                print("ERROR: Failed to start server on port 5000 for 650-cycle tests!")
+                sys.exit(1)
+
+        try:
             req = urllib.request.Request(
                 'http://127.0.0.1:5000/api/safe_mode',
                 data=json.dumps({"enabled": True}).encode("utf-8"),
@@ -125,6 +163,15 @@ def main():
                 pass
         except Exception:
             pass
+        if server_proc is not None:
+            try:
+                server_proc.terminate()
+                server_proc.wait(timeout=3)
+            except Exception:
+                try:
+                    server_proc.kill()
+                except Exception:
+                    pass
         os.environ.pop("PC_CONTROL_TEST_MODE", None)
         os.environ.pop("SAFE_TEST_MODE", None)
 

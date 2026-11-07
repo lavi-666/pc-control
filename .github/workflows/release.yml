@@ -81,18 +81,20 @@ jobs:
 
       - name: Build complete Windows package
         run: |
-          python -m unittest tests.test_update_system tests.test_distribution_audit tests.test_launcher_audit tests.test_network_setup -q
+          python -m unittest tests.test_update_system tests.test_distribution_audit tests.test_launcher_audit tests.test_network_setup tests.test_uninstall_and_lifecycle tests.test_installer -q
           if ($LASTEXITCODE -ne 0) { throw "Release regression tests failed" }
           python scripts/build_runtime.py
           if ($LASTEXITCODE -ne 0) { throw "Portable runtime build failed" }
           python scripts/package_windows.py
           if ($LASTEXITCODE -ne 0) { throw "Windows packaging failed" }
+          python scripts/build_installer.py
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
           Copy-Item dist/PC_Control_Windows.zip PC_Control_Windows.zip
           Copy-Item dist/release-manifest.json release-manifest.json
 
       - name: Generate release checksums
         run: |
-          $files = @("Launcher.exe", "tools/streamer.exe", "PC_Control.apk", "PC_Control_Windows.zip", "release-manifest.json")
+          $files = @("PC-Control-Setup.exe", "Launcher.exe", "tools/streamer.exe", "PC_Control.apk", "PC_Control_Windows.zip", "release-manifest.json")
           $lines = foreach ($f in $files) {
             if (Test-Path $f) {
               $hash = (Get-FileHash -Path $f -Algorithm SHA256).Hash.ToLower()
@@ -109,6 +111,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           make_latest: "true"
           files: |
+            PC-Control-Setup.exe
             Launcher.exe
             tools/streamer.exe
             PC_Control.apk

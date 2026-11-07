@@ -131,7 +131,7 @@ def main():
             download = pending_download.value
             assert hashlib.sha256(Path(download.path()).read_bytes()).digest() == hashlib.sha256((app / 'PC_Control.apk').read_bytes()).digest()
             if not args.source_zip:
-                assert page.locator('#btnBuildApk').is_disabled()
+                assert page.locator('#btnBuildApk').is_enabled()
             reports.append('Three languages, secret visibility, password generation/cancel, CORS save, VPN details, exact APK download')
             page.screenshot(path=str(destination / 'desktop-1440.png'), full_page=True)
             page.locator('[onclick="openNetworkSettings()"]').first.click()

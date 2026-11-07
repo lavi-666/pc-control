@@ -54,6 +54,7 @@ streamer_rs/target/
 push.bat
 /dist/
 /runtime/
+/pc-control-main/
 /.runtime-setup-*/
 /.pccontrol-update.pending
 /release-manifest.json

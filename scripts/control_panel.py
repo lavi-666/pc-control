@@ -782,7 +782,9 @@ def _load_config_data() -> dict:
         "cors_allowed_origins": [
             "http://localhost:*",
             "http://127.0.0.1:*",
+            "http://pccontrol.local",
             "http://192.168.*",
+            "http://172.*",
             "http://100.*",
             "http://10.*",
             "https://localhost:*",
@@ -1421,6 +1423,12 @@ def set_windows_hello_state(enabled: bool) -> tuple[bool, str]:
     if current_status.get("supported") and current_status.get("enabled") == enabled:
         return (True, f"Настройка Windows Hello уже {'включена' if enabled else 'отключена'}.")
 
+    try:
+        from core.system_state import capture_windows_hello_before_change
+        capture_windows_hello_before_change(enabled)
+    except Exception:
+        pass
+
     ps_cmd = (
         f"$p = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\PasswordLess\\Device'; "
         f"if (-not (Test-Path $p)) {{ New-Item -Path $p -Force | Out-Null }}; "
@@ -1585,6 +1593,34 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/identity":
             self.send_json({"application": "PCControl", "instance": instance_id()})
             return
+        if path == "/api/qr":
+            query = urllib.parse.parse_qs(url_parsed.query)
+            target_url = (query.get("url") or [""])[0].strip()
+            if not target_url:
+                cfg = load_config_data()
+                lan_ip = cfg.get("lan_ip") or get_local_ip()
+                port = int(cfg.get("port", 5000))
+                target_url = f"http://{lan_ip}:{port}/download/apk"
+            if len(target_url) > 2048:
+                self.send_json({"ok": False, "message": "URL too long"}, 400)
+                return
+            try:
+                import io
+                import qrcode
+                img = qrcode.make(target_url)
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                png_bytes = buf.getvalue()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(png_bytes)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(png_bytes)
+                return
+            except Exception as e:
+                self.send_json({"ok": False, "message": str(e)}, 500)
+                return
         if path == "/download/apk":
             apk = BASE_DIR / "PC_Control.apk"
             if not apk.is_file():
@@ -1620,7 +1656,9 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "tailscale": ts_info,
                 "firewall_configured": fw_ok,
                 "python_deps": py_deps,
-                "apk_build_available": (BASE_DIR / "android_app" / "AndroidManifest.xml").is_file() and (BASE_DIR / ".android_sdk").is_dir(),
+                "apk_build_available": (SCRIPTS_DIR / "build_apk.py").is_file(),
+                "apk_exists": (BASE_DIR / "PC_Control.apk").is_file(),
+                "uninstaller_available": (BASE_DIR / "Uninstall.exe").is_file() or (BASE_DIR / "uninstall.bat").is_file(),
                 "windows_hello": get_windows_hello_status(),
                 "token": cfg.get("token", ""),
                 "mac_address": cfg.get("mac_address", "AA-BB-CC-DD-EE-FF"),
@@ -1628,7 +1666,9 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "cors_allowed_origins": cfg.get("cors_allowed_origins", [
                     "http://localhost:*",
                     "http://127.0.0.1:*",
+                    "http://pccontrol.local",
                     "http://192.168.*",
+                    "http://172.*",
                     "http://100.*",
                     "http://10.*"
                 ]),
@@ -1737,13 +1777,25 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
 
             if action == "detect_network":
                 cfg = sync_network_settings(load_config_data(), get_tailscale_info(), force=True)
-                self.send_json({"ok": bool(cfg.get("lan_ip")), "message": "Network detected" if cfg.get("lan_ip") else "No active LAN adapter found", "settings": cfg})
+                interfaces = []
+                try:
+                    from scripts.network_setup import list_network_interfaces
+                    interfaces = list_network_interfaces()
+                except Exception:
+                    pass
+                self.send_json({"ok": bool(cfg.get("lan_ip")), "message": "Network detected" if cfg.get("lan_ip") else "No active LAN adapter found", "settings": cfg, "interfaces": interfaces})
                 return
 
             if action == "get_settings":
                 cfg = load_config_data()
                 keys = ("lan_ip", "vpn_ip", "wol_relay_ip", "mac_address", "port", "relay_port")
-                self.send_json({"ok": True, "settings": {key: cfg.get(key, "") for key in keys}})
+                interfaces = []
+                try:
+                    from scripts.network_setup import list_network_interfaces
+                    interfaces = list_network_interfaces()
+                except Exception:
+                    pass
+                self.send_json({"ok": True, "settings": {key: cfg.get(key, "") for key in keys}, "interfaces": interfaces})
                 return
 
             if action == "save_settings":
@@ -1865,9 +1917,16 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     }, 404)
                     return
 
+                try:
+                    cfg_fw = load_config_data()
+                    from core.system_state import capture_firewall_before_change
+                    capture_firewall_before_change(int(cfg_fw.get("port", 5000)), int(cfg_fw.get("relay_port", 5050)))
+                except Exception:
+                    pass
+
                 ok, code, msg = run_elevated_command(
                     "cmd.exe",
-                    f'/c "set "PC_CONTROL_NO_PAUSE=1" && "{script_path}""',
+                    f'/d /s /c "set PC_CONTROL_NO_PAUSE=1&& "{script_path}""',
                     str(BASE_DIR),
                     show=True
                 )
@@ -1969,6 +2028,19 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     }, 404)
                     return
 
+                try:
+                    cfg_al = load_config_data()
+                    from core.system_state import (
+                        capture_firewall_before_change,
+                        capture_hiberboot_before_change,
+                        capture_windows_hello_before_change,
+                    )
+                    capture_windows_hello_before_change(False)
+                    capture_hiberboot_before_change(0)
+                    capture_firewall_before_change(int(cfg_al.get("port", 5000)), int(cfg_al.get("relay_port", 5050)))
+                except Exception:
+                    pass
+
                 ok, code, msg = run_elevated_command(
                     "powershell.exe",
                     f'-NoProfile -ExecutionPolicy Bypass -File "{ps_script}"',
@@ -2038,7 +2110,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 try:
                     py_cli = get_python_cli_path()
                     proc = subprocess.Popen(
-                        [py_cli, str(script_path)],
+                        [py_cli, str(script_path), "--bootstrap-sdk", "--embed-token"],
                         cwd=str(BASE_DIR),
                         shell=False,
                         stdout=subprocess.PIPE,
@@ -2328,7 +2400,9 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     origins_list = [
                         "http://localhost:*",
                         "http://127.0.0.1:*",
+                        "http://pccontrol.local",
                         "http://192.168.*",
+                        "http://172.*",
                         "http://100.*",
                         "http://10.*"
                     ]
@@ -2375,6 +2449,114 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 res = clean_browser_profiles()
                 append_log(f"Browser profiles cleaned: {res.get('freed_mb')} MB freed ({res.get('removed_items')})")
                 self.send_json(res)
+                return
+
+            if action == "check_phone_connection":
+                cfg = load_config_data()
+                port = int(cfg.get("port", 5000))
+                lan_ip = (cfg.get("lan_ip") or get_local_ip()).strip()
+                server_up = is_server_running(port)
+                fw_ok = is_firewall_configured()
+                lan_reachable = False
+                if server_up and lan_ip and lan_ip != "127.0.0.1":
+                    try:
+                        req_lan = urllib.request.Request(
+                            f"http://{lan_ip}:{port}/status",
+                            headers={"User-Agent": "PC-Control-LAN-Probe"}
+                        )
+                        with urllib.request.urlopen(req_lan, timeout=1.2) as r_lan:
+                            if r_lan.status == 200:
+                                b_lan = json.load(r_lan)
+                                lan_reachable = (b_lan.get("status") == "online")
+                    except Exception:
+                        lan_reachable = False
+                interfaces = []
+                try:
+                    from scripts.network_setup import list_network_interfaces
+                    interfaces = list_network_interfaces()
+                except Exception:
+                    pass
+                self.send_json({
+                    "ok": True,
+                    "server_running": server_up,
+                    "lan_ip": lan_ip,
+                    "port": port,
+                    "lan_reachable": lan_reachable,
+                    "firewall_configured": fw_ok,
+                    "interfaces": interfaces,
+                })
+                return
+
+            if action == "export_diagnostics":
+                try:
+                    cfg = load_config_data()
+                    port = int(cfg.get("port", 5000))
+                    interfaces = []
+                    try:
+                        from scripts.network_setup import list_network_interfaces
+                        interfaces = list_network_interfaces()
+                    except Exception:
+                        pass
+                    journal_data = {}
+                    try:
+                        from core.system_state import load_journal
+                        journal_data = load_journal()
+                    except Exception:
+                        pass
+                    diag = {
+                        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "platform": platform.platform(),
+                        "python_version": sys.version,
+                        "python_executable": sys.executable,
+                        "base_dir": str(BASE_DIR),
+                        "server_running": is_server_running(port),
+                        "firewall_configured": is_firewall_configured(),
+                        "python_deps": check_python_deps(),
+                        "network_settings": {
+                            "lan_ip": cfg.get("lan_ip", ""),
+                            "vpn_ip": cfg.get("vpn_ip", ""),
+                            "mac_address": cfg.get("mac_address", ""),
+                            "port": port,
+                            "relay_port": cfg.get("relay_port", 5050),
+                            "auto_network": cfg.get("auto_network", True),
+                        },
+                        "network_interfaces": interfaces,
+                        "tailscale": get_tailscale_info(),
+                        "apk_exists": (BASE_DIR / "PC_Control.apk").is_file(),
+                        "uninstaller_exists": (BASE_DIR / "Uninstall.exe").is_file(),
+                        "system_state_journal_entries": list((journal_data.get("entries") or {}).keys()),
+                        "recent_logs": get_logs()[-50:],
+                    }
+                    diag_path = LOGS_DIR / "diagnostic_report.json"
+                    diag_path.write_text(json.dumps(diag, indent=2, ensure_ascii=False), encoding="utf-8")
+                    append_log(f"[DIAGNOSTICS] Saved diagnostic report to {diag_path}")
+                    self.send_json({"ok": True, "path": str(diag_path), "report": diag})
+                except Exception as e:
+                    self.send_json({"ok": False, "message": str(e)}, 500)
+                return
+
+            if action == "launch_uninstaller":
+                uninst_exe = BASE_DIR / "Uninstall.exe"
+                uninst_bat = BASE_DIR / "uninstall.bat"
+                if uninst_exe.is_file():
+                    try:
+                        os.startfile(str(uninst_exe))
+                        append_log("Launched Uninstall.exe")
+                        self.send_json({"ok": True, "message": "Окно деинсталлятора Uninstall.exe открыто."})
+                        return
+                    except Exception as e:
+                        self.send_json({"ok": False, "message": str(e)}, 500)
+                        return
+                elif uninst_bat.is_file():
+                    try:
+                        os.startfile(str(uninst_bat))
+                        append_log("Launched uninstall.bat")
+                        self.send_json({"ok": True, "message": "Скрипт удаления uninstall.bat запущен."})
+                        return
+                    except Exception as e:
+                        self.send_json({"ok": False, "message": str(e)}, 500)
+                        return
+                self.send_json({"ok": False, "message": "Uninstall.exe not found"}, 404)
                 return
 
             self.send_json({"ok": False, "message": "Unknown action"}, 400)

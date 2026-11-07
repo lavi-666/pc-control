@@ -12,19 +12,95 @@ const IS_STANDALONE_APK = !!(
   location.hostname === 'pccontrol.local'
 );
 
+let _memoryToken = '';
+
+// Синхронизация параметров подключения из URL / QR-кода / Deep Link (?token=..., ?lan=..., ?vpn=..., ?mac=..., ?relay=...)
+(function syncUrlConnectionParams(){
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const urlTok = (params.get('token') || '').trim();
+    const urlLan = (params.get('lan') || params.get('lan_host') || '').trim();
+    const urlVpn = (params.get('vpn') || params.get('vpn_host') || '').trim();
+    const urlMac = (params.get('mac') || '').trim();
+    const urlRelay = (params.get('relay') || '').trim();
+    let changed = false;
+
+    if (urlTok) {
+      _memoryToken = urlTok;
+      try { sessionStorage.setItem('pc_token', urlTok); } catch(e){}
+      try { localStorage.setItem('pc_token', urlTok); } catch(e){}
+      try { document.cookie = 'token=' + encodeURIComponent(urlTok) + '; path=/; max-age=31536000; SameSite=Lax'; } catch(e){}
+      params.delete('token');
+      changed = true;
+    }
+    if (urlLan) {
+      const normLan = urlLan.replace(/\/+$/, '');
+      try { localStorage.setItem('pc_lan_host', normLan); } catch(e){}
+      try { localStorage.setItem('pc_active_server', normLan); } catch(e){}
+      params.delete('lan');
+      params.delete('lan_host');
+      changed = true;
+    } else if (!IS_STANDALONE_APK && location.origin && /^https?:/i.test(location.origin) &&
+               !location.hostname.includes('127.0.0.1') && !location.hostname.includes('localhost') &&
+               location.hostname !== 'pccontrol.local') {
+      // Если страница открыта напрямую с сервера ПК (например, по QR-коду в Wi-Fi сети),
+      // актуализируем адрес сервера, чтобы устаревший кэш localStorage не уводил запросы на старый IP
+      if (!location.hostname.startsWith('100.')) {
+        try { localStorage.setItem('pc_lan_host', location.origin); } catch(e){}
+      } else {
+        try { localStorage.setItem('pc_vpn_host', location.origin); } catch(e){}
+      }
+      try { localStorage.setItem('pc_active_server', location.origin); } catch(e){}
+    }
+    if (urlVpn) {
+      try { localStorage.setItem('pc_vpn_host', urlVpn.replace(/\/+$/, '')); } catch(e){}
+      params.delete('vpn');
+      params.delete('vpn_host');
+      changed = true;
+    }
+    if (urlMac) {
+      try { localStorage.setItem('pc_mac_address', urlMac); } catch(e){}
+      params.delete('mac');
+      changed = true;
+    }
+    if (urlRelay) {
+      try { localStorage.setItem('pc_wol_relay', urlRelay.replace(/\/+$/, '')); } catch(e){}
+      params.delete('relay');
+      changed = true;
+    }
+    if (changed && window.history && window.history.replaceState) {
+      const cleanUrl = new URL(window.location.href);
+      ['token', 'lan', 'lan_host', 'vpn', 'vpn_host', 'mac', 'relay'].forEach(k => cleanUrl.searchParams.delete(k));
+      window.history.replaceState({}, document.title, cleanUrl.toString());
+    }
+  } catch (e) {}
+})();
+
 function getLanHost(){
-  const saved = (localStorage.getItem('pc_lan_host') || '').trim();
-  if (saved) return saved;
-  return DEFAULT_LAN_HOST;
+  try {
+    const saved = (localStorage.getItem('pc_lan_host') || '').trim();
+    if (saved) return saved;
+  } catch (e) {}
+  if (typeof DEFAULT_LAN_HOST !== 'undefined' && DEFAULT_LAN_HOST) return DEFAULT_LAN_HOST;
+  if (!IS_STANDALONE_APK && location.origin && /^https?:/i.test(location.origin) && location.hostname !== 'pccontrol.local') {
+    return location.origin;
+  }
+  return '';
 }
 
 function getVpnHost(){
-  return (localStorage.getItem('pc_vpn_host') || '').trim() || DEFAULT_VPN_HOST;
+  try {
+    const saved = (localStorage.getItem('pc_vpn_host') || '').trim();
+    if (saved) return saved;
+  } catch (e) {}
+  return (typeof DEFAULT_VPN_HOST !== 'undefined' ? DEFAULT_VPN_HOST : '');
 }
 
 function getMacAddress(){
-  const saved = (localStorage.getItem('pc_mac_address') || '').trim();
-  if (saved) return saved;
+  try {
+    const saved = (localStorage.getItem('pc_mac_address') || '').trim();
+    if (saved) return saved;
+  } catch (e) {}
   if (lanInfoCache && lanInfoCache.mac_address) return lanInfoCache.mac_address;
   return (typeof PC_MAC_ADDRESS !== 'undefined' ? PC_MAC_ADDRESS : '');
 }
@@ -63,10 +139,30 @@ function onLanHostInputChange(val){
   updateAutoConnText(clean);
 }
 
-let connMode = localStorage.getItem('pc_conn_mode') || 'auto'; // 'auto' | 'lan' | 'vpn' | 'custom'
-let customHostUrl = (localStorage.getItem('pc_custom_host') || '').replace(/\/+$/, '');
-let activeServerUrl = localStorage.getItem('pc_active_server') || (IS_STANDALONE_APK ? getLanHost() : '');
+let connMode = 'auto';
+let customHostUrl = '';
+let activeServerUrl = '';
+try {
+  connMode = localStorage.getItem('pc_conn_mode') || 'auto'; // 'auto' | 'lan' | 'vpn' | 'custom'
+  customHostUrl = (localStorage.getItem('pc_custom_host') || '').replace(/\/+$/, '');
+  activeServerUrl = IS_STANDALONE_APK ? (localStorage.getItem('pc_active_server') || getLanHost()) : '';
+} catch (e) {
+  activeServerUrl = IS_STANDALONE_APK ? getLanHost() : '';
+}
 let activeRouteLabel = '';
+
+function openInstalledApkWithConfig(){
+  const lan = getLanHost();
+  const vpn = getVpnHost();
+  const tok = getToken();
+  const mac = getMacAddress();
+  const q = new URLSearchParams();
+  if (lan) q.set('lan', lan);
+  if (vpn) q.set('vpn', vpn);
+  if (tok) q.set('token', tok);
+  if (mac) q.set('mac', mac);
+  window.location.href = 'pccontrol://connect?' + q.toString();
+}
 
 function dismissApkBanner(){
   const banner = document.getElementById('apkBanner');
@@ -270,8 +366,9 @@ function getToken(){
     const params = new URLSearchParams(window.location.search);
     const urlTok = (params.get('token') || '').trim();
     if (urlTok) {
-      sessionStorage.setItem('pc_token', urlTok);
-      localStorage.setItem('pc_token', urlTok);
+      _memoryToken = urlTok;
+      try { sessionStorage.setItem('pc_token', urlTok); } catch(e){}
+      try { localStorage.setItem('pc_token', urlTok); } catch(e){}
       try {
         document.cookie = 'token=' + encodeURIComponent(urlTok) + '; path=/; max-age=31536000; SameSite=Lax';
       } catch(e){}
@@ -293,6 +390,14 @@ function getToken(){
   // 2. Токен из localStorage (запомненный на этом ПК / телефоне)
   try { t = (localStorage.getItem('pc_token') || '').trim(); } catch (e) {}
   if (t) return t;
+
+  // 3. Токен в оперативной памяти (на случай блокировки storage в встроенном QR-браузере)
+  if (_memoryToken) return _memoryToken;
+
+  // 4. Встроенный в автономный APK токен по умолчанию (если задан при сборке)
+  if (typeof DEFAULT_APP_TOKEN !== 'undefined' && DEFAULT_APP_TOKEN) {
+    return String(DEFAULT_APP_TOKEN).trim();
+  }
 
   return '';
 }
@@ -369,12 +474,15 @@ async function submitLoginForm(){
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.ok){
-      if (remCheck && remCheck.checked){
-        localStorage.setItem('pc_token', pwd);
-      } else {
-        localStorage.removeItem('pc_token');
-      }
-      sessionStorage.setItem('pc_token', pwd);
+      _memoryToken = pwd;
+      try {
+        if (remCheck && remCheck.checked){
+          localStorage.setItem('pc_token', pwd);
+        } else {
+          localStorage.removeItem('pc_token');
+        }
+        sessionStorage.setItem('pc_token', pwd);
+      } catch(e){}
       closeLoginModal();
       if (loginPromiseResolver){
         loginPromiseResolver(pwd);
@@ -425,6 +533,7 @@ function toggleLoginRemember(){
 }
 
 function logoutApp(){
+  _memoryToken = '';
   try {
     localStorage.removeItem('pc_token');
     sessionStorage.removeItem('pc_token');

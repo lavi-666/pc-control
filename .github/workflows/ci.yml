@@ -38,17 +38,18 @@ jobs:
             python -m py_compile $_.FullName
           }
 
-      - name: Verify C# Launcher Compilation
+      - name: Verify C# Binaries Compilation (Launcher, Uninstaller, Installer)
         run: |
           $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
           if (-not (Test-Path $csc)) {
             $csc = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
           }
-          & $csc /nologo /target:winexe /win32icon:pc_control.ico /out:Launcher_ci.exe scripts\Launcher.cs
-          if (-not (Test-Path Launcher_ci.exe)) {
-            throw "C# Launcher compilation failed"
-          }
-          Remove-Item Launcher_ci.exe -Force
+          & $csc /nologo /optimize+ /target:winexe /win32icon:pc_control.ico /out:Launcher.exe scripts\Launcher.cs
+          if ($LASTEXITCODE -ne 0) { throw "C# Launcher compilation failed" }
+          & $csc /nologo /optimize+ /target:winexe /win32icon:pc_control.ico /out:Uninstall.exe scripts\Uninstall.cs
+          if ($LASTEXITCODE -ne 0) { throw "C# Uninstaller compilation failed" }
+          python scripts/build_installer.py
+          if ($LASTEXITCODE -ne 0) { throw "PC-Control-Setup.exe build failed" }
 
       - name: Set up Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -56,6 +57,14 @@ jobs:
       - name: Verify Rust Streaming Engine (cargo check)
         run: |
           cargo check --manifest-path streamer_rs/Cargo.toml
+
+      - name: Run Core Regression and Lifecycle Test Suites
+        env:
+          PC_CONTROL_TEST_MODE: "1"
+          SAFE_TEST_MODE: "1"
+          PYTHONPATH: "."
+        run: |
+          python -m unittest tests.test_launcher_audit tests.test_network_setup tests.test_distribution_audit tests.test_server_audit tests.test_security_audit tests.test_update_system tests.test_uninstall_and_lifecycle tests.test_installer -v
 
       - name: Run Full 650-Cycle Test Suite
         env:

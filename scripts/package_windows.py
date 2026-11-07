@@ -7,7 +7,7 @@ import subprocess
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ROOT_FILES = (
-    "Launcher.exe", "PC_Control.apk", "pc_control.ico", "server.py", "open_app.pyw",
+    "Launcher.exe", "Uninstall.exe", "PC_Control.apk", "pc_control.ico", "server.py", "open_app.pyw",
     "requirements.txt", "requirements-runtime.lock", "runtime-source.json", "config.example.json", "README.md", "README.ru.md", "LICENSE",
     "launcher.bat", "start_server.bat", "stop_server.bat", "change_password.bat", "uninstall.bat",
 )

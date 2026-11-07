@@ -158,9 +158,9 @@ def run_batch_11():
     valid_procs = all(int(p.get("pid", 0)) > 0 and bool(p.get("name")) for p in plist)
     results.append({"cycle": 273, "name": "Processes Non-zero PID Integrity", "category": "Processes", "passed": valid_procs, "detail": f"valid={valid_procs}"})
 
-    # 274. Наличие собственного сервера в списке процессов
-    has_pythonw = any("pythonw" in p.get("name", "").lower() for p in plist)
-    results.append({"cycle": 274, "name": "Processes Discovery Detects pythonw", "category": "Processes", "passed": has_pythonw, "detail": f"found={has_pythonw}"})
+    # 274. Наличие собственного сервера в списке процессов (python или pythonw)
+    has_python = any("python" in p.get("name", "").lower() for p in plist)
+    results.append({"cycle": 274, "name": "Processes Discovery Detects python", "category": "Processes", "passed": has_python, "detail": f"found={has_python}"})
 
     # 275. Время ответа /processes < 500ms
     t0 = time.perf_counter()

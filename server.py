@@ -150,7 +150,7 @@ def _apply_cors_and_security_headers(resp):
     # Защитные заголовки
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Content-Security-Policy"] = (
-        "frame-ancestors 'self' http://127.0.0.1:* http://localhost:* http://192.168.* http://100.* http://10.*;"
+        "frame-ancestors 'self' http://127.0.0.1:* http://localhost:* http://192.168.* http://172.* http://100.* http://10.*;"
     )
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return resp
@@ -259,6 +259,13 @@ def index():
 
 
 def get_local_ip() -> str:
+    try:
+        from scripts.network_setup import detect_network
+        detected = detect_network().get("lan_ip", "")
+        if detected and detected != "127.0.0.1":
+            return detected
+    except Exception:
+        pass
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(('10.255.255.255', 1))
@@ -518,7 +525,7 @@ def api_safe_mode():
 @app.route("/status")
 def status():
     data = {"status": "online"}
-    if request.remote_addr in ("127.0.0.1", "::1"):
+    if request.remote_addr in ("127.0.0.1", "::1") or is_private_ip(request.remote_addr):
         data["instance"] = hashlib.sha256(str(BASE_DIR.resolve()).lower().rstrip("\\/").encode("utf-8")).hexdigest()
     if is_private_ip(request.remote_addr) or check_token() or is_safe_test_mode():
         data["hostname"] = platform.node()
@@ -542,6 +549,8 @@ def history():
 def _ensure_watchdog():
     """Запускает фоновый сторожевой процесс (watchdog.pyw), если он ещё не запущен,
     и сбрасывает флаг ручной остановки."""
+    if os.environ.get("PC_CONTROL_TEST_MODE") == "1":
+        return
     try:
         flag_path = BASE_DIR / "logs" / "manual_stop.flag"
         if flag_path.exists():

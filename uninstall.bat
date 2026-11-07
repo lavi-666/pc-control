@@ -1,6 +1,17 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+
+if exist "%~dp0Uninstall.exe" (
+    if "%~1"=="" (
+        start "" "%~dp0Uninstall.exe"
+        exit /b 0
+    ) else (
+        "%~dp0Uninstall.exe" %*
+        exit /b %ERRORLEVEL%
+    )
+)
+
 title PC Control — Деинсталляция и очистка кэша
 echo ======================================================================
 echo             PC CONTROL — ДЕИНСТАЛЛЯЦИЯ И ОЧИСТКА СИСТЕМЫ             

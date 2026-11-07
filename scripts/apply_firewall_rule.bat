@@ -1,45 +1,40 @@
 @echo off
 chcp 65001 >nul
-cd /d "%~dp0\.."
+setlocal
+set "BASE_DIR=%~dp0.."
+for %%I in ("%BASE_DIR%") do set "BASE_DIR=%%~fI"
 
+:: Проверка прав администратора
 net session >nul 2>&1
-if errorlevel 1 (
-    echo Запрос прав администратора...
-    set "SELF_BAT=%~f0"
-    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "Start-Process -FilePath $env:SELF_BAT -Verb RunAs"
+if %errorlevel% neq 0 (
+    echo [!] Запрос прав администратора для настройки Брандмауэра Windows...
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
 
-title PC Control - Настройка брандмауэра Windows
-
 set "SRV_PORT=5000"
-set "RELAY_PORT=5050"
-for /f "usebackq delims=" %%p in (`"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "try { $c = Get-Content -LiteralPath 'config.json' -Raw -Encoding UTF8 | ConvertFrom-Json; if ($c.port) { $c.port } else { 5000 } } catch { 5000 }"`) do set "SRV_PORT=%%p"
-for /f "usebackq delims=" %%p in (`"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "try { $c = Get-Content -LiteralPath 'config.json' -Raw -Encoding UTF8 | ConvertFrom-Json; if ($c.relay_port) { $c.relay_port } else { 5050 } } catch { 5050 }"`) do set "RELAY_PORT=%%p"
+set "REL_PORT=5050"
+set "PY_EXE=%BASE_DIR%\runtime\python.exe"
 
-echo =================================================================
-echo    PC CONTROL - Настройка правил брандмауэра Windows [TCP %SRV_PORT%]
-echo =================================================================
-echo.
-
-netsh advfirewall firewall delete rule name="PC Control Server" >nul 2>&1
-netsh advfirewall firewall delete rule name="PC Control WOL Relay" >nul 2>&1
-
-set "FW_OK=1"
-netsh advfirewall firewall add rule name="PC Control Server" dir=in action=allow protocol=TCP localport=%SRV_PORT% profile=any remoteip=LocalSubnet,100.64.0.0/10 >nul
-if errorlevel 1 set "FW_OK=0"
-netsh advfirewall firewall add rule name="PC Control WOL Relay" dir=in action=allow protocol=TCP localport=%RELAY_PORT% profile=any remoteip=LocalSubnet,100.64.0.0/10 >nul
-if errorlevel 1 set "FW_OK=0"
-
-if "%FW_OK%"=="1" (
-    echo [OK] Порты %SRV_PORT% и %RELAY_PORT% открыты только для домашней сети и Tailscale.
-) else (
-    echo [ОШИБКА] Не удалось применить правила брандмауэра.
+:: Читаем порты и фиксируем исходное состояние правил брандмауэра в журнале состояния
+if exist "%PY_EXE%" (
+    "%PY_EXE%" -E -s -c "import json, pathlib, sys; sys.path.insert(0, r'%BASE_DIR%'); cfg_f = pathlib.Path(r'%BASE_DIR%') / 'config.json'; cfg = json.loads(cfg_f.read_text('utf-8')) if cfg_f.is_file() else {}; sp = int(cfg.get('port', 5000) or 5000); rp = int(cfg.get('relay_port', 5050) or 5050); from core.system_state import capture_firewall_before_change; capture_firewall_before_change(sp, rp)" >nul 2>&1
 )
+
+for /f "usebackq tokens=1,2 delims=," %%a in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$sp = 5000; $rp = 5050; $cfg = Join-Path $env:BASE_DIR 'config.json'; if (Test-Path -LiteralPath $cfg) { try { $j = Get-Content -LiteralPath $cfg -Raw -Encoding UTF8 | ConvertFrom-Json; if ($j.port) { $sp = [int]$j.port }; if ($j.relay_port) { $rp = [int]$j.relay_port } } catch {} }; Write-Output ($sp.ToString() + ',' + $rp.ToString())"`) do (
+    if not "%%a"=="" set "SRV_PORT=%%a"
+    if not "%%b"=="" set "REL_PORT=%%b"
+)
+
+echo Добавление правил Брандмауэра для PC Control Server (порт %SRV_PORT%) и WOL Relay (порт %REL_PORT%)...
+netsh advfirewall firewall delete rule name="PC Control Server" >nul 2>&1
+netsh advfirewall firewall add rule name="PC Control Server" dir=in action=allow protocol=TCP localport=%SRV_PORT% profile=any remoteip=LocalSubnet,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10
+if %errorlevel% neq 0 exit /b %errorlevel%
+
+netsh advfirewall firewall delete rule name="PC Control WOL Relay" >nul 2>&1
+netsh advfirewall firewall add rule name="PC Control WOL Relay" dir=in action=allow protocol=TCP localport=%REL_PORT% profile=any remoteip=LocalSubnet,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,100.64.0.0/10
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 echo.
-echo =================================================================
-echo [ГОТОВО / DONE] Окно закроется автоматически через 3 секунды...
-echo =================================================================
-if not defined PC_CONTROL_NO_PAUSE timeout /t 3 >nul 2>&1
-if "%FW_OK%"=="1" exit /b 0
-exit /b 1
+echo [OK] Порты %SRV_PORT% и %REL_PORT% успешно открыты для локальной сети Wi-Fi и Tailscale!
+if not defined PC_CONTROL_NO_PAUSE pause
