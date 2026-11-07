@@ -68,6 +68,16 @@ VK_MAP = {
     "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
 }
 
+# Расширенные клавиши Windows (Extended Keys: стрелки, Del, Home, End, Win и др.)
+EXTENDED_VKS = {
+    0x21, 0x22,  # pageup, pagedown
+    0x23, 0x24,  # end, home
+    0x25, 0x26, 0x27, 0x28,  # left, up, right, down
+    0x2D, 0x2E,  # insert, delete
+    0x5B, 0x5C,  # lwin, rwin
+    0xA3, 0xA5,  # rctrl, ralt
+}
+
 # Инициализация ctypes структур SendInput
 if IS_WINDOWS:
     ULONG_PTR = wintypes.WPARAM
@@ -300,7 +310,7 @@ def keyboard_key_event(vk_code: int, is_down: bool, extended: bool = False) -> b
         flags = 0
         if not is_down:
             flags |= KEYEVENTF_KEYUP
-        if extended:
+        if extended or vk_code in EXTENDED_VKS:
             flags |= KEYEVENTF_EXTENDEDKEY
 
         if is_down:
@@ -316,16 +326,18 @@ def keyboard_key_event(vk_code: int, is_down: bool, extended: bool = False) -> b
 
 
 def keyboard_text_unicode(text: str) -> bool:
-    """Ввод произвольного Unicode-текста (русский, украинский, английский, символы)."""
+    """Ввод произвольного Unicode-текста (русский, украинский, английский, символы) через UTF-16."""
     if not IS_WINDOWS or not text:
         return True
     with _input_lock:
         seq = []
+        # Windows KEYEVENTF_UNICODE передает 16-битные кодовые единицы UTF-16 в wScan
         for ch in text:
-            code = ord(ch)
-            # SendInput KEYEVENTF_UNICODE передаёт символ в wScan
-            seq.append(INPUT(type=INPUT_KEYBOARD, u=_INPUTUnion(ki=KEYBDINPUT(wVk=0, wScan=code, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=0))))
-            seq.append(INPUT(type=INPUT_KEYBOARD, u=_INPUTUnion(ki=KEYBDINPUT(wVk=0, wScan=code, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=0))))
+            utf16_bytes = ch.encode("utf-16-le")
+            for i in range(0, len(utf16_bytes), 2):
+                code = int.from_bytes(utf16_bytes[i:i + 2], byteorder="little")
+                seq.append(INPUT(type=INPUT_KEYBOARD, u=_INPUTUnion(ki=KEYBDINPUT(wVk=0, wScan=code, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=0))))
+                seq.append(INPUT(type=INPUT_KEYBOARD, u=_INPUTUnion(ki=KEYBDINPUT(wVk=0, wScan=code, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=0))))
         return _send_inputs(seq) > 0
 
 
@@ -376,7 +388,10 @@ def release_all_inputs():
         # Отпускаем все зажатые клавиши и стандартные модификаторы
         all_to_release = set(_held_keys) | {0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C, 0x10, 0x11, 0x12}
         for vk in all_to_release:
-            seq.append(INPUT(type=INPUT_KEYBOARD, u=_INPUTUnion(ki=KEYBDINPUT(wVk=vk, wScan=0, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=0))))
+            flags = KEYEVENTF_KEYUP
+            if vk in EXTENDED_VKS:
+                flags |= KEYEVENTF_EXTENDEDKEY
+            seq.append(INPUT(type=INPUT_KEYBOARD, u=_INPUTUnion(ki=KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0, dwExtraInfo=0))))
         _held_keys.clear()
 
         if seq:
@@ -390,67 +405,76 @@ _mic_playback_stream = None
 _mic_playback_pa = None
 _mic_playback_lock = threading.Lock()
 _mic_active = False
-_mic_active_device_name = "System Output / Virtual Cable"
+_mic_virtual_detected = False
+_mic_active_device_name = "No Virtual Audio Cable installed"
 
 
-def _get_target_mic_playback_device() -> tuple[Any, int, str]:
-    """Находит подходящее целевое устройство Windows для воспроизведения микрофона с телефона.
-    Приоритет: виртуальное устройство (CABLE Input / VB-Audio / Virtual Audio Cable) -> системный Default Output."""
-    import pyaudiowpatch as pa
-    p = pa.PyAudio()
-    dev_count = p.get_device_count()
-
-    virtual_cand = None
-    default_cand = None
-
-    for i in range(dev_count):
+def _get_target_mic_playback_device() -> tuple[Any, int, str, bool]:
+    """Находит виртуальное устройство Windows для приёма микрофона телефона.
+    Строго требует виртуальный кабель (CABLE Input / VB-Audio / Virtual Audio Cable / Voicemeeter),
+    чтобы звук микрофона телефона был доступен в приложениях Windows (игры, Discord, Zoom)
+    и не воспроизводился через динамики ПК (предотвращение эха)."""
+    try:
         try:
-            info = p.get_device_info_by_index(i)
-            if info.get("maxOutputChannels", 0) > 0:
-                name = info.get("name", "")
-                name_l = name.lower()
-                if any(v in name_l for v in ("cable input", "vb-audio", "virtual audio", "voicemeeter in")):
-                    virtual_cand = (i, name)
-                    break
-                if default_cand is None and "mapper" not in name_l:
-                    default_cand = (i, name)
-        except Exception:
-            continue
+            import pyaudiowpatch as pa
+        except ImportError:
+            import pyaudio as pa
+        p = pa.PyAudio()
+        dev_count = p.get_device_count()
 
-    if virtual_cand:
-        return (p, virtual_cand[0], f"Virtual: {virtual_cand[1]}")
-    elif default_cand:
-        return (p, default_cand[0], f"Default: {default_cand[1]}")
-    else:
-        # Fallback на системное устройство по умолчанию
-        try:
-            d_out = p.get_default_output_device_info()
-            return (p, d_out["index"], d_out["name"])
-        except Exception:
-            return (p, -1, "System Audio Output")
+        for i in range(dev_count):
+            try:
+                info = p.get_device_info_by_index(i)
+                if info.get("maxOutputChannels", 0) > 0:
+                    name = info.get("name", "")
+                    name_l = name.lower()
+                    if any(v in name_l for v in ("cable input", "vb-audio", "virtual audio", "voicemeeter in", "line in")):
+                        return (p, i, f"Virtual: {name}", True)
+            except Exception:
+                continue
+
+        # Виртуальный кабель не найден
+        return (p, -1, "No Virtual Audio Cable installed", False)
+    except Exception as e:
+        log_error("get_target_mic_playback_device", e)
+        return (None, -1, f"Audio subsystem error: {e}", False)
 
 
 def _ensure_mic_playback_open(sample_rate: int = 16000, channels: int = 1):
-    """Гарантирует открытый выходной поток воспроизведения микрофона телефона."""
-    global _mic_playback_stream, _mic_playback_pa, _mic_active, _mic_active_device_name
+    """Гарантирует открытый выходной поток воспроизведения микрофона в виртуальный кабель Windows."""
+    global _mic_playback_stream, _mic_playback_pa, _mic_active, _mic_virtual_detected, _mic_active_device_name
     with _mic_playback_lock:
         if _mic_playback_stream is not None:
             return _mic_playback_stream
         try:
-            import pyaudiowpatch as pa
-            p, dev_idx, dev_name = _get_target_mic_playback_device()
-            _mic_playback_pa = p
+            p, dev_idx, dev_name, is_virt = _get_target_mic_playback_device()
+            _mic_virtual_detected = is_virt
             _mic_active_device_name = dev_name
+
+            if not is_virt or dev_idx < 0 or p is None:
+                log_action("mic_playback_no_virtual_cable", {"device": dev_name})
+                if p:
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+                return None
+
+            _mic_playback_pa = p
+
+            try:
+                import pyaudiowpatch as pa
+            except ImportError:
+                import pyaudio as pa
 
             kwargs = {
                 "format": pa.paInt16,
                 "channels": channels,
                 "rate": sample_rate,
                 "output": True,
+                "output_device_index": dev_idx,
                 "frames_per_buffer": 1024,
             }
-            if dev_idx >= 0:
-                kwargs["output_device_index"] = dev_idx
 
             _mic_playback_stream = p.open(**kwargs)
             _mic_active = True
@@ -610,7 +634,7 @@ def api_keyboard():
 @input_bp.route("/api/mic/stream", methods=["POST"])
 def api_mic_stream():
     """Приём потокового бинарного аудиопотока микрофона телефона (16-bit PCM mono)."""
-    if not check_token():
+    if not check_token(allow_stream_query=True):
         return jsonify({"message": "Unauthorized"}), 401
 
     rate = int(request.args.get("rate", 16000))
@@ -618,7 +642,11 @@ def api_mic_stream():
 
     stream = _ensure_mic_playback_open(sample_rate=rate, channels=channels)
     if not stream:
-        return jsonify({"ok": False, "message": "Could not initialize Windows audio output"}), 500
+        return jsonify({
+            "ok": False,
+            "virtual_cable_detected": False,
+            "message": "Виртуальный аудиокабель (VB-CABLE) не обнаружен на ПК. Для передачи микрофона в Windows требуется установить VB-CABLE (CABLE Input)."
+        }), 400
 
     try:
         # Потоковое чтение PCM-чанков из тела HTTP-запроса
@@ -641,6 +669,8 @@ def api_mic_status():
     if not check_token():
         return jsonify({"message": "Unauthorized"}), 401
 
+    global _mic_virtual_detected, _mic_active_device_name
+
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
         enable = bool(data.get("enable", False))
@@ -649,9 +679,21 @@ def api_mic_status():
         else:
             rate = int(data.get("rate", 16000))
             _ensure_mic_playback_open(sample_rate=rate, channels=1)
+    else:
+        # При GET запросе обновляем статус обнаружения виртуального кабеля
+        if not _mic_active:
+            p, _, name, is_virt = _get_target_mic_playback_device()
+            _mic_virtual_detected = is_virt
+            _mic_active_device_name = name
+            if p:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
 
     return jsonify({
         "active": _mic_active,
+        "virtual_cable_detected": _mic_virtual_detected,
         "target_device": _mic_active_device_name,
         "instructions": "Для использования переданного голоса в качестве микрофона в Windows выберите виртуальный кабель (VB-CABLE / Virtual Audio Cable) в звуковых устройствах."
     })

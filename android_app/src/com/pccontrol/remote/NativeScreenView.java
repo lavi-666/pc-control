@@ -37,6 +37,7 @@ import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.animation.AlphaAnimation;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -547,8 +548,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         btn.setTypeface(Typeface.DEFAULT_BOLD);
         btn.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
-        btn.setMinWidth(dpToPx(120));
-        btn.setMinHeight(dpToPx(44));
+        btn.setMinWidth(dpToPx(130));
+        btn.setMinHeight(dpToPx(48));
 
         int padX = dpToPx(10);
         int padY = dpToPx(6);
@@ -671,16 +672,16 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         int parentW = getWidth();
         int parentH = getHeight();
 
-        // Анимация контейнера видео
+        // Анимация контейнера видео: масштабирование до 50% и сдвиг вправо
         videoContainer.animate()
                 .scaleX(0.50f)
                 .scaleY(0.50f)
-                .translationX(-(parentW * 0.24f))
+                .translationX(parentW * 0.24f)
                 .setDuration(280)
                 .setInterpolator(new AccelerateDecelerateInterpolator())
                 .start();
 
-        // Анимация появления правой панели
+        // Анимация появления панели настроек слева
         splitSettingsContainer.animate()
                 .alpha(1f)
                 .setDuration(280)
@@ -830,11 +831,26 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         splitSettingsCard.addView(btn);
     }
 
+    private interface TouchpadBoundsListener {
+        void onBoundsChanged(float x, float y, float w, float h);
+    }
+    private TouchpadBoundsListener touchpadBoundsListener;
+
+    private void addSmallSpacer(Context ctx, LinearLayout parent) {
+        View sp = new View(ctx);
+        parent.addView(sp, new LinearLayout.LayoutParams(dpToPx(6), 1));
+    }
+
     // -----------------------------------------------------------------------
     // РАЗДЕЛ: ТАЧПАД (СИНХРОНИЗИРОВАННЫЙ РЕДАКТОР С ЖИВЫМ ПРЕВЬЮ)
     // -----------------------------------------------------------------------
     private void buildTouchpadSettingsSection(Context ctx) {
         isTouchpadEditing = true;
+        final float initX = tpNormX;
+        final float initY = tpNormY;
+        final float initW = tpNormW;
+        final float initH = tpNormH;
+
         if (touchpadVisualEditor != null) {
             touchpadVisualEditor.setVisibility(View.VISIBLE);
             touchpadVisualEditor.invalidate();
@@ -851,7 +867,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         wLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         splitSettingsCard.addView(wLbl);
 
-        SeekBar wBar = createSlider(ctx, 20, 95, (int) (tpNormW * 100), new SeekBarCallback() {
+        final SeekBar wBar = createSlider(ctx, 15, 95, (int) (tpNormW * 100), new SeekBarCallback() {
             @Override
             public void onVal(int val) {
                 tpNormW = val / 100f;
@@ -868,7 +884,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         hLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         splitSettingsCard.addView(hLbl);
 
-        SeekBar hBar = createSlider(ctx, 20, 95, (int) (tpNormH * 100), new SeekBarCallback() {
+        final SeekBar hBar = createSlider(ctx, 15, 95, (int) (tpNormH * 100), new SeekBarCallback() {
             @Override
             public void onVal(int val) {
                 tpNormH = val / 100f;
@@ -877,6 +893,116 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
         splitSettingsCard.addView(hBar);
+
+        touchpadBoundsListener = new TouchpadBoundsListener() {
+            @Override
+            public void onBoundsChanged(float x, float y, float w, float h) {
+                wLbl.setText("Ширина зоны: " + (int) (w * 100) + "%");
+                hLbl.setText("Высота зоны: " + (int) (h * 100) + "%");
+                wBar.setProgress((int) (w * 100));
+                hBar.setProgress((int) (h * 100));
+            }
+        };
+
+        // ТОЧНАЯ КОРРЕКЦИЯ СТРЕЛОЧКАМИ
+        addSectionHeader(ctx, splitSettingsCard, "ТОЧНАЯ КОРРЕКЦИЯ СТРЕЛОЧКАМИ (±1%)");
+
+        LinearLayout arrowRow1 = new LinearLayout(ctx);
+        arrowRow1.setOrientation(LinearLayout.HORIZONTAL);
+
+        TextView leftBtn = createToolbarButton(ctx, "◀ X-", "#1E2530", Color.WHITE, 12f);
+        leftBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                tpNormX = Math.max(0f, tpNormX - 0.01f);
+                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            }
+        });
+
+        TextView rightBtn = createToolbarButton(ctx, "X+ ▶", "#1E2530", Color.WHITE, 12f);
+        rightBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                tpNormX = Math.min(1f - tpNormW, tpNormX + 0.01f);
+                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            }
+        });
+
+        TextView upBtn = createToolbarButton(ctx, "▲ Y-", "#1E2530", Color.WHITE, 12f);
+        upBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                tpNormY = Math.max(0f, tpNormY - 0.01f);
+                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            }
+        });
+
+        TextView downBtn = createToolbarButton(ctx, "Y+ ▼", "#1E2530", Color.WHITE, 12f);
+        downBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                tpNormY = Math.min(1f - tpNormH, tpNormY + 0.01f);
+                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            }
+        });
+
+        arrowRow1.addView(leftBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        addSmallSpacer(ctx, arrowRow1);
+        arrowRow1.addView(rightBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        addSmallSpacer(ctx, arrowRow1);
+        arrowRow1.addView(upBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        addSmallSpacer(ctx, arrowRow1);
+        arrowRow1.addView(downBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        splitSettingsCard.addView(arrowRow1);
+
+        LinearLayout arrowRow2 = new LinearLayout(ctx);
+        arrowRow2.setOrientation(LinearLayout.HORIZONTAL);
+        arrowRow2.setPadding(0, dpToPx(6), 0, 0);
+
+        TextView wDecBtn = createToolbarButton(ctx, "Шир -", "#1E2530", Color.WHITE, 12f);
+        wDecBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                tpNormW = Math.max(0.15f, tpNormW - 0.01f);
+                wBar.setProgress((int) (tpNormW * 100));
+                wLbl.setText("Ширина зоны: " + (int) (tpNormW * 100) + "%");
+                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            }
+        });
+
+        TextView wIncBtn = createToolbarButton(ctx, "Шир +", "#1E2530", Color.WHITE, 12f);
+        wIncBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                tpNormW = Math.min(1f - tpNormX, tpNormW + 0.01f);
+                wBar.setProgress((int) (tpNormW * 100));
+                wLbl.setText("Ширина зоны: " + (int) (tpNormW * 100) + "%");
+                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            }
+        });
+
+        TextView hDecBtn = createToolbarButton(ctx, "Выс -", "#1E2530", Color.WHITE, 12f);
+        hDecBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                tpNormH = Math.max(0.15f, tpNormH - 0.01f);
+                hBar.setProgress((int) (tpNormH * 100));
+                hLbl.setText("Высота зоны: " + (int) (tpNormH * 100) + "%");
+                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            }
+        });
+
+        TextView hIncBtn = createToolbarButton(ctx, "Выс +", "#1E2530", Color.WHITE, 12f);
+        hIncBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                tpNormH = Math.min(1f - tpNormY, tpNormH + 0.01f);
+                hBar.setProgress((int) (tpNormH * 100));
+                hLbl.setText("Высота зоны: " + (int) (tpNormH * 100) + "%");
+                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            }
+        });
+
+        arrowRow2.addView(wDecBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        addSmallSpacer(ctx, arrowRow2);
+        arrowRow2.addView(wIncBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        addSmallSpacer(ctx, arrowRow2);
+        arrowRow2.addView(hDecBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        addSmallSpacer(ctx, arrowRow2);
+        arrowRow2.addView(hIncBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        splitSettingsCard.addView(arrowRow2);
 
         // Чувствительность мыши
         final TextView sLbl = new TextView(ctx);
@@ -926,21 +1052,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         addDivider(ctx, splitSettingsCard);
 
-        // Кнопки сохранения
+        // Кнопки сохранения: Сброс, Отмена, Применить
         LinearLayout btnRow = new LinearLayout(ctx);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
 
-        TextView applyBtn = createToolbarButton(ctx, "✓ Применить", "#16A34A", Color.WHITE, 13f);
-        applyBtn.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                savePreferences();
-                closeSplitSettingsWithAnimation();
-                Toast.makeText(getContext(), "Настройки тачпада сохранены", Toast.LENGTH_SHORT).show();
-            }
-        });
-
-        TextView resetBtn = createToolbarButton(ctx, "Сброс", "#242A35", Color.parseColor("#94A3B8"), 13f);
+        TextView resetBtn = createToolbarButton(ctx, "Сброс", "#242A35", Color.parseColor("#94A3B8"), 12f);
         resetBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -956,9 +1072,39 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
 
+        TextView cancelBtn = createToolbarButton(ctx, "✕ Отмена", "#334155", Color.parseColor("#CBD5E1"), 12f);
+        cancelBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                tpNormX = initX;
+                tpNormY = initY;
+                tpNormW = initW;
+                tpNormH = initH;
+                touchpadBoundsListener = null;
+                if (touchpadVisualEditor != null) {
+                    touchpadVisualEditor.setVisibility(View.GONE);
+                    isTouchpadEditing = false;
+                }
+                closeSplitSettingsWithAnimation();
+                Toast.makeText(getContext(), "Изменения тачпада отменены", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        TextView applyBtn = createToolbarButton(ctx, "✓ Применить", "#16A34A", Color.WHITE, 12f);
+        applyBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                touchpadBoundsListener = null;
+                savePreferences();
+                closeSplitSettingsWithAnimation();
+                Toast.makeText(getContext(), "Настройки тачпада сохранены", Toast.LENGTH_SHORT).show();
+            }
+        });
+
         btnRow.addView(resetBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        View sp = new View(ctx);
-        btnRow.addView(sp, new LinearLayout.LayoutParams(dpToPx(8), 1));
+        addSmallSpacer(ctx, btnRow);
+        btnRow.addView(cancelBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        addSmallSpacer(ctx, btnRow);
         btnRow.addView(applyBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
         splitSettingsCard.addView(btnRow);
     }
@@ -1310,6 +1456,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void showCustomKeyboard(boolean show) {
         isKeyboardVisible = show;
         if (customKeyboardView != null) {
+            if (!show) {
+                // При закрытии клавиатуры обязательно отпускаем модификаторы, чтобы они не зависали в Windows
+                customKeyboardView.releaseHeldModifiers();
+            }
             customKeyboardView.setVisibility(show ? View.VISIBLE : View.GONE);
             if (show) {
                 customKeyboardView.setAlpha(0f);
@@ -1345,12 +1495,18 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             int pad = dpToPx(6);
             setPadding(pad, pad, pad, pad);
 
-            // Панель специальных клавиш (Esc, Tab, Del, Arrows)
+            // Панель специальных клавиш (Esc, Tab, Del, Home, End, PgUp/Down, Arrows, F-keys) с горизонтальной прокруткой
+            HorizontalScrollView specialScroll = new HorizontalScrollView(context);
+            specialScroll.setHorizontalScrollBarEnabled(false);
+            specialScroll.setFillViewport(true);
+
             specialBar = new LinearLayout(context);
             specialBar.setOrientation(LinearLayout.HORIZONTAL);
             specialBar.setGravity(Gravity.CENTER_VERTICAL);
             buildSpecialBar(context);
-            addView(specialBar);
+
+            specialScroll.addView(specialBar, new FrameLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
+            addView(specialScroll);
 
             // Контейнер алфавитных рядов
             keyContainer = new LinearLayout(context);
@@ -1369,39 +1525,54 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             setAlpha(bgOp);
         }
 
+        public void releaseHeldModifiers() {
+            if (isCtrlActive) {
+                isCtrlActive = false;
+                sendModifierKey("ctrl", false);
+            }
+            if (isAltActive) {
+                isAltActive = false;
+                sendModifierKey("alt", false);
+            }
+            if (isWinActive) {
+                isWinActive = false;
+                sendModifierKey("win", false);
+            }
+            if (isShiftActive) {
+                isShiftActive = false;
+                sendModifierKey("shift", false);
+            }
+            renderKeyboardRows();
+        }
+
         private void buildSpecialBar(Context ctx) {
             specialBar.removeAllViews();
-            addSpecialKey(ctx, "ESC", new Runnable() {
-                @Override public void run() { sendKeyPress("esc"); }
-            });
-            addSpecialKey(ctx, "TAB", new Runnable() {
-                @Override public void run() { sendKeyPress("tab"); }
-            });
-            addSpecialKey(ctx, "DEL", new Runnable() {
-                @Override public void run() { sendKeyPress("delete"); }
-            });
-            addSpecialKey(ctx, "↑", new Runnable() {
-                @Override public void run() { sendKeyPress("up"); }
-            });
-            addSpecialKey(ctx, "↓", new Runnable() {
-                @Override public void run() { sendKeyPress("down"); }
-            });
-            addSpecialKey(ctx, "←", new Runnable() {
-                @Override public void run() { sendKeyPress("left"); }
-            });
-            addSpecialKey(ctx, "→", new Runnable() {
-                @Override public void run() { sendKeyPress("right"); }
-            });
-            addSpecialKey(ctx, "✕", new Runnable() {
-                @Override public void run() { showCustomKeyboard(false); }
-            });
+            addSpecialKey(ctx, "ESC", new Runnable() { @Override public void run() { sendKeyPress("esc"); } });
+            addSpecialKey(ctx, "TAB", new Runnable() { @Override public void run() { sendKeyPress("tab"); } });
+            addSpecialKey(ctx, "DEL", new Runnable() { @Override public void run() { sendKeyPress("delete"); } });
+            addSpecialKey(ctx, "HOME", new Runnable() { @Override public void run() { sendKeyPress("home"); } });
+            addSpecialKey(ctx, "END", new Runnable() { @Override public void run() { sendKeyPress("end"); } });
+            addSpecialKey(ctx, "PGUP", new Runnable() { @Override public void run() { sendKeyPress("pageup"); } });
+            addSpecialKey(ctx, "PGDN", new Runnable() { @Override public void run() { sendKeyPress("pagedown"); } });
+            addSpecialKey(ctx, "↑", new Runnable() { @Override public void run() { sendKeyPress("up"); } });
+            addSpecialKey(ctx, "↓", new Runnable() { @Override public void run() { sendKeyPress("down"); } });
+            addSpecialKey(ctx, "←", new Runnable() { @Override public void run() { sendKeyPress("left"); } });
+            addSpecialKey(ctx, "→", new Runnable() { @Override public void run() { sendKeyPress("right"); } });
+            addSpecialKey(ctx, "F1", new Runnable() { @Override public void run() { sendKeyPress("f1"); } });
+            addSpecialKey(ctx, "F2", new Runnable() { @Override public void run() { sendKeyPress("f2"); } });
+            addSpecialKey(ctx, "F5", new Runnable() { @Override public void run() { sendKeyPress("f5"); } });
+            addSpecialKey(ctx, "F11", new Runnable() { @Override public void run() { sendKeyPress("f11"); } });
+            addSpecialKey(ctx, "F12", new Runnable() { @Override public void run() { sendKeyPress("f12"); } });
+            addSpecialKey(ctx, "✕", new Runnable() { @Override public void run() { showCustomKeyboard(false); } });
         }
 
         private void addSpecialKey(Context ctx, String text, final Runnable act) {
             TextView btn = createKeyView(ctx, text, 1.0f, false, act);
             btn.setTextColor(Color.parseColor("#38BDF8"));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dpToPx(36), 1.0f);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, dpToPx(36));
             lp.setMargins(dpToPx(2), dpToPx(2), dpToPx(2), dpToPx(4));
+            int padX = dpToPx(10);
+            btn.setPadding(padX, 0, padX, 0);
             btn.setLayoutParams(lp);
             specialBar.addView(btn);
         }
@@ -1412,19 +1583,19 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
             String[][] rows;
             if (kbdLayoutIdx == 1) {
-                // RU раскладка
+                // RU раскладка с Shift
                 rows = new String[][] {
                     {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х", "Ъ"},
                     {"Ф", "Ы", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Э"},
-                    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "⌫"},
+                    {"⇧", "Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "⌫"},
                     {"123", "CTRL", "ALT", "WIN", " ", "ENTER", "RU"}
                 };
             } else if (kbdLayoutIdx == 2) {
-                // UK раскладка
+                // UK раскладка с Shift
                 rows = new String[][] {
                     {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х", "Ї"},
                     {"Ф", "І", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Є"},
-                    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "⌫"},
+                    {"⇧", "Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "⌫"},
                     {"123", "CTRL", "ALT", "WIN", " ", "ENTER", "UK"}
                 };
             } else if (kbdLayoutIdx == 3) {
@@ -1432,15 +1603,15 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 rows = new String[][] {
                     {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
                     {"@", "#", "$", "%", "&", "*", "-", "+", "(", ")"},
-                    {"!", "\"", "'", ":", ";", "/", "\\", "?", "⌫"},
+                    {"⇧", "!", "\"", "'", ":", ";", "/", "\\", "?", "⌫"},
                     {"ABC", "CTRL", "ALT", "WIN", " ", "ENTER", "SYM"}
                 };
             } else {
-                // EN раскладка
+                // EN раскладка с Shift
                 rows = new String[][] {
                     {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"},
                     {"A", "S", "D", "F", "G", "H", "J", "K", "L"},
-                    {"Z", "X", "C", "V", "B", "N", "M", "⌫"},
+                    {"⇧", "Z", "X", "C", "V", "B", "N", "M", "⌫"},
                     {"123", "CTRL", "ALT", "WIN", " ", "ENTER", "EN"}
                 };
             }
@@ -1455,13 +1626,20 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     if (" ".equals(key)) weight = 3.5f;
                     else if ("ENTER".equals(key)) weight = 1.8f;
                     else if ("⌫".equals(key)) weight = 1.4f;
+                    else if ("⇧".equals(key)) weight = 1.4f;
 
-                    boolean isMod = "CTRL".equals(key) || "ALT".equals(key) || "WIN".equals(key);
+                    boolean isMod = "CTRL".equals(key) || "ALT".equals(key) || "WIN".equals(key) || "⇧".equals(key);
                     boolean isModActive = ("CTRL".equals(key) && isCtrlActive)
                             || ("ALT".equals(key) && isAltActive)
-                            || ("WIN".equals(key) && isWinActive);
+                            || ("WIN".equals(key) && isWinActive)
+                            || ("⇧".equals(key) && isShiftActive);
 
-                    TextView kView = createKeyView(ctx, key, weight, isModActive, new Runnable() {
+                    String displayKey = key;
+                    if (key.length() == 1 && Character.isLetter(key.charAt(0))) {
+                        displayKey = isShiftActive ? key.toUpperCase() : key.toLowerCase();
+                    }
+
+                    TextView kView = createKeyView(ctx, displayKey, weight, isModActive, new Runnable() {
                         @Override
                         public void run() {
                             handleKeyTap(key);
@@ -1524,6 +1702,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             } else if ("SYM".equals(key)) {
                 kbdLayoutIdx = 0;
                 renderKeyboardRows();
+            } else if ("⇧".equals(key)) {
+                isShiftActive = !isShiftActive;
+                sendModifierKey("shift", isShiftActive);
+                renderKeyboardRows();
             } else if ("CTRL".equals(key)) {
                 isCtrlActive = !isCtrlActive;
                 sendModifierKey("ctrl", isCtrlActive);
@@ -1542,6 +1724,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 sendUnicodeText(charToSend);
                 if (isShiftActive) {
                     isShiftActive = false;
+                    sendModifierKey("shift", false);
                     renderKeyboardRows();
                 }
             }
@@ -1668,20 +1851,54 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     lastY = y;
 
                     if (activeHandle == 0) {
-                        // Перемещение центра
+                        // 0: Перемещение центра
                         tpNormX = Math.max(0f, Math.min(1f - tpNormW, tpNormX + dx));
                         tpNormY = Math.max(0f, Math.min(1f - tpNormH, tpNormY + dy));
-                    } else if (activeHandle == 4 || activeHandle == 6) {
-                        // Изменение ширины справа
+                    } else if (activeHandle == 1) {
+                        // 1: Левый верхний угол
+                        float newX = Math.max(0f, Math.min(tpNormX + tpNormW - 0.15f, tpNormX + dx));
+                        float newY = Math.max(0f, Math.min(tpNormY + tpNormH - 0.15f, tpNormY + dy));
+                        tpNormW += (tpNormX - newX);
+                        tpNormH += (tpNormY - newY);
+                        tpNormX = newX;
+                        tpNormY = newY;
+                    } else if (activeHandle == 2) {
+                        // 2: Правый верхний угол
+                        float newY = Math.max(0f, Math.min(tpNormY + tpNormH - 0.15f, tpNormY + dy));
+                        tpNormH += (tpNormY - newY);
+                        tpNormY = newY;
                         tpNormW = Math.max(0.15f, Math.min(1f - tpNormX, tpNormW + dx));
-                        if (activeHandle == 4) {
-                            tpNormH = Math.max(0.15f, Math.min(1f - tpNormY, tpNormH + dy));
-                        }
+                    } else if (activeHandle == 3) {
+                        // 3: Левый нижний угол
+                        float newX = Math.max(0f, Math.min(tpNormX + tpNormW - 0.15f, tpNormX + dx));
+                        tpNormW += (tpNormX - newX);
+                        tpNormX = newX;
+                        tpNormH = Math.max(0.15f, Math.min(1f - tpNormY, tpNormH + dy));
+                    } else if (activeHandle == 4) {
+                        // 4: Правый нижний угол
+                        tpNormW = Math.max(0.15f, Math.min(1f - tpNormX, tpNormW + dx));
+                        tpNormH = Math.max(0.15f, Math.min(1f - tpNormY, tpNormH + dy));
+                    } else if (activeHandle == 5) {
+                        // 5: Левая граница
+                        float newX = Math.max(0f, Math.min(tpNormX + tpNormW - 0.15f, tpNormX + dx));
+                        tpNormW += (tpNormX - newX);
+                        tpNormX = newX;
+                    } else if (activeHandle == 6) {
+                        // 6: Правая граница
+                        tpNormW = Math.max(0.15f, Math.min(1f - tpNormX, tpNormW + dx));
+                    } else if (activeHandle == 7) {
+                        // 7: Верхняя граница
+                        float newY = Math.max(0f, Math.min(tpNormY + tpNormH - 0.15f, tpNormY + dy));
+                        tpNormH += (tpNormY - newY);
+                        tpNormY = newY;
                     } else if (activeHandle == 8) {
-                        // Изменение высоты снизу
+                        // 8: Нижняя граница
                         tpNormH = Math.max(0.15f, Math.min(1f - tpNormY, tpNormH + dy));
                     }
                     invalidate();
+                    if (touchpadBoundsListener != null) {
+                        touchpadBoundsListener.onBoundsChanged(tpNormX, tpNormY, tpNormW, tpNormH);
+                    }
                     return true;
 
                 case MotionEvent.ACTION_UP:
@@ -1710,10 +1927,18 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             return true;
         }
 
-        // В режиме Управление ПК проверяем, попадает ли касание в тачпад
+        // В режиме Управление ПК: если открыта панель настроек слева, клик по живому видео справа закрывает настройки
         int pW = getWidth();
         int pH = getHeight();
-        if (pW <= 0 || pH <= 0 || !isTouchpadEnabled || isTouchpadEditing || isSplitSettingsOpen) {
+        if (isSplitSettingsOpen && !isTouchpadEditing) {
+            if (action == MotionEvent.ACTION_UP && x > pW * 0.48f) {
+                closeSplitSettingsWithAnimation();
+                return true;
+            }
+            return false;
+        }
+
+        if (pW <= 0 || pH <= 0 || !isTouchpadEnabled || isTouchpadEditing) {
             return false;
         }
 
@@ -1774,6 +1999,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 break;
 
             case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
                 mainHandler.removeCallbacks(longPressRunnable);
                 long duration = SystemClock.uptimeMillis() - touchDownTime;
 
@@ -1782,7 +2008,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     if (inputDispatcherThread != null) {
                         inputDispatcherThread.enqueueMouseUp("left");
                     }
-                } else if (!isDraggingMouse && duration < 280) {
+                } else if (action != MotionEvent.ACTION_CANCEL && !isDraggingMouse && duration < 280) {
                     long now = SystemClock.uptimeMillis();
                     if (now - lastTapTime < 280) {
                         // Двойной клик
@@ -1987,7 +2213,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             micSenderThread = new MicSenderThread();
             micSenderThread.start();
         }
-        Toast.makeText(getContext(), "Микрофон телефона подключён к ПК", Toast.LENGTH_SHORT).show();
+        Toast.makeText(getContext(), "Подключение микрофона к ПК...", Toast.LENGTH_SHORT).show();
     }
 
     private void stopMicStreaming() {
@@ -2046,8 +2272,25 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         }
                     }
                 }
+                int code = conn.getResponseCode();
+                if (code == 200) {
+                    post(new Runnable() {
+                        @Override public void run() {
+                            Toast.makeText(getContext(), "Микрофон успешно передан на ПК", Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                }
                 conn.disconnect();
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                final String errStr = (e.getMessage() != null && e.getMessage().contains("400"))
+                        ? "На ПК требуется VB-CABLE для микрофона"
+                        : "Сбой передачи микрофона на ПК";
+                post(new Runnable() {
+                    @Override public void run() {
+                        stopMicStreaming();
+                        Toast.makeText(getContext(), errStr, Toast.LENGTH_LONG).show();
+                    }
+                });
             } finally {
                 if (recorder != null) {
                     try {
@@ -2326,6 +2569,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             scheduleControlsAutoHide();
         }
 
+        synchronized (this) {
+            if (inputDispatcherThread == null || !inputDispatcherThread.isAlive()) {
+                inputDispatcherThread = new InputDispatcherThread();
+                inputDispatcherThread.start();
+            }
+        }
+
         if (isAudioEnabled) {
             startAudioStream();
         } else {
@@ -2351,6 +2601,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         if (inputDispatcherThread != null) {
             inputDispatcherThread.enqueueReleaseAll();
+            final InputDispatcherThread idt = inputDispatcherThread;
+            inputDispatcherThread = null;
+            mainHandler.postDelayed(new Runnable() {
+                @Override public void run() {
+                    idt.shutdown();
+                }
+            }, 250);
         }
 
         synchronized (surfaceLock) {
@@ -2381,6 +2638,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 setVisibility(View.GONE);
             }
         });
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        stopStream();
     }
 
     private void closeStreamAndExit() {
@@ -3063,16 +3326,21 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (floatingControlsGroup != null && floatingControlsGroup.getVisibility() != View.GONE) {
             int gW = floatingControlsGroup.getMeasuredWidth();
             int gH = floatingControlsGroup.getMeasuredHeight();
-            float defX = (gearPosX >= 0) ? gearPosX : (parentW - gW - dpToPx(16));
-            float defY = (gearPosY >= 0) ? gearPosY : dpToPx(16);
+            // Гарантируем, что плавающие кнопки никогда не уйдут за экран при повороте телефона
+            float defX = (gearPosX >= 0)
+                    ? Math.min(parentW - gW - dpToPx(8), Math.max(dpToPx(8), gearPosX))
+                    : (parentW - gW - dpToPx(16));
+            float defY = (gearPosY >= 0)
+                    ? Math.min(parentH - gH - dpToPx(8), Math.max(dpToPx(8), gearPosY))
+                    : dpToPx(16);
             floatingControlsGroup.layout((int) defX, (int) defY, (int) (defX + gW), (int) (defY + gH));
         }
 
         if (splitSettingsContainer != null && splitSettingsContainer.getVisibility() != View.GONE) {
             int sW = splitSettingsContainer.getMeasuredWidth();
             int sH = splitSettingsContainer.getMeasuredHeight();
-            int sLeft = parentW - sW;
-            splitSettingsContainer.layout(sLeft, 0, parentW, sH);
+            // Панель настроек располагается СЛЕВА
+            splitSettingsContainer.layout(0, 0, sW, sH);
         }
 
         if (customKeyboardView != null && customKeyboardView.getVisibility() != View.GONE) {

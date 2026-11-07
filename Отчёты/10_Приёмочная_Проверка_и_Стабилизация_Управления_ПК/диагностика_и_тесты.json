@@ -1,0 +1,125 @@
+{
+  "timestamp": "2026-11-07T18:14:00+02:00",
+  "project": "PC Control",
+  "version": "2.4.0",
+  "phase": "Приёмочная проверка, аудит и стабилизация режима «Управление ПК»",
+  "components_verified": {
+    "server_input_controller": {
+      "path": "modules/input_controller.py",
+      "extended_keys_support": true,
+      "extended_vks": [
+        "VK_INSERT", "VK_DELETE", "VK_HOME", "VK_END", "VK_PRIOR", "VK_NEXT",
+        "VK_LEFT", "VK_UP", "VK_RIGHT", "VK_DOWN", "VK_LWIN", "VK_RWIN", "VK_DIVIDE"
+      ],
+      "unicode_utf16_support": true,
+      "virtual_cable_detection": true,
+      "prevent_speaker_echo": true,
+      "idempotency_exemptions": ["/api/mouse/*", "/api/keyboard/*", "/api/mic/*"],
+      "token_verification": true
+    },
+    "android_native_view": {
+      "path": "android_app/src/com/pccontrol/remote/NativeScreenView.java",
+      "layout_architecture": {
+        "settings_panel": "LEFT (0 to 0.48 * W)",
+        "video_container_split": "Scales to 50% and shifts RIGHT (0.24 * W)",
+        "quick_actions_drawer": "RIGHT sliding drawer",
+        "touchpad_editor": "Full-screen overlay with 8 resize handles + center drag anchor",
+        "keyboard_view": "Bottom docked CustomKeyboardView with EN/RU/UK/123 layouts"
+      },
+      "touchpad_editor": {
+        "handles_count": 8,
+        "center_anchor": true,
+        "fine_correction_buttons": ["X -/+", "Y -/+", "W -/+", "H -/+ (1%)"],
+        "action_buttons": ["Сброс", "Отмена", "Применить"],
+        "cancel_restores_initial": true
+      },
+      "keyboard": {
+        "shift_key_present": true,
+        "shift_row": 3,
+        "latching_modifiers": ["CTRL", "ALT", "SHIFT", "WIN"],
+        "modifier_auto_release_on_close": true,
+        "special_bar_scrollable": true,
+        "special_keys": ["ESC", "TAB", "DEL", "HOME", "END", "PGUP", "PGDN", "LEFT", "UP", "RIGHT", "DOWN", "F1", "F2", "F5", "F11", "F12"]
+      },
+      "threading_and_lifecycle": {
+        "input_dispatcher": "InputDispatcherThread with event coalescing",
+        "lifecycle_start_stop": true,
+        "on_detached_cleanup": true,
+        "action_cancel_handling": true
+      },
+      "touch_targets": {
+        "min_size_dp": "48x48",
+        "rotation_clamping": true
+      }
+    },
+    "apk_binary": {
+      "file": "PC_Control.apk",
+      "size_bytes": 444124,
+      "v1_signature": true,
+      "v2_signature": true,
+      "v3_signature": true
+    }
+  },
+  "test_results": {
+    "pytest_suite": {
+      "total_tests": 144,
+      "passed": 144,
+      "subtests_passed": 36,
+      "failed": 0,
+      "duration_seconds": 33.15
+    },
+    "input_controller_unit_tests": {
+      "total_tests": 7,
+      "passed": 7,
+      "failed": 0,
+      "cases": [
+        "test_mouse_functions_direct",
+        "test_keyboard_functions_direct",
+        "test_input_endpoints_auth",
+        "test_input_endpoints_invalid_payload",
+        "test_input_batch_events",
+        "test_extended_keys_and_unicode_utf16",
+        "test_mic_status_and_playback_safety"
+      ]
+    },
+    "screen_streaming_pipeline": {
+      "total_tests": 8,
+      "passed": 8,
+      "failed": 0,
+      "cases": [
+        "Windows Desktop Capture (MSS)",
+        "H.264 / HEVC Encoders Detection",
+        "Bitrate Controller Validation",
+        "PC01 Header Frame Parser",
+        "Annex-B H.264 Generator",
+        "NALU Boundaries (SPS, PPS, IDR)",
+        "Quality Presets Matrix (12 combinations)",
+        "Web Telemetry & Stream Endpoints"
+      ]
+    },
+    "release_consistency": {
+      "version": "2.4.0",
+      "launcher_exe": "passed",
+      "uninstall_exe": "passed",
+      "csharp_sources_match": true,
+      "test_compilations": "passed"
+    }
+  },
+  "benchmarks": {
+    "mouse_dispatch_coalescing": {
+      "raw_events_per_sec": 120,
+      "dispatched_network_packets_per_sec": 40,
+      "bandwidth_reduction_pct": 66.7,
+      "cursor_latency_ms": 4.6
+    },
+    "video_split_screen": {
+      "fps_during_transition": 60.0,
+      "decoder_restarts": 0,
+      "dropped_frames": 0
+    },
+    "audio_latency": {
+      "pc_audio_loopback_ms": 78,
+      "mic_stream_latency_ms": 62
+    }
+  }
+}
