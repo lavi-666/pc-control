@@ -5,6 +5,7 @@ import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.text.TextUtils;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
@@ -42,7 +43,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * NativeScreenView — Нативный Android-плеер демонстрации экрана для PC Control.
  * Полная переработка:
  * 1. Чистый дизайн в стилистике PC Control (убран постоянный технический HUD).
- * 2. Автоматически скрываемая верхняя панель управления по касанию (3.5 сек).
+ * 2. Автоматически скрываемая верхняя панель управления по касанию (5 сек).
  * 3. Отдельная скрытая диагностическая панель (с реальными метриками FPS, битрейта, задержки).
  * 4. Настоящее масштабирование без растягивания (Fit Center / Letterbox с сохранением 16:9).
  * 5. Поддержка переключения Fit / Fill.
@@ -215,11 +216,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         GradientDrawable tbBg = new GradientDrawable();
         tbBg.setColor(Color.parseColor("#E612161F")); // Темный полупрозрачный сланец
-        tbBg.setCornerRadius(dpToPx(20));
+        tbBg.setCornerRadius(dpToPx(24));
         tbBg.setStroke(dpToPx(1), Color.parseColor("#33FFFFFF"));
         topToolbar.setBackground(tbBg);
 
-        int padH = dpToPx(14);
+        int padH = dpToPx(16);
         int padV = dpToPx(8);
         topToolbar.setPadding(padH, padV, padH, padV);
 
@@ -231,8 +232,16 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         tbParams.topMargin = dpToPx(16);
         topToolbar.setLayoutParams(tbParams);
 
-        // Кнопка назад / выход в основной пульт
-        TextView backBtn = createToolbarButton(context, "←", "#242A35", Color.WHITE);
+        topToolbar.setOnTouchListener(new OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                scheduleControlsAutoHide();
+                return false;
+            }
+        });
+
+        // Кнопка назад / выход в основной пульт (←)
+        TextView backBtn = createToolbarButton(context, "←", "#242A35", Color.WHITE, 17f);
         backBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -250,22 +259,24 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         titleView = new TextView(context);
         titleView.setText("Демонстрация экрана");
         titleView.setTextColor(Color.WHITE);
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         titleView.setTypeface(Typeface.DEFAULT_BOLD);
+        titleView.setSingleLine(true);
+        titleView.setEllipsize(TextUtils.TruncateAt.END);
         titleBox.addView(titleView);
 
         subtitleView = new TextView(context);
         subtitleView.setText("1080p · 60 FPS · Запуск...");
         subtitleView.setTextColor(Color.parseColor("#94A3B8"));
-        subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f);
+        subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        subtitleView.setSingleLine(true);
+        subtitleView.setEllipsize(TextUtils.TruncateAt.END);
         titleBox.addView(subtitleView);
 
         topToolbar.addView(titleBox);
 
         // Кнопка режима масштабирования (Fit / Fill)
-        scaleModeBtn = createToolbarButton(context, "Fit", "#242A35", Color.parseColor("#E2E8F0"));
-        scaleModeBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-        scaleModeBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        scaleModeBtn = createToolbarButton(context, "Fit", "#242A35", Color.parseColor("#E2E8F0"), 13f);
         scaleModeBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -275,10 +286,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         });
         topToolbar.addView(scaleModeBtn);
 
-        addToolbarSpacer(context, topToolbar, 6);
+        addToolbarSpacer(context, topToolbar, 8);
 
         // Кнопка полноэкранного режима (⛶)
-        fullscreenBtn = createToolbarButton(context, "⛶", "#242A35", Color.WHITE);
+        fullscreenBtn = createToolbarButton(context, "⛶", "#242A35", Color.WHITE, 17f);
         fullscreenBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -288,10 +299,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         });
         topToolbar.addView(fullscreenBtn);
 
-        addToolbarSpacer(context, topToolbar, 6);
+        addToolbarSpacer(context, topToolbar, 8);
 
         // Кнопка диагностики (⚙)
-        diagBtn = createToolbarButton(context, "⚙", "#242A35", Color.WHITE);
+        diagBtn = createToolbarButton(context, "⚙", "#242A35", Color.WHITE, 17f);
         diagBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -301,10 +312,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         });
         topToolbar.addView(diagBtn);
 
-        addToolbarSpacer(context, topToolbar, 6);
+        addToolbarSpacer(context, topToolbar, 8);
 
         // Кнопка быстрого закрытия (✕)
-        closeBtn = createToolbarButton(context, "✕", "#3A2024", Color.parseColor("#FF5252"));
+        closeBtn = createToolbarButton(context, "✕", "#3A2024", Color.parseColor("#FF5252"), 17f);
         closeBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -316,22 +327,31 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         addView(topToolbar);
     }
 
-    private TextView createToolbarButton(Context context, String text, String bgColorHex, int textColor) {
+    private TextView createToolbarButton(Context context, String text, String bgColorHex, int textColor, float textSizeSp) {
         TextView btn = new TextView(context);
         btn.setText(text);
         btn.setTextColor(textColor);
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSizeSp);
+        btn.setTypeface(Typeface.DEFAULT_BOLD);
         btn.setGravity(Gravity.CENTER);
+
+        // Крупная зона касания (минимум 48x48 dp по Material Design Guidelines)
+        btn.setMinWidth(dpToPx(48));
+        btn.setMinHeight(dpToPx(48));
 
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(Color.parseColor(bgColorHex));
-        bg.setCornerRadius(dpToPx(12));
+        bg.setCornerRadius(dpToPx(14));
         btn.setBackground(bg);
 
-        int padX = dpToPx(10);
-        int padY = dpToPx(6);
+        int padX = dpToPx(12);
+        int padY = dpToPx(8);
         btn.setPadding(padX, padY, padX, padY);
         return btn;
+    }
+
+    private TextView createToolbarButton(Context context, String text, String bgColorHex, int textColor) {
+        return createToolbarButton(context, text, bgColorHex, textColor, 13f);
     }
 
     private void addToolbarSpacer(Context context, LinearLayout parent, int dp) {
@@ -567,6 +587,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         }
 
         isErrorVisible = true;
+        mainHandler.removeCallbacks(hideControlsRunnable);
         if (errorTitleView != null) errorTitleView.setText(title);
         if (errorMsgView != null) errorMsgView.setText(message);
         if (errorRetryBtn != null) {
@@ -591,6 +612,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (errorOverlay != null) {
             errorOverlay.setVisibility(View.GONE);
         }
+        scheduleControlsAutoHide();
     }
 
     public void setPlayerCallback(PlayerCallback callback) {
@@ -755,10 +777,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         isDiagVisible = visible;
         diagOverlay.setVisibility(visible ? View.VISIBLE : View.GONE);
         if (visible) {
+            mainHandler.removeCallbacks(hideControlsRunnable);
             mainHandler.removeCallbacks(diagUpdateRunnable);
             mainHandler.post(diagUpdateRunnable);
         } else {
             mainHandler.removeCallbacks(diagUpdateRunnable);
+            scheduleControlsAutoHide();
         }
     }
 
@@ -790,7 +814,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private void scheduleControlsAutoHide() {
         mainHandler.removeCallbacks(hideControlsRunnable);
-        mainHandler.postDelayed(hideControlsRunnable, 3500);
+        if (isDiagVisible || isErrorVisible) {
+            return;
+        }
+        mainHandler.postDelayed(hideControlsRunnable, 5000);
     }
 
     /**
@@ -844,9 +871,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             );
         }
 
-        // Измеряем верхнюю панель и диагностику
+        // Измеряем верхнюю панель и диагностику с учётом отступов и адаптивности
         if (topToolbar != null && topToolbar.getVisibility() != View.GONE) {
-            measureChildWithMargins(topToolbar, widthMeasureSpec, 0, heightMeasureSpec, 0);
+            int maxTbWidth = Math.max(dpToPx(280), widthSize - dpToPx(32));
+            topToolbar.measure(
+                    MeasureSpec.makeMeasureSpec(maxTbWidth, MeasureSpec.AT_MOST),
+                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.AT_MOST)
+            );
         }
         if (diagOverlay != null && diagOverlay.getVisibility() != View.GONE) {
             diagOverlay.measure(
@@ -883,9 +914,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (topToolbar != null && topToolbar.getVisibility() != View.GONE) {
             int tbW = topToolbar.getMeasuredWidth();
             int tbH = topToolbar.getMeasuredHeight();
-            int tbLeft = (parentW - tbW) / 2;
+            int tbLeft = Math.max(dpToPx(16), (parentW - tbW) / 2);
+            int tbRight = Math.min(parentW - dpToPx(16), tbLeft + tbW);
             int tbTop = dpToPx(16);
-            topToolbar.layout(tbLeft, tbTop, tbLeft + tbW, tbTop + tbH);
+            topToolbar.layout(tbLeft, tbTop, tbRight, tbTop + tbH);
         }
 
         if (diagOverlay != null && diagOverlay.getVisibility() != View.GONE) {
@@ -1272,7 +1304,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             try {
                 MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
                 int attempts = 0;
-                int outIndex = decoder.dequeueOutputBuffer(info, 0);
+                // Начальный таймаут 1500 мкс (1.5 мс) дает аппаратному декодеру успеть выдать кадр
+                // сразу после ввода NALU, не откладывая рендер до прихода следующего сетевого пакета.
+                int outIndex = decoder.dequeueOutputBuffer(info, 1500);
 
                 while (outIndex >= 0 && attempts < 8) {
                     attempts++;
@@ -1439,7 +1473,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             case MotionEvent.ACTION_UP:
                 long duration = SystemClock.uptimeMillis() - touchDownTime;
                 if (!isDraggingMouse && duration < 280) {
-                    // Короткий тап: если панель была скрыта, показываем её на 3.5 сек
+                    // Короткий тап: если панель была скрыта, показываем её на 5 сек
                     if (!isControlsVisible) {
                         setControlsVisible(true, true);
                     } else {

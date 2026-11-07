@@ -1087,11 +1087,93 @@ def screen_encoders():
     })
 
 
+class _FastDIBSection:
+    """Высокопроизводительный прямой захват экрана Windows через DIB-секцию без промежуточных аллокаций памяти."""
+    def __init__(self, left: int, top: int, width: int, height: int):
+        import ctypes
+        self.left = int(left)
+        self.top = int(top)
+        self.width = int(width)
+        self.height = int(height)
+        self.user32 = ctypes.windll.user32
+        self.gdi32 = ctypes.windll.gdi32
+        self.srcdc = self.user32.GetDC(0)
+        self.memdc = self.gdi32.CreateCompatibleDC(self.srcdc)
+
+        class BITMAPINFOHEADER(ctypes.Structure):
+            _fields_ = [
+                ("biSize", ctypes.c_uint32),
+                ("biWidth", ctypes.c_int32),
+                ("biHeight", ctypes.c_int32),
+                ("biPlanes", ctypes.c_uint16),
+                ("biBitCount", ctypes.c_uint16),
+                ("biCompression", ctypes.c_uint32),
+                ("biSizeImage", ctypes.c_uint32),
+                ("biXPelsPerMeter", ctypes.c_int32),
+                ("biYPelsPerMeter", ctypes.c_int32),
+                ("biClrUsed", ctypes.c_uint32),
+                ("biClrImportant", ctypes.c_uint32),
+            ]
+
+        class BITMAPINFO(ctypes.Structure):
+            _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", ctypes.c_uint32 * 3)]
+
+        self.bmi = BITMAPINFO()
+        self.bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        self.bmi.bmiHeader.biWidth = self.width
+        self.bmi.bmiHeader.biHeight = -self.height  # top-down DIB
+        self.bmi.bmiHeader.biPlanes = 1
+        self.bmi.bmiHeader.biBitCount = 32
+        self.bmi.bmiHeader.biCompression = 0
+
+        self.dib_bits = ctypes.c_void_p()
+        self.dib = self.gdi32.CreateDIBSection(
+            self.memdc,
+            ctypes.byref(self.bmi),
+            0,
+            ctypes.byref(self.dib_bits),
+            None,
+            0
+        )
+        if not self.dib or not self.dib_bits.value:
+            raise RuntimeError("Failed to create DIB section for screen capture")
+        self.gdi32.SelectObject(self.memdc, self.dib)
+        size = self.width * self.height * 4
+        self.buf = (ctypes.c_char * size).from_address(self.dib_bits.value)
+
+    def grab_into(self, vf) -> bool:
+        SRCCOPY = 0x00CC0020
+        res = self.gdi32.BitBlt(
+            self.memdc, 0, 0, self.width, self.height, self.srcdc, self.left, self.top, SRCCOPY
+        )
+        if not res:
+            return False
+        self.gdi32.GdiFlush()
+        vf.planes[0].update(self.buf)
+        return True
+
+    def close(self):
+        try:
+            if hasattr(self, "memdc") and self.memdc:
+                if hasattr(self, "dib") and self.dib:
+                    self.gdi32.DeleteObject(self.dib)
+                    self.dib = None
+                self.gdi32.DeleteDC(self.memdc)
+                self.memdc = None
+            if hasattr(self, "srcdc") and self.srcdc:
+                self.user32.ReleaseDC(0, self.srcdc)
+                self.srcdc = None
+        except Exception:
+            pass
+
+
 @streaming_bp.route("/screen/h264_stream")
 def screen_h264_stream():
     """
     Прямой низколатентный H.264 видеопоток для нативного Android-плеера (MediaCodec + SurfaceView).
     Поддерживает как фреймированный поток PC01 (быстрый разбор без аллокаций), так и сырой Annex-B поток.
+    Архитектура с двойной буферизацией и конвейеризацией: захват кадров (Thread 1) и кодирование (Thread 2)
+    выполняются параллельно без аллокаций памяти в цикле, гарантируя стабильные 60 FPS.
     """
     if not check_token(allow_stream_query=True):
         return jsonify({"message": "Неверный пароль"}), 401
@@ -1102,6 +1184,7 @@ def screen_h264_stream():
 
     import fractions
     import struct
+    import queue
     import av
     import mss
     import numpy as np
@@ -1123,7 +1206,10 @@ def screen_h264_stream():
         _attach_input_desktop()
         codec_ctx = None
         sct = None
+        dib_capturer = None
         has_winmm = False
+        cap_thread = None
+        stop_capture = threading.Event()
         try:
             try:
                 import ctypes
@@ -1192,26 +1278,82 @@ def screen_h264_stream():
                 _screen_telemetry["target_resolution"] = f"{target_w}x{target_h_even}"
                 _screen_telemetry["target_fps"] = target_fps
 
-            frame_interval = 1.0 / target_fps
+            # Попытка инициализации ультрабыстрого захвата через прямую DIB-секцию
+            if platform.system() == "Windows":
+                try:
+                    dib_capturer = _FastDIBSection(mon["left"], mon["top"], mon["width"], mon["height"])
+                except Exception as ex:
+                    log_error("fast_dib_section_init_failed", ex)
+                    dib_capturer = None
+
+            # Двойная буферизация кадров: исключает аллокации в цикле захвата
+            mon_w, mon_h = mon["width"], mon["height"]
+            vf_bufs = [
+                av.VideoFrame(mon_w, mon_h, "bgra"),
+                av.VideoFrame(mon_w, mon_h, "bgra")
+            ]
+            frame_queue = queue.Queue(maxsize=1)
+
+            def capture_worker():
+                _attach_input_desktop()
+                buf_idx = 0
+                cap_interval = 1.0 / target_fps
+                next_cap = time.perf_counter()
+
+                while not stop_capture.is_set():
+                    cur_vf = vf_bufs[buf_idx]
+                    grab_ok = False
+                    if dib_capturer is not None:
+                        try:
+                            grab_ok = dib_capturer.grab_into(cur_vf)
+                        except Exception:
+                            grab_ok = False
+
+                    if not grab_ok and sct is not None:
+                        try:
+                            raw = sct.grab(mon)
+                            cur_vf.planes[0].update(raw.raw)
+                            grab_ok = True
+                        except Exception:
+                            _attach_input_desktop()
+                            grab_ok = False
+
+                    if grab_ok:
+                        buf_idx = (buf_idx + 1) % 2
+                        # Защита от задержки: если предыдущий кадр ещё в очереди, сбрасываем его
+                        if frame_queue.full():
+                            try:
+                                frame_queue.get_nowait()
+                            except queue.Empty:
+                                pass
+                        try:
+                            frame_queue.put_nowait(cur_vf)
+                        except Exception:
+                            pass
+
+                    next_cap += cap_interval
+                    sleep_time = next_cap - time.perf_counter()
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+                    elif sleep_time < -cap_interval:
+                        next_cap = time.perf_counter()
+
+            cap_thread = threading.Thread(target=capture_worker, name="pc-capture-worker", daemon=True)
+            cap_thread.start()
+
             frame_idx = 0
-            next_frame_time = time.perf_counter()
 
             while True:
                 try:
-                    raw_shot = sct.grab(mon)
-                except Exception:
-                    _attach_input_desktop()
-                    try:
-                        sct.close()
-                        sct = mss.MSS()
-                        raw_shot = sct.grab(mon)
-                    except Exception:
-                        time.sleep(0.04)
-                        continue
+                    vf = frame_queue.get(timeout=1.0)
+                except queue.Empty:
+                    if stop_capture.is_set():
+                        break
+                    continue
 
                 try:
-                    arr_bgra = np.frombuffer(raw_shot.raw, dtype=np.uint8).reshape((raw_shot.height, raw_shot.width, 4))
-                    vf = av.VideoFrame.from_ndarray(arr_bgra, format="bgra").reformat(
+                    # Быстрое SIMD масштабирование и конвертация цвета
+                    yuv = vf.reformat(
                         width=target_w,
                         height=target_h_even,
                         format="yuv420p",
@@ -1219,16 +1361,16 @@ def screen_h264_stream():
                         dst_color_range=ColorRange.MPEG,
                         interpolation=Interpolation.FAST_BILINEAR
                     )
-                    vf.pts = frame_idx
+                    yuv.pts = frame_idx
 
                     # Гарантируем ключевой кадр IDR с SPS/PPS в начале и раз в секунду
                     if frame_idx == 0 or (frame_idx % target_fps == 0):
-                        vf.pict_type = av.video.frame.PictureType.I
+                        yuv.pict_type = av.video.frame.PictureType.I
                     else:
-                        vf.pict_type = av.video.frame.PictureType.NONE
+                        yuv.pict_type = av.video.frame.PictureType.NONE
                     frame_idx += 1
 
-                    for pkt in codec_ctx.encode(vf):
+                    for pkt in codec_ctx.encode(yuv):
                         payload = bytes(pkt)
                         if not payload:
                             continue
@@ -1244,16 +1386,12 @@ def screen_h264_stream():
                 except Exception as e:
                     log_error("h264_encode_loop", e)
 
-                # Прецизионный drift-компенсирующий тайминг кадра
-                next_frame_time += frame_interval
-                now = time.perf_counter()
-                sleep_sec = next_frame_time - now
-                if sleep_sec > 0:
-                    time.sleep(sleep_sec)
-                elif sleep_sec < -frame_interval:
-                    # Защита от накопления задержки и пакетного взрыва
-                    next_frame_time = now
         finally:
+            stop_capture.set()
+            if cap_thread is not None and cap_thread.is_alive():
+                cap_thread.join(timeout=0.4)
+            if dib_capturer is not None:
+                dib_capturer.close()
             if has_winmm:
                 try:
                     ctypes.windll.winmm.timeEndPeriod(1)
@@ -1270,7 +1408,12 @@ def screen_h264_stream():
                 except Exception:
                     pass
 
-    return Response(generate_h264_stream(), mimetype="video/x-h264")
+    resp = Response(generate_h264_stream(), mimetype="video/x-h264")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    resp.headers["Connection"] = "close"
+    return resp
 
 
 @streaming_bp.route("/screen/volume", methods=["GET", "POST"])
