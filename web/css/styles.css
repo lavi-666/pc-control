@@ -616,6 +616,14 @@
   .conn-field-wrap .conn-field{
     margin-bottom:0; flex:1; min-width:0;
   }
+  .conn-field.conn-masked{
+    -webkit-text-security:disc !important;
+    text-security:disc !important;
+  }
+  .conn-field.conn-masked.conn-revealed{
+    -webkit-text-security:none !important;
+    text-security:none !important;
+  }
   .conn-sec-btn{
     width:36px !important; height:36px !important; min-width:36px !important; max-width:36px !important;
     padding:0 !important; margin:0 !important; border-radius:10px !important;

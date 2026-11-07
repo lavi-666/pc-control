@@ -667,7 +667,7 @@ const PC_MAC_ADDRESS = '';
 
       <div class="settings-field-label" data-i18n="server_lan_lbl">IP-адрес домашней сети (Wi-Fi):</div>
       <div class="conn-field-wrap">
-        <input type="password" class="conn-field" id="connLanHostInput" placeholder="http://192.168.0.100:5000" data-i18n-placeholder="server_lan_placeholder" oninput="onLanHostInputChange(this.value)">
+        <input type="text" class="conn-field conn-masked" id="connLanHostInput" placeholder="http://192.168.0.100:5000" data-i18n-placeholder="server_lan_placeholder" oninput="onLanHostInputChange(this.value)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
         <button type="button" class="conn-sec-btn eye-btn" id="btnEyeLanInp" onclick="toggleConnSecret('lanInp')" title="Показать / скрыть">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
@@ -684,7 +684,7 @@ const PC_MAC_ADDRESS = '';
 
       <div class="settings-field-label" data-i18n="server_vpn_lbl">IP-адрес Tailscale (VPN):</div>
       <div class="conn-field-wrap">
-        <input type="password" class="conn-field" id="connVpnHostInput" placeholder="http://100.64.0.1:5000" data-i18n-placeholder="server_vpn_placeholder">
+        <input type="text" class="conn-field conn-masked" id="connVpnHostInput" placeholder="http://100.64.0.1:5000" data-i18n-placeholder="server_vpn_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
         <button type="button" class="conn-sec-btn eye-btn" id="btnEyeVpnInp" onclick="toggleConnSecret('vpnInp')" title="Показать / скрыть">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
@@ -701,7 +701,7 @@ const PC_MAC_ADDRESS = '';
 
       <div class="settings-field-label" data-i18n="server_custom_lbl">Свой IP-адрес или домен сервера:</div>
       <div class="conn-field-wrap">
-        <input type="password" class="conn-field" id="connCustomHostInput" placeholder="например, http://192.168.0.100:5000" data-i18n-placeholder="server_custom_placeholder">
+        <input type="text" class="conn-field conn-masked" id="connCustomHostInput" placeholder="например, http://192.168.0.100:5000" data-i18n-placeholder="server_custom_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
         <button type="button" class="conn-sec-btn eye-btn" id="btnEyeCustomInp" onclick="toggleConnSecret('customInp')" title="Показать / скрыть">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
@@ -718,7 +718,7 @@ const PC_MAC_ADDRESS = '';
 
       <div class="settings-field-label" data-i18n="server_mac_lbl">MAC-адрес ПК для Wake-on-LAN:</div>
       <div class="conn-field-wrap">
-        <input type="password" class="conn-field" id="connMacInput" placeholder="например, AA-BB-CC-DD-EE-FF" data-i18n-placeholder="server_mac_placeholder">
+        <input type="text" class="conn-field conn-masked" id="connMacInput" placeholder="например, AA-BB-CC-DD-EE-FF" data-i18n-placeholder="server_mac_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
         <button type="button" class="conn-sec-btn eye-btn" id="btnEyeMacInp" onclick="toggleConnSecret('macInp')" title="Показать / скрыть">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
@@ -735,7 +735,7 @@ const PC_MAC_ADDRESS = '';
 
       <div class="settings-field-label" data-i18n="server_token_lbl">Пароль доступа к серверу:</div>
       <div class="conn-field-wrap">
-        <input type="password" class="conn-field" id="connTokenInput" placeholder="Пароль (по умолчанию вшит)" data-i18n-placeholder="server_token_placeholder">
+        <input type="text" class="conn-field conn-masked" id="connTokenInput" placeholder="Пароль (по умолчанию вшит)" data-i18n-placeholder="server_token_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
         <button type="button" class="conn-sec-btn eye-btn" id="btnEyeTokenInp" onclick="toggleConnSecret('tokenInp')" title="Показать / скрыть">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
@@ -756,7 +756,7 @@ const PC_MAC_ADDRESS = '';
 
       <div class="settings-field-label" data-i18n="server_relay_lbl">Ретранслятор включения (WOL в Tailscale):</div>
       <div class="conn-field-wrap">
-        <input type="password" class="conn-field" id="connRelayInput" placeholder="http://100.64.0.2:5050" data-i18n-placeholder="server_relay_placeholder">
+        <input type="text" class="conn-field conn-masked" id="connRelayInput" placeholder="http://100.64.0.2:5050" data-i18n-placeholder="server_relay_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
         <button type="button" class="conn-sec-btn eye-btn" id="btnEyeRelayInp" onclick="toggleConnSecret('relayInp')" title="Показать / скрыть">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>

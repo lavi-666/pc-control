@@ -414,6 +414,14 @@
     flex: 1;
     min-width: 0;
   }
+  .modal-input.pwd-masked {
+    -webkit-text-security: disc !important;
+    text-security: disc !important;
+  }
+  .modal-input.pwd-masked.pwd-revealed {
+    -webkit-text-security: none !important;
+    text-security: none !important;
+  }
   .modal-input-wrap .secret-action-btn {
     width: 36px;
     height: 36px;
@@ -2180,7 +2188,7 @@
       The new password will be saved in config.json and applied to all mobile app and web remote connections.
     </div>
     <div class="modal-input-wrap">
-      <input type="password" class="modal-input" id="pwdInput" placeholder="Enter new password" data-i18n-ph="pwd_placeholder">
+      <input type="text" class="modal-input pwd-masked" id="pwdInput" placeholder="Enter new password" data-i18n-ph="pwd_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="pc_auth_token_field" onkeydown="if(event.key==='Enter'){event.preventDefault();submitNewPassword();}">
       <button type="button" class="secret-action-btn eye-toggle-btn" id="btnEyePwdModal" onclick="togglePwdModalEye()" title="Show / Hide" data-i18n-title="tip_toggle_val">
         <span class="sec-icon-stack">
           <svg class="sec-svg icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
@@ -3959,7 +3967,7 @@
     const input = document.getElementById('pwdInput');
     const btn = document.getElementById('btnEyePwdModal');
     if (input) {
-      input.type = revealedFields.pwdModal ? 'text' : 'password';
+      input.classList.toggle('pwd-revealed', !!revealedFields.pwdModal);
     }
     if (btn) {
       btn.classList.toggle('revealed', !!revealedFields.pwdModal);
@@ -3978,11 +3986,13 @@
     const input = document.getElementById('pwdInput');
     const btnEye = document.getElementById('btnEyePwdModal');
     revealedFields.pwdModal = false;
-    input.type = 'password';
+    if (input) {
+      input.classList.remove('pwd-revealed');
+      input.value = currentStatus.token || '';
+    }
     if (btnEye) btnEye.classList.remove('revealed');
-    input.value = currentStatus.token || '';
     modal.classList.add('open');
-    input.focus();
+    if (input) input.focus();
   }
 
   function closePasswordModal() {
@@ -4027,7 +4037,7 @@
     const input = document.getElementById('pwdInput');
     if (input) {
       input.value = rand;
-      input.type = 'text';
+      input.classList.add('pwd-revealed');
       const btnEye = document.getElementById('btnEyePwdModal');
       if (btnEye) btnEye.classList.add('revealed');
       revealedFields.pwdModal = true;

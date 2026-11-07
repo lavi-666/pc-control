@@ -671,7 +671,9 @@ function syncConnInputEyes(){
     const inp = document.getElementById(item.inpId);
     const btn = document.getElementById(item.btnId);
     const rev = !!connSecState[item.key];
-    if (inp) inp.type = rev ? 'text' : 'password';
+    if (inp) {
+      inp.classList.toggle('conn-revealed', rev);
+    }
     if (btn) btn.classList.toggle('revealed', rev);
   });
 }
