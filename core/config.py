@@ -60,27 +60,23 @@ def auto_detect_network_params() -> dict:
 
     if not vpn_ip and platform.system() == "Windows":
         try:
-            cmd = 'powershell -NoProfile -Command "Get-NetIPAddress -InterfaceAlias *Tailscale* -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress"'
-            out = subprocess.check_output(cmd, shell=True, text=True, timeout=4, creationflags=NO_WINDOW).strip()
+            cmd = [str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"), "-NoProfile", "-Command", 'Get-NetIPAddress -InterfaceAlias *Tailscale* -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress']
+            out = subprocess.check_output(cmd, env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}, stderr=subprocess.DEVNULL, text=True, timeout=4, creationflags=NO_WINDOW).strip()
             if out:
                 vpn_ip = out.splitlines()[0].strip()
         except Exception:
             pass
 
-    mac_address = "AA-BB-CC-DD-EE-FF"
-    if platform.system() == "Windows":
-        try:
-            cmd = 'powershell -NoProfile -Command "Get-NetAdapter | Where-Object { $_.Status -eq \'Up\' -and $_.InterfaceDescription -notmatch \'Virtual|Tailscale|WSL|Hyper-V\' } | Select-Object -First 1 -ExpandProperty MacAddress"'
-            out = subprocess.check_output(cmd, shell=True, text=True, timeout=4, creationflags=NO_WINDOW).strip()
-            if out and re.match(r"^[0-9A-Fa-f]{2}(-[0-9A-Fa-f]{2}){5}$", out):
-                mac_address = out.upper()
-        except Exception:
-            pass
+    from scripts.network_setup import detect_network
+    detected = detect_network()
+    lan_ip = detected['lan_ip']
+    mac_address = detected['mac_address']
 
     # Генерируем криптографически стойкий 16-значный токен для нового конфига
     gen_token = secrets.token_hex(8)
 
     return {
+        "auto_network": True,
         "token": gen_token,
         "lan_ip": lan_ip,
         "vpn_ip": vpn_ip,

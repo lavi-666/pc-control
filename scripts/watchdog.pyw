@@ -164,7 +164,7 @@ def spawn_server():
         pythonw = Path(sys.executable)
 
     subprocess.Popen(
-        [str(pythonw), str(SERVER_SCRIPT)],
+        [str(pythonw), "-E", "-s", str(SERVER_SCRIPT)],
         cwd=str(BASE_DIR),
         creationflags=NO_WINDOW,
         close_fds=True,

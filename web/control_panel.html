@@ -949,6 +949,24 @@
   .action-box:active {
     transform: scale(0.96);
   }
+  button.action-box {
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    color: inherit;
+    width: 100%;
+    margin: 0;
+  }
+  .action-box:disabled,
+  .action-box.disabled,
+  .action-box[disabled] {
+    opacity: 0.45;
+    cursor: not-allowed;
+    pointer-events: none;
+    filter: grayscale(0.6);
+    transform: none !important;
+    box-shadow: none !important;
+  }
 
   /* Анимация выполнения (Running / Busy) */
   @keyframes actionBoxPulse {
@@ -1738,10 +1756,7 @@
           </button>
         </div>
       </div>
-      <div style="display:flex; gap:6px; margin-top:6px;">
-        <button class="stat-btn" id="btnChangePwd" onclick="openPasswordModal()" data-i18n="btn_change" style="flex:1;">Change</button>
-        <button class="stat-btn" id="btnRotateToken" onclick="handleRotateToken(this)" data-i18n="btn_rotate_token" title="Rotate Token" style="flex:1;" data-i18n-title="tip_rotate_token">Rotate</button>
-      </div>
+      <button class="stat-btn" id="btnChangePwd" onclick="openPasswordModal()" data-i18n="btn_change">Change</button>
     </div>
   </div>
 
@@ -1758,7 +1773,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         </div>
         <div class="update-banner-text">
-          <span class="update-banner-title" id="updateBannerTitle" data-i18n="update_banner_title">A new version of PC Control is available</span>
+          <span class="update-banner-title" id="updateBannerTitle" data-i18n="update_banner_title">Project files have an update</span>
           <span class="update-banner-desc" id="updateBannerDesc"></span>
         </div>
       </div>
@@ -1966,12 +1981,16 @@
         <div class="action-box-desc" id="txtActWebDesc" data-i18n="act_web_desc">Open browser control interface</div>
       </div>
 
-      <div class="action-box" onclick="runAction('rebuild_apk', {}, this)">
+      <button type="button" class="action-box" id="btnConnectPhone" onclick="openPhoneSetup(this)">
+        <div class="action-box-title" data-i18n="phone_title">Connect phone · QR</div>
+        <div class="action-box-desc" data-i18n="phone_intro">Scan, open the remote and download APK</div>
+      </button>
+      <div class="action-box" onclick="location.href='/download/apk'">
         <div class="action-box-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
         </div>
-        <div class="action-box-title" id="txtActApkTitle" data-i18n="act_apk_title">Rebuild Android APK</div>
-        <div class="action-box-desc" id="txtActApkDesc" data-i18n="act_apk_desc">Bake current IP & token into APK</div>
+        <div class="action-box-title" id="txtActApkTitle" data-i18n="act_apk_title">Download Android APK</div>
+        <div class="action-box-desc" id="txtActApkDesc" data-i18n="act_apk_desc">Download the ready-to-install mobile app</div>
       </div>
 
       <div class="action-box" onclick="runAction('open_folder', {}, this)">
@@ -1982,7 +2001,21 @@
         <div class="action-box-desc" id="txtActFolderDesc" data-i18n="act_folder_desc">Open File Explorer with project files</div>
       </div>
 
-      <button class="btn btn-secondary" onclick="openNetworkSettings()" data-i18n="network_settings">Network settings</button>
+      <button type="button" class="action-box" id="btnBuildApk" disabled onclick="runAction('rebuild_apk', {}, this)" title="Developer build requires android_app sources and .android_sdk. Use Download Android APK for normal installation." data-i18n-title="tip_build_apk">
+        <div class="action-box-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+        </div>
+        <div class="action-box-title" id="txtActBuildTitle" data-i18n="act_build_apk_title">Build APK (SDK)</div>
+        <div class="action-box-desc" id="txtActBuildDesc" data-i18n="act_build_apk_desc">Compile from source & sign APK</div>
+      </button>
+
+      <div class="action-box" onclick="openNetworkSettings()" title="Configure server port, IP addresses and firewall rule" data-i18n-title="tip_net_settings">
+        <div class="action-box-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#06b6d4" stroke-width="2"><rect x="9" y="2" width="6" height="6" rx="1"></rect><rect x="2" y="16" width="6" height="6" rx="1"></rect><rect x="16" y="16" width="6" height="6" rx="1"></rect><line x1="12" y1="8" x2="12" y2="12"></line><line x1="5" y1="16" x2="5" y2="12"></line><line x1="19" y1="16" x2="19" y2="12"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </div>
+        <div class="action-box-title" id="txtActNetTitle" data-i18n="act_net_title">Network Settings</div>
+        <div class="action-box-desc" id="txtActNetDesc" data-i18n="act_net_desc">Port, IP binding & firewall rules</div>
+      </div>
       <div class="action-box" onclick="openCorsModal()">
         <div class="action-box-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
@@ -1996,7 +2029,7 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
         </div>
         <div class="action-box-title" id="txtActUpdateTitle" data-i18n="act_update_title">Check Updates</div>
-        <div class="action-box-desc" id="txtActUpdateDesc" data-i18n="act_update_desc">Check latest commits on GitHub</div>
+        <div class="action-box-desc" id="txtActUpdateDesc" data-i18n="act_update_desc">Check all project files on GitHub</div>
       </div>
 
       <div class="action-box" onclick="handleCleanProfiles(this)">
@@ -2153,12 +2186,24 @@
 </div>
 
 <!-- Модальное окно настройки CORS -->
+<div class="modal-backdrop" id="phoneModal" onclick="if(event.target===this)closePhoneSetup()">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="phoneTitle" style="max-height:90vh;overflow:auto">
+    <h3 id="phoneTitle" data-i18n="phone_title">Connect phone · QR</h3>
+    <p data-i18n="phone_steps"></p>
+    <img id="phoneQr" alt="QR" style="display:block;width:240px;max-width:100%;height:auto;margin:16px auto;background:white">
+    <p id="phoneAddress" style="overflow-wrap:anywhere"></p>
+    <p id="phoneFirewall"></p>
+    <p data-i18n="phone_apk_note"></p>
+    <button type="button" class="btn btn-secondary" onclick="closePhoneSetup()" data-i18n="btn_cancel">Close</button>
+  </div>
+</div>
 <div class="modal-backdrop" id="networkModal" onclick="if(event.target===this)this.classList.remove('open')">
   <form class="modal-dialog" style="max-height:90vh;overflow-y:auto" onsubmit="event.preventDefault(); saveNetworkSettings(this)">
     <h2 data-i18n="network_settings">Network settings</h2>
     <p data-i18n="network_hint">Stop the server before changing its port. Apply the firewall rule again after saving.</p>
     <div id="networkFields" style="display:grid;gap:12px"></div>
     <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" id="btnDetectNetwork" onclick="detectNetworkSettings(this)" data-i18n="network_auto">Auto IP / MAC / VPN</button>
       <button type="button" class="btn btn-secondary" onclick="openNetworkSettings()" data-i18n="network_reload">Reload saved</button>
       <button type="button" class="btn btn-secondary" onclick="document.getElementById('networkModal').classList.remove('open')" data-i18n="btn_cancel">Cancel</button>
       <button type="submit" class="btn btn-primary" data-i18n="btn_save">Save</button>
@@ -2321,10 +2366,16 @@
       act_restart_desc: "Apply code and config changes",
       act_web_title: "Web Remote Control",
       act_web_desc: "Open browser control interface",
-      act_apk_title: "Rebuild Android APK",
-      act_apk_desc: "Bake current IP & token into APK",
+      act_apk_title: "Download Android APK",
+      act_apk_desc: "Download the ready-to-install mobile app",
       act_folder_title: "Project Directory",
       act_folder_desc: "Open File Explorer with project files",
+      act_build_apk_title: "Build APK (SDK)",
+      act_build_apk_desc: "Compile from source & sign APK",
+      act_net_title: "Network Settings",
+      act_net_desc: "Port, IP binding & firewall rules",
+      tip_build_apk: "Developer build requires android_app sources and .android_sdk. Use Download Android APK for normal installation.",
+      tip_net_settings: "Configure server port, IP addresses and firewall rule",
       console_title: "CONSOLE OUTPUT",
       busy_hint: "(Running task...)",
       btn_clear: "Clear",
@@ -2395,15 +2446,15 @@
       act_cors_title: "CORS Security",
       act_cors_desc: "Configure allowed domains & subnets",
       act_update_title: "Check Updates",
-      act_update_desc: "Check latest commits on GitHub",
+      act_update_desc: "Check all project files on GitHub",
       act_clean_title: "Clean Cache",
       act_clean_desc: "Free disk space in %LOCALAPPDATA%",
       toast_token_rotated: "Access token rotated successfully!",
       toast_cors_saved: "CORS allowed origins saved!",
       toast_cache_cleaned: "Browser cache cleaned! Freed: ",
       toast_up_to_date: "You are currently using the latest version.",
-      toast_update_available: "A new version of PC Control is available",
-      update_banner_title: "A new version of PC Control is available",
+      toast_update_available: "Project files have an update",
+      update_banner_title: "Project files have an update",
       btn_update_now: "Update Now",
       toast_downloading_update: "Downloading update from GitHub...",
       toast_update_success: "Update installed! Restarting launcher...",
@@ -2489,10 +2540,16 @@
       act_restart_desc: "Применить изменения в коде и конфиге",
       act_web_title: "Веб-пульт управления",
       act_web_desc: "Открыть страницу управления в браузере",
-      act_apk_title: "Пересобрать Android APK",
-      act_apk_desc: "Вшить текущие IP и пароль в APK",
+      act_apk_title: "Скачать Android APK",
+      act_apk_desc: "Готовое приложение для установки на телефон",
       act_folder_title: "Папка проекта",
       act_folder_desc: "Открыть проводник с файлами сервера",
+      act_build_apk_title: "Сборка APK (SDK)",
+      act_build_apk_desc: "Сборка из исходников и подпись",
+      act_net_title: "Настройки сети",
+      act_net_desc: "Порт сервера, IP и брандмауэр",
+      tip_build_apk: "Сборка для разработчиков требует исходники android_app и .android_sdk. Для обычной установки используйте «Скачать Android APK».",
+      tip_net_settings: "Настройка порта сервера, IP-адресов и правила брандмауэра",
       console_title: "CONSOLE OUTPUT",
       busy_hint: "(Выполняется действие...)",
       btn_clear: "Очистить",
@@ -2570,8 +2627,8 @@
       toast_cors_saved: "Настройки CORS сохранены!",
       toast_cache_cleaned: "Кэш браузеров очищен! Освобождено: ",
       toast_up_to_date: "Вы используете последнюю версию программы.",
-      toast_update_available: "Доступна новая версия PC Control",
-      update_banner_title: "Доступна новая версия PC Control",
+      toast_update_available: "Доступно обновление файлов проекта",
+      update_banner_title: "Доступно обновление файлов проекта",
       btn_update_now: "Обновить сейчас",
       toast_downloading_update: "Загрузка обновления из GitHub...",
       toast_update_success: "Обновление успешно установлено! Перезапуск лаунчера...",
@@ -2657,10 +2714,16 @@
       act_restart_desc: "Застосувати зміни в коді та конфігу",
       act_web_title: "Веб-пульт керування",
       act_web_desc: "Відкрити сторінку керування у браузері",
-      act_apk_title: "Перезібрати Android APK",
-      act_apk_desc: "Вшити поточні IP та пароль в APK",
+      act_apk_title: "Завантажити Android APK",
+      act_apk_desc: "Готовий застосунок для встановлення на телефон",
       act_folder_title: "Папка проекту",
       act_folder_desc: "Відкрити провідник з файлами сервера",
+      act_build_apk_title: "Збірка APK (SDK)",
+      act_build_apk_desc: "Збірка з вихідних файлів і підпис",
+      act_net_title: "Налаштування мережі",
+      act_net_desc: "Порт сервера, IP та брандмауер",
+      tip_build_apk: "Збірка для розробників вимагає вихідний код android_app та .android_sdk. Для звичайного встановлення використовуйте «Завантажити Android APK».",
+      tip_net_settings: "Налаштування порту сервера, IP-адрес та правила брандмауера",
       console_title: "CONSOLE OUTPUT",
       busy_hint: "(Виконується дія...)",
       btn_clear: "Очистити",
@@ -2738,8 +2801,8 @@
       toast_cors_saved: "Налаштування CORS збережено!",
       toast_cache_cleaned: "Кеш браузерів очищено! Звільнено: ",
       toast_up_to_date: "Ви використовуєте останню версію програми.",
-      toast_update_available: "Доступна нова версія PC Control",
-      update_banner_title: "Доступна нова версія PC Control",
+      toast_update_available: "Доступне оновлення файлів проєкту",
+      update_banner_title: "Доступне оновлення файлів проєкту",
       btn_update_now: "Оновити зараз",
       toast_downloading_update: "Завантаження оновлення з GitHub...",
       toast_update_success: "Оновлення успішно встановлено! Перезапуск лаунчера...",
@@ -2752,6 +2815,57 @@
   Object.assign(I18N.ru, {network_settings: 'Настройки сети', network_reload: 'Вернуть сохранённые', network_hint: 'Перед сменой порта остановите сервер. После сохранения заново примените правило брандмауэра.'});
   Object.assign(I18N.uk, {network_settings: 'Налаштування мережі', network_reload: 'Відновити збережені', network_hint: 'Перед зміною порту зупиніть сервер. Після збереження повторно застосуйте правило брандмауера.'});
 
+  Object.assign(I18N.en, {phone_title:'Connect phone · QR', phone_intro:'Scan, open the remote and download APK', phone_steps:'Connect the phone and PC to the same Wi-Fi/router. Scan with the phone camera, open the link, then tap Download APK.', phone_apk_note:'Android: allow installation from this browser if prompted. In the installed app, enter the PC address shown here and the access password from the launcher. The QR grants access to the web remote; it does not configure the installed APK. Keep this QR private.', phone_firewall:'If the link does not open: apply the firewall rule in the launcher, check the LAN IP in Network settings, and disable guest Wi-Fi isolation.', phone_invalid:'Set a reachable LAN IPv4 address in Network settings first.'});
+  Object.assign(I18N.ru, {phone_title:'Подключить телефон · QR', phone_intro:'Сканировать, открыть пульт и скачать APK', phone_steps:'Подключите телефон и ПК к одному Wi-Fi/роутеру. Сканируйте камерой телефона, откройте ссылку и нажмите «Скачать APK».', phone_apk_note:'Android: разрешите установку из браузера, если появится запрос. В установленном приложении укажите адрес ПК ниже QR и пароль доступа из лаунчера. QR подключает веб-пульт, но не настраивает установленный APK. Не передавайте QR посторонним.', phone_firewall:'Если ссылка не открывается: примените правило брандмауэра в лаунчере, проверьте LAN IP в настройках сети и изоляцию гостевого Wi-Fi.', phone_invalid:'Сначала укажите доступный LAN IPv4 в настройках сети.'});
+  Object.assign(I18N.uk, {phone_title:'Підключити телефон · QR', phone_intro:'Сканувати, відкрити пульт і завантажити APK', phone_steps:'Підключіть телефон і ПК до одного Wi-Fi/роутера. Скануйте камерою телефона, відкрийте посилання та натисніть «Завантажити APK».', phone_apk_note:'Android: дозвольте встановлення з браузера, якщо з’явиться запит. У застосунку вкажіть адресу ПК під QR і пароль доступу з лаунчера. QR підключає вебпульт, але не налаштовує встановлений APK. Не передавайте QR стороннім.', phone_firewall:'Якщо посилання не відкривається: застосуйте правило брандмауера в лаунчері, перевірте LAN IP у налаштуваннях мережі та ізоляцію гостьового Wi-Fi.', phone_invalid:'Спочатку вкажіть доступну LAN IPv4 у налаштуваннях мережі.'});
+  function closePhoneSetup() {
+    document.getElementById('phoneModal').classList.remove('open');
+    document.getElementById('phoneQr').removeAttribute('src');
+  }
+  async function openPhoneSetup(button) {
+    button.disabled = true;
+    const dict = I18N[currentLang] || I18N.en;
+    try {
+      await fetchStatus();
+      const ip = currentStatus && currentStatus.lan_ip;
+      const parts = String(ip || '').split('.');
+      if (parts.length !== 4 || parts.some(p => !/^\d{1,3}$/.test(p) || +p > 255) || +parts[0] === 0 || +parts[0] === 127 || +parts[0] >= 224) throw new Error(dict.phone_invalid);
+      if (!currentStatus.server_running) {
+        const result = await runAction('start_server');
+        if (!result || !result.ok) return;
+        await fetchStatus();
+      }
+      const base = 'http://' + currentStatus.lan_ip + ':' + currentStatus.port;
+      const target = base + '/?token=' + encodeURIComponent(currentStatus.token) + '&lang=' + encodeURIComponent(currentLang);
+      const img = document.getElementById('phoneQr');
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error('QR image could not be loaded'));
+        img.src = 'http://127.0.0.1:' + currentStatus.port + '/api/qr?url=' + encodeURIComponent(target);
+      });
+      document.getElementById('phoneAddress').textContent = base;
+      document.getElementById('phoneFirewall').textContent = dict.phone_firewall;
+      document.getElementById('phoneModal').classList.add('open');
+    } catch (error) { showToast(error.message, '', 'error', 7000); }
+    finally { button.disabled = false; }
+  }
+  Object.assign(I18N.en, {network_auto:'Auto IP / MAC / VPN', network_hint:'Auto detects and saves IP/MAC/VPN and keeps them updated. Editing IP/MAC/VPN switches to manual addresses. Stop the server before changing its port; reapply the firewall rule after changing ports.'});
+  Object.assign(I18N.ru, {network_auto:'Авто IP / MAC / VPN', network_hint:'Авто определяет, сохраняет и обновляет IP/MAC/VPN. Правка IP/MAC/VPN включает ручные адреса. Перед сменой порта остановите сервер; после смены примените правило брандмауэра заново.'});
+  Object.assign(I18N.uk, {network_auto:'Авто IP / MAC / VPN', network_hint:'Авто визначає, зберігає та оновлює IP/MAC/VPN. Зміна IP/MAC/VPN вмикає ручні адреси. Перед зміною порту зупиніть сервер; після зміни застосуйте правило брандмауера знову.'});
+  let networkDetectionPending = false;
+  async function detectNetworkSettings(button) {
+    if (networkDetectionPending) return;
+    networkDetectionPending = true;
+    const controls = document.querySelectorAll('#networkModal input, #networkModal button');
+    controls.forEach(el => { el.disabled = true; });
+    try {
+      const result = await runAction('detect_network', {}, button);
+      if (result.ok) { await openNetworkSettings(); await fetchStatus(); }
+    } finally {
+      controls.forEach(el => { el.disabled = false; });
+      networkDetectionPending = false;
+    }
+  }
   async function openNetworkSettings() {
     const data = await runAction('get_settings');
     if (!data.ok) return;
@@ -2767,7 +2881,7 @@
       input.value = data.settings[key] ?? '';
       input.type = key.includes('port') ? 'number' : 'text';
       if (input.type === 'number') { input.min = '1'; input.max = '65535'; input.step = '1'; input.required = true; }
-      if (key === 'mac_address') input.required = true;
+      if (key === 'mac_address') input.placeholder = 'Not detected / Не определён';
       label.appendChild(input);
       fields.appendChild(label);
     }
@@ -2791,6 +2905,9 @@
 
   let currentLang = 'en';
   let currentStatus = {};
+  let lifecyclePending = false;
+  let statusRequestId = 0;
+  let lastUpdateNotice = '';
   let consoleCollapsed = true;
   let revealedFields = { lan: false, vpn: false, token: false, pwdModal: false };
 
@@ -2984,10 +3101,12 @@
   }
 
   async function fetchStatus() {
+    const requestId = ++statusRequestId;
     try {
       const res = await fetch('/api/status');
       if (!res.ok) return;
       const data = await res.json();
+      if (requestId !== statusRequestId) return;
       currentStatus = data;
 
       // Если в localStorage нет сохраненного языка, берем язык из конфигурации сервера
@@ -3022,6 +3141,29 @@
   }
 
   function renderUI(data) {
+    const updateState = data.full_update_status;
+    let updateProgress = document.getElementById('fullUpdateProgress');
+    if (!updateProgress) {
+      updateProgress = document.createElement('div');
+      updateProgress.id = 'fullUpdateProgress';
+      updateProgress.setAttribute('role', 'status');
+      updateProgress.style.cssText = 'padding:12px 16px;margin:12px 0;border:1px solid var(--border);border-radius:12px';
+      document.getElementById('updateBanner').after(updateProgress);
+    }
+    updateProgress.hidden = !updateState;
+    if (updateState) updateProgress.textContent = updateState.message;
+    if (updateState && lastUpdateNotice !== updateState.phase + ':' + updateState.time) {
+      lastUpdateNotice = updateState.phase + ':' + updateState.time;
+      const terminal = ['complete', 'rolled_back', 'failed', 'recovery_required'].includes(updateState.phase);
+      if (terminal) showToast('Обновление проекта', updateState.message, updateState.phase === 'complete' ? 'success' : 'error', 15000);
+      const updateButton = document.getElementById('btnUpdateNow');
+      if (updateButton) updateButton.title = updateState.message;
+    }
+    const btnBuild = document.getElementById("btnBuildApk");
+    if (btnBuild) {
+      btnBuild.disabled = !data.apk_build_available;
+      btnBuild.classList.toggle('disabled', !data.apk_build_available);
+    }
     const dict = I18N[currentLang] || I18N.en;
 
     // 1. Верхний статус
@@ -3029,6 +3171,7 @@
     const topTxt = document.getElementById('topStatusText');
     const servVal = document.getElementById('serverStateVal');
     const toggleBtn = document.getElementById('btnToggleServer');
+    toggleBtn.disabled = lifecyclePending;
 
     if (data.server_running) {
       topDot.className = 'status-dot online';
@@ -3088,7 +3231,7 @@
         const descEl = document.getElementById('updateBannerDesc');
         if (descEl && uInfo.latest_commit) {
           const msg = uInfo.commit_message ? `(${uInfo.commit_message.substring(0, 48)})` : '';
-          descEl.textContent = `v${uInfo.latest_commit} ${msg}`;
+          descEl.textContent = uInfo.message || `${uInfo.latest_commit} ${msg}`;
         }
       } else if (!uInfo || !uInfo.has_update || isDismissed) {
         if (!updateBanner.classList.contains('manual-open')) {
@@ -3314,6 +3457,12 @@
   }
 
   async function runAction(action, payload = {}, callerEl = null) {
+    const lifecycleAction = ['start_server', 'stop_server', 'restart_server'].includes(action);
+    if (lifecycleAction && lifecyclePending) return {ok: false, message: 'Server operation already running'};
+    if (lifecycleAction) {
+      lifecyclePending = true;
+      document.getElementById('btnToggleServer').disabled = true;
+    }
     const dict = I18N[currentLang] || I18N.en;
     if (!callerEl && window.event && window.event.currentTarget) {
       callerEl = window.event.currentTarget;
@@ -3336,7 +3485,7 @@
     } else if (action === 'restart_server') {
       activePendingToast = showToast(dict.act_restart_title, dict.toast_restart_server, 'info', 0);
     } else if (action === 'rebuild_apk') {
-      activePendingToast = showToast(dict.act_apk_title, dict.toast_rebuild_apk, 'info', 0);
+      activePendingToast = showToast(dict.act_build_apk_title || dict.act_apk_title, dict.toast_rebuild_apk, 'info', 0);
       if (consoleCollapsed) toggleConsole();
     } else if (action === 'install_deps') {
       activePendingToast = showToast(dict.toast_task_started, dict.busy_hint, 'info', 0);
@@ -3394,6 +3543,11 @@
         setTimeout(() => callerEl.classList.remove('running'), 450);
       }
       fetchLogs();
+      if (lifecycleAction) {
+        await fetchStatus();
+        lifecyclePending = false;
+        document.getElementById('btnToggleServer').disabled = false;
+      }
       setTimeout(fetchStatus, 400);
       setTimeout(fetchStatus, 1600);
     }
@@ -3461,8 +3615,9 @@
     }
   }
 
-  function openRemoteStandalone() {
-    runAction('open_web_standalone', { lang: currentLang });
+  async function openRemoteStandalone() {
+    const result = await runAction('open_web_standalone', { lang: currentLang });
+    if (!result.ok) return;
     closeRemoteView();
     const dict = I18N[currentLang] || I18N.en;
     showToast(dict.toast_remote_standalone, '', 'ok', 3000);
@@ -3767,11 +3922,12 @@
   async function handleApplyUpdate(callerEl) {
     const dict = I18N[currentLang] || I18N.en;
     if (callerEl) callerEl.classList.add('running');
+    if (callerEl) callerEl.disabled = true;
     const dlToast = showToast(dict.toast_downloading_update || 'Downloading update...', '', 'info', 0);
     try {
       const res = await runAction('apply_update', {}, callerEl);
       if (res && res.ok) {
-        showToast(res.message || dict.toast_update_success || 'Update complete! Restarting...', '', 'ok', 6000);
+        showToast(res.message, '', res.restarting ? 'info' : 'success', 10000);
         dismissUpdateBanner();
       } else {
         showToast((res && res.message) || dict.toast_update_failed || 'Failed to apply update', '', 'err', 4500);
@@ -3781,6 +3937,7 @@
     } finally {
       if (dlToast) dlToast.dismiss();
       if (callerEl) callerEl.classList.remove('running');
+      if (callerEl) callerEl.disabled = false;
     }
   }
 
@@ -3797,11 +3954,11 @@
           updateBanner.style.display = 'flex';
           const descEl = document.getElementById('updateBannerDesc');
           if (descEl && res.latest_commit) {
-            descEl.textContent = `v${res.latest_commit} ${res.commit_message || ''}`;
+            descEl.textContent = res.message || `${res.latest_commit} ${res.commit_message || ''}`;
           }
           updateBanner.scrollIntoView({ behavior: 'smooth' });
         }
-        showToast(dict.toast_update_available || 'A new version of PC Control is available', res.commit_message || '', 'ok', 4000);
+        showToast(dict.toast_update_available || 'Project files have an update', res.commit_message || '', 'ok', 4000);
       } else {
         showToast(dict.toast_up_to_date || 'You are currently using the latest version.', `(${res.current_commit || 'v2.0.1'})`, 'ok', 3500);
       }

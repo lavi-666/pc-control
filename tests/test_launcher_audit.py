@@ -45,6 +45,18 @@ class LauncherAudit(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_port_change_preserves_auto_network_but_manual_address_disables_it(self):
+        cfg = dict(self.initial, auto_network=True)
+        self.cfg_file.write_text(json.dumps(cfg), encoding='utf-8')
+        settings = {k: cfg[k] for k in ('lan_ip', 'vpn_ip', 'mac_address', 'wol_relay_ip', 'port', 'relay_port')}
+        settings['port'] = 8199
+        with patch.object(panel, 'is_server_running', return_value=False):
+            self.assertTrue(self.request({'action': 'save_settings', 'settings': settings})[1]['ok'])
+        self.assertTrue(json.loads(self.cfg_file.read_text())['auto_network'])
+        settings['lan_ip'] = '192.168.1.77'
+        self.assertTrue(self.request({'action': 'save_settings', 'settings': settings})[1]['ok'])
+        self.assertFalse(json.loads(self.cfg_file.read_text())['auto_network'])
+
     def test_foreign_origin_cannot_read_secret(self):
         status, _, headers = self.request(method='GET', path='/api/status', headers={'Origin': 'https://evil.example'})
         self.assertEqual(status, 403)
@@ -158,6 +170,45 @@ class LauncherAudit(unittest.TestCase):
         (runtime / 'python.exe').touch()
         with patch.object(panel, 'get_pythonw_path', return_value=str(runtime / 'pythonw.exe')):
             self.assertEqual(panel.get_python_cli_path(), str(runtime / 'python.exe'))
+
+    def test_firewall_indicator_requires_active_rule_for_current_port(self):
+        rule = 'v2.30|Name=PC Control Server|Active=TRUE|Action=Allow|Dir=In|Protocol=6|LPort=5000|'
+        self.assertTrue(panel.firewall_rule_matches(rule, 5000))
+        self.assertFalse(panel.firewall_rule_matches(rule, 5001))
+        self.assertFalse(panel.firewall_rule_matches(rule.replace('TRUE', 'FALSE'), 5000))
+        self.assertFalse(panel.firewall_rule_matches(rule.replace('Allow', 'Block'), 5000))
+
+    def test_busy_installer_does_not_claim_task_started(self):
+        panel._background_lock.acquire()
+        try:
+            status, result, _ = self.request({'action': 'install_deps'})
+            self.assertEqual(status, 409)
+            self.assertFalse(result['ok'])
+        finally:
+            panel._background_lock.release()
+
+    def test_failed_profile_removal_is_reported(self):
+        import os
+        profile = Path(self.temp.name) / 'PCControl' / 'EdgeProfile'
+        profile.mkdir(parents=True)
+        with patch.dict(os.environ, {'LOCALAPPDATA': self.temp.name}), patch.object(panel.shutil, 'rmtree', side_effect=PermissionError('in use')):
+            result = panel.clean_browser_profiles()
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['removed_items'], [])
+        self.assertEqual(result['freed_bytes'], 0)
+
+    def test_status_uses_saved_lan_address(self):
+        with patch.object(panel, 'get_local_ip', return_value='192.168.99.99'), patch.object(panel, 'get_tailscale_info', return_value={}), patch.object(panel, 'is_firewall_configured', return_value=False), patch.object(panel, 'check_python_deps', return_value={}), patch.object(panel, 'get_windows_hello_status', return_value={}):
+            status, data, _ = self.request(method='GET', path='/api/status')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['lan_ip'], self.initial['lan_ip'])
+        self.assertIn(self.initial['lan_ip'], data['server_url'])
+
+    def test_legacy_app_uses_saved_port_and_encodes_password(self):
+        import runpy
+        legacy = runpy.run_path(str(Path(__file__).resolve().parent.parent / 'open_app.pyw'))
+        with patch.object(panel, 'load_config_data', return_value={'port': 6123, 'token': 'pass&?#'}):
+            self.assertEqual(legacy['get_app_url'](), 'http://127.0.0.1:6123/?token=pass%26%3F%23')
 
 
 if __name__ == '__main__':

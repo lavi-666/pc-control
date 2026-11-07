@@ -27,9 +27,12 @@ echo [1/4] Завершение запущенных процессов PC Contr
 cd /d "%~dp0"
 if not exist "logs" mkdir "logs" >nul 2>&1
 echo manual_stop> "logs\manual_stop.flag"
-taskkill /f /im Launcher.exe >nul 2>&1
-taskkill /f /im streamer.exe >nul 2>&1
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*control_panel.py*' -or $_.CommandLine -like '*server.py*' -or $_.CommandLine -like '*watchdog.pyw*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+if not exist "runtime\python.exe" (
+    echo [ERROR] Private runtime missing. Cannot safely stop application processes.
+    exit /b 1
+)
+"runtime\python.exe" -E -s scripts\manage_server.py stop-all
+if errorlevel 1 exit /b 1
 echo   - Процессы остановлены.
 
 echo.

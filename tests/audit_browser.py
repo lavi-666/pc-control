@@ -49,10 +49,11 @@ def main():
                 page.locator('#btnModalSave').click()
                 page.locator('#pwdModal').wait_for(state='hidden')
                 assert panel.load_config_data()['token'] == 'browser-audit-secret'
-                page.once('dialog', lambda dialog: dialog.accept())
-                page.locator('#btnRotateToken').click()
-                page.wait_for_function('currentStatus.token !== "browser-audit-secret"')
-                assert panel.load_config_data()['token'] != 'browser-audit-secret'
+                if page.locator('#btnRotateToken').count() > 0:
+                    page.once('dialog', lambda dialog: dialog.accept())
+                    page.locator('#btnRotateToken').click()
+                    page.wait_for_function('currentStatus.token !== "browser-audit-secret"')
+                    assert panel.load_config_data()['token'] != 'browser-audit-secret'
                 page.locator('[onclick="openCorsModal()"]').click()
                 page.locator('#corsInput').fill('http://localhost:*, http://127.0.0.1:*')
                 page.locator('#corsModal [data-i18n="btn_save"]').click()

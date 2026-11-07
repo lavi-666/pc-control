@@ -55,3 +55,6 @@ push.bat
 /dist/
 /runtime/
 /.runtime-setup-*/
+/.pccontrol-update.pending
+/release-manifest.json
+/docs/screenshots/

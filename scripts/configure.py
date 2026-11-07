@@ -46,8 +46,8 @@ def detect_tailscale_ip():
                 pass
 
     try:
-        cmd = 'powershell -NoProfile -Command "Get-NetIPAddress -InterfaceAlias *Tailscale* -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress"'
-        out = subprocess.check_output(cmd, shell=True, text=True, timeout=4).strip()
+        cmd = [str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"), "-NoProfile", "-Command", 'Get-NetIPAddress -InterfaceAlias *Tailscale* -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress']
+        out = subprocess.check_output(cmd, env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}, stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
         if out:
             return out.splitlines()[0].strip()
     except Exception:
@@ -58,8 +58,8 @@ def detect_tailscale_ip():
 
 def detect_mac_address():
     try:
-        cmd = 'powershell -NoProfile -Command "Get-NetAdapter | Where-Object { $_.Status -eq \'Up\' -and $_.InterfaceDescription -notmatch \'Virtual|Tailscale|WSL|Hyper-V\' } | Select-Object -First 1 -ExpandProperty MacAddress"'
-        out = subprocess.check_output(cmd, shell=True, text=True, timeout=4).strip()
+        cmd = [str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"), "-NoProfile", "-Command", "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'Virtual|Tailscale|WSL|Hyper-V' } | Select-Object -First 1 -ExpandProperty MacAddress"]
+        out = subprocess.check_output(cmd, env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}, stderr=subprocess.DEVNULL, text=True, timeout=4).strip()
         if out and re.match(r"^[0-9A-Fa-f]{2}(-[0-9A-Fa-f]{2}){5}$", out):
             return out.upper()
     except Exception:
@@ -88,8 +88,9 @@ def load_config():
 
 
 def save_config(cfg):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    from control_panel import save_config_data, validate_network_settings
+    cfg.update(validate_network_settings(cfg))
+    save_config_data(cfg)
 
 
 def update_source_file(file_path, cfg):
@@ -146,24 +147,11 @@ def main():
         cfg["mac_address"] = val.upper()
 
     print("\nSaving configuration...")
+    cfg['auto_network'] = False
     save_config(cfg)
 
-    print("Updating server and web interface files...")
-    update_source_file(BASE_DIR / "web" / "index.html", cfg)
-    update_source_file(BASE_DIR / "server.py", cfg)
-    update_source_file(BASE_DIR / "android_app" / "assets" / "index.html", cfg)
-
-    # Rebuild APK if build_apk.py exists
-    build_script = BASE_DIR / "scripts" / "build_apk.py"
-    if not build_script.exists():
-        build_script = BASE_DIR / "build_apk.py"
-    if build_script.exists():
-        print("Rebuilding PC_Control.apk with new settings...")
-        try:
-            res = subprocess.run([sys.executable, str(build_script)], capture_output=True, text=True, check=True)
-            print("APK successfully rebuilt and signed!")
-        except Exception as e:
-            print(f"Warning: Could not rebuild APK automatically: {e}")
+    print("Settings saved. Enter the server address and password in the client settings.")
+    print("No source files or APK rebuild are required.")
 
     print("=" * 70)
     print("                      SETUP COMPLETED SUCCESSFULLY!                    ")

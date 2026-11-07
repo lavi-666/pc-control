@@ -9,6 +9,7 @@ PC Control - Панель управления и запуска (Control Center
 
 import http.server
 import hashlib
+import functools
 import ipaddress
 import json
 import os
@@ -87,7 +88,7 @@ def validate_network_settings(data):
             ipaddress.IPv4Address(value)
         result[key] = value
     mac = data.get("mac_address", "")
-    if not isinstance(mac, str) or not re.fullmatch(r"[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}", mac.strip()):
+    if not isinstance(mac, str) or (mac.strip() and not re.fullmatch(r"[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}", mac.strip())):
         raise ValueError("Invalid MAC address")
     result["mac_address"] = mac.strip().upper().replace(":", "-")
     return result
@@ -100,6 +101,22 @@ _action_logs = [
 ]
 _is_busy = False
 _busy_action = ""
+_background_lock = threading.Lock()
+_lifecycle_lock = threading.RLock()
+
+
+def serialize_lifecycle(operation):
+    @functools.wraps(operation)
+    def run(*args, **kwargs):
+        if _is_busy and _busy_action == "Full project update":
+            return False, "ERR_SYSTEM_BUSY", "Обновление проекта", "Дождитесь завершения обновления."
+        if not _lifecycle_lock.acquire(blocking=False):
+            return False, "ERR_SYSTEM_BUSY", "Операция уже выполняется", "Дождитесь завершения запуска или остановки сервера."
+        try:
+            return operation(*args, **kwargs)
+        finally:
+            _lifecycle_lock.release()
+    return run
 
 
 def append_log(line: str):
@@ -467,16 +484,6 @@ def get_tailscale_info() -> dict:
     peers = []
     backend_state = "Stopped"
 
-    # Чистый Python поиск IP Tailscale через сетевые адаптеры
-    try:
-        hostname = socket.gethostname()
-        for candidate_ip in socket.gethostbyname_ex(hostname)[2]:
-            if candidate_ip.startswith("100."):
-                ip = candidate_ip
-                break
-    except Exception:
-        pass
-
     # Расширенный опрос параметров через tailscale.exe status --json
     if ts_cli and ts_cli.is_file():
         try:
@@ -494,11 +501,11 @@ def get_tailscale_info() -> dict:
                 device_name = self_node.get("HostName", "")
                 magic_dns = self_node.get("DNSName", "").rstrip(".")
                 ts_ips = data.get("TailscaleIPs") or self_node.get("TailscaleIPs") or []
-                if ts_ips and not ip:
-                    ip = ts_ips[0]
+                if ts_ips:
+                    ip = next((v for v in ts_ips if ':' not in v), '')
                 users = data.get("User") or {}
                 if users:
-                    first_user = next(iter(users.values()), {})
+                    first_user = users.get(str(self_node.get("UserID", "")), {})
                     account = first_user.get("LoginName") or first_user.get("DisplayName", "")
                 raw_peers = data.get("Peer") or {}
                 for p in raw_peers.values():
@@ -512,7 +519,7 @@ def get_tailscale_info() -> dict:
         except Exception:
             pass
 
-    is_running = bool(ip) or backend_state == "Running"
+    is_running = backend_state == "Running" and bool(ip)
     is_installed = bool((ts_cli and ts_cli.is_file()) or (ts_gui and ts_gui.is_file()) or is_running or bins.get("installed"))
 
     if not is_installed:
@@ -563,11 +570,20 @@ def is_server_running(port: int | None = None) -> bool:
 
 _cached_fw_ok = False
 _cached_fw_time = 0.0
+_cached_fw_port = None
+
+
+def firewall_rule_matches(value, port):
+    fields = dict(part.split("=", 1) for part in str(value).split("|") if "=" in part)
+    return (fields.get("Name") == "PC Control Server" and fields.get("Active", "").upper() == "TRUE"
+            and fields.get("Action") == "Allow" and fields.get("Dir") == "In"
+            and fields.get("Protocol") == "6" and fields.get("LPort") == str(port))
 
 def is_firewall_configured() -> bool:
-    global _cached_fw_ok, _cached_fw_time
+    global _cached_fw_ok, _cached_fw_time, _cached_fw_port
+    port = load_config_data().get("port", 5000)
     now = time.time()
-    if now - _cached_fw_time < 2.0:
+    if now - _cached_fw_time < 2.0 and port == _cached_fw_port:
         return _cached_fw_ok
 
     if platform.system() != "Windows":
@@ -588,7 +604,7 @@ def is_firewall_configured() -> bool:
             found = False
             for i in range(num_values):
                 val_name, val_data, _ = winreg.EnumValue(key, i)
-                if "PC Control Server" in val_name or "PC Control Server" in str(val_data):
+                if firewall_rule_matches(val_data, port):
                     found = True
                     break
             _cached_fw_ok = found
@@ -596,6 +612,7 @@ def is_firewall_configured() -> bool:
         _cached_fw_ok = False
 
     _cached_fw_time = now
+    _cached_fw_port = port
     return _cached_fw_ok
 
 
@@ -614,11 +631,17 @@ REQUIRED_PACKAGES = [
 
 _cached_deps = None
 _cached_deps_time = 0.0
+_deps_lock = threading.Lock()
 
 def check_python_deps() -> dict:
+    with _deps_lock:
+        return _check_python_deps()
+
+
+def _check_python_deps() -> dict:
     global _cached_deps, _cached_deps_time
     now = time.time()
-    if _cached_deps is not None and (now - _cached_deps_time < 3.0):
+    if _cached_deps is not None and (now - _cached_deps_time < 30.0):
         return _cached_deps
 
     # Probe the interpreter that actually runs the server. Importing into this
@@ -672,6 +695,32 @@ print(json.dumps(result))
     return _cached_deps
 
 
+_network_sync_time = 0.0
+
+
+def sync_network_settings(cfg, ts, force=False):
+    global _network_sync_time
+    if not force and time.monotonic() - _network_sync_time < 10:
+        return cfg
+    from scripts.network_setup import detect_network
+    with _settings_lock:
+        cfg = load_config_data()
+        before = dict(cfg)
+        if force:
+            cfg['auto_network'] = True
+        if cfg.get('auto_network', False):
+            detected = detect_network()
+            cfg.update(detected)
+        if ts.get('running') and (cfg.get('auto_network', False) or not cfg.get('vpn_ip')):
+            cfg['vpn_ip'] = ts['ip']
+        elif cfg.get('auto_network', False):
+            cfg['vpn_ip'] = ''
+        if cfg != before:
+            save_config_data(cfg)
+        _network_sync_time = time.monotonic()
+        return cfg
+
+
 def load_config_data() -> dict:
     with _settings_lock:
         return _load_config_data()
@@ -693,15 +742,10 @@ def _load_config_data() -> dict:
     ts = get_tailscale_info()
     vpn_ip = ts.get("ip", "") if ts.get("running") else ""
 
-    mac_address = "AA-BB-CC-DD-EE-FF"
-    if platform.system() == "Windows":
-        try:
-            cmd = 'powershell -NoProfile -Command "Get-NetAdapter | Where-Object { $_.Status -eq \'Up\' -and $_.InterfaceDescription -notmatch \'Virtual|Tailscale|WSL|Hyper-V\' } | Select-Object -First 1 -ExpandProperty MacAddress"'
-            out = subprocess.check_output(cmd, shell=True, text=True, timeout=3, creationflags=NO_WINDOW).strip()
-            if out and re.match(r"^[0-9A-Fa-f]{2}(-[0-9A-Fa-f]{2}){5}$", out):
-                mac_address = out.upper()
-        except Exception:
-            pass
+    from scripts.network_setup import detect_network
+    detected = detect_network()
+    lan_ip = detected['lan_ip']
+    mac_address = detected['mac_address']
 
     default_lang = "en"
     try:
@@ -715,6 +759,7 @@ def _load_config_data() -> dict:
         pass
 
     cfg = {
+        "auto_network": True,
         "token": secrets.token_hex(8),
         "lan_ip": lan_ip,
         "vpn_ip": vpn_ip,
@@ -752,8 +797,8 @@ def run_install_dependencies_task(auto_start_server: bool = False):
     При успехе автоматически запускает server.py и сторожевой процесс watchdog.
     """
     global _is_busy, _busy_action, _cached_deps_time
-    if _is_busy:
-        return
+    if not _background_lock.acquire(blocking=False):
+        return False
     _is_busy = True
     _busy_action = "Python Dependencies Installation"
     append_log("Starting installation of required Python libraries from requirements.txt...")
@@ -808,8 +853,10 @@ def run_install_dependencies_task(auto_start_server: bool = False):
             _is_busy = False
             _busy_action = ""
             _cached_deps_time = 0.0
+            _background_lock.release()
 
     threading.Thread(target=_worker, daemon=True).start()
+    return True
 
 
 _first_run_checked = False
@@ -832,6 +879,7 @@ def check_first_run_setup():
         append_log("[READY] Components verified. Use Start server when ready.")
 
 
+@serialize_lifecycle
 def start_server_process() -> tuple:
     """
     Выполняет запуск server.py и сторожевого таймера.
@@ -906,7 +954,7 @@ def start_server_process() -> tuple:
         out_f = open(stdout_path, "a", encoding="utf-8", errors="replace")
         try:
             proc = subprocess.Popen(
-                [pyw_bin, str(server_script)],
+                [pyw_bin, "-E", "-s", str(server_script)],
                 cwd=str(BASE_DIR),
                 creationflags=NO_WINDOW,
                 stdout=out_f,
@@ -923,7 +971,7 @@ def start_server_process() -> tuple:
                 pass
         watchdog_script = SCRIPTS_DIR / "watchdog.pyw"
         if watchdog_script.exists():
-            subprocess.Popen([pyw_bin, str(watchdog_script)], cwd=str(BASE_DIR), creationflags=NO_WINDOW)
+            subprocess.Popen([pyw_bin, "-E", "-s", str(watchdog_script)], cwd=str(BASE_DIR), creationflags=NO_WINDOW)
     except Exception as e:
         return (
             False,
@@ -1028,6 +1076,7 @@ def kill_processes_by_name(process_script: str):
         pass
 
 
+@serialize_lifecycle
 def stop_server_process() -> tuple:
     """
     Выполняет гарантированную остановку server.py и сторожевого таймера.
@@ -1084,6 +1133,7 @@ def stop_server_process() -> tuple:
         return (True, "", "", "Процессы сервера принудительно остановлены.")
 
 
+@serialize_lifecycle
 def restart_server_process() -> tuple:
     """
     Выполняет перезапуск сервера.
@@ -1111,8 +1161,12 @@ def save_token_everywhere(new_token: str):
 def clean_browser_profiles() -> dict:
     """Очищает временные профили и кэш браузеров из %LOCALAPPDATA%\\PCControl."""
     import shutil
-    local_app = Path(os.environ.get("LOCALAPPDATA", "")) / "PCControl"
+    local_root = os.environ.get("LOCALAPPDATA")
+    if not local_root or not Path(local_root).is_absolute():
+        return {"ok": False, "message": "LOCALAPPDATA is unavailable; no files were removed", "removed_items": [], "freed_mb": 0}
+    local_app = Path(local_root) / "PCControl"
     removed_items = []
+    failures = []
     freed_bytes = 0
     if local_app.exists():
         for item in local_app.iterdir():
@@ -1126,17 +1180,19 @@ def clean_browser_profiles() -> dict:
                                     size += os.path.getsize(os.path.join(root, f))
                                 except Exception:
                                     pass
-                        shutil.rmtree(item, ignore_errors=True)
+                        shutil.rmtree(item)
                     else:
                         size = item.stat().st_size
                         item.unlink(missing_ok=True)
                     freed_bytes += size
                     removed_items.append(item.name)
                 except Exception as e:
+                    failures.append(item.name)
                     append_log(f"Could not remove {item.name}: {e}")
     mb = round(freed_bytes / (1024 * 1024), 2)
     return {
-        "ok": True,
+        "ok": not failures,
+        "message": "Could not remove: " + ", ".join(failures) if failures else "Browser profiles cleaned",
         "freed_bytes": freed_bytes,
         "freed_mb": mb,
         "removed_items": removed_items
@@ -1179,358 +1235,34 @@ def find_git_binary() -> str:
 
 
 def check_github_updates() -> dict:
-    """
-    Проверяет наличие обновлений PC Control и Launcher.exe в официальных релизах GitHub:
-    https://github.com/lavi-666/pc-control/releases
-    Сверяет локальный SHA-256 с SHA256SUMS.txt из последнего релиза для исключения ложных срабатываний.
-    """
     global LATEST_UPDATE_INFO
-    import urllib.request
-    import urllib.error
-    import json
-    import hashlib
-
-    current_version = "2.0.1"
-    repo_url = "https://github.com/lavi-666/pc-control"
-    release_api = "https://api.github.com/repos/lavi-666/pc-control/releases/latest"
-    checksums_url = "https://github.com/lavi-666/pc-control/releases/latest/download/SHA256SUMS.txt"
-    download_url = "https://github.com/lavi-666/pc-control/releases/latest/download/Launcher.exe"
-
-    local_commit = ""
-    try:
-        git_bin = find_git_binary()
-        cmd = [git_bin if os.path.exists(git_bin) else "git", "rev-parse", "--short", "HEAD"]
-        local_commit = subprocess.check_output(cmd, cwd=str(BASE_DIR), text=True, timeout=2).strip()
-    except Exception:
-        pass
-
-    local_exe_hash = get_local_launcher_hash()
-    remote_version = ""
-    release_title = ""
-    release_date = ""
-    remote_exe_hash = ""
-    remote_exe_size = 0
-    has_update = False
-
-    # 1. Запрос информации о последнем релизе через GitHub API
-    try:
-        req = urllib.request.Request(release_api, headers={
-            "User-Agent": "PC-Control-Updater/2.0.1",
-            "Accept": "application/vnd.github.v3+json"
-        })
-        with urllib.request.urlopen(req, timeout=4.5) as resp:
-            if resp.status == 200:
-                rel_data = json.loads(resp.read().decode("utf-8"))
-                remote_version = rel_data.get("tag_name", "").lstrip("v")
-                release_title = rel_data.get("name") or (rel_data.get("body", "").splitlines()[0] if rel_data.get("body") else "")
-                release_date = rel_data.get("published_at", "")
-                for asset in rel_data.get("assets", []):
-                    if asset.get("name") == "Launcher.exe":
-                        remote_exe_size = asset.get("size", 0)
-                        if asset.get("browser_download_url"):
-                            download_url = asset.get("browser_download_url")
-                        break
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            # Релизы пока не созданы в репозитории
-            result = {
-                "ok": True,
-                "current_version": current_version,
-                "current_commit": local_commit or current_version,
-                "latest_commit": current_version,
-                "commit_message": "Релизы пока не опубликованы",
-                "commit_date": "",
-                "has_update": False,
-                "remote_exe_hash": "",
-                "remote_exe_size": 0,
-                "download_url": download_url,
-                "release_url": f"{repo_url}/releases",
-                "message": "You are currently using the latest version."
-            }
-            LATEST_UPDATE_INFO = result
-            return result
-        elif e.code == 403:
-            err_msg = "Превышен лимит запросов к GitHub API (HTTP 403). Попробуйте позже."
-            append_log(f"[Updater] {err_msg}")
-            return {
-                "ok": False,
-                "error_code": "ERR_RATE_LIMITED",
-                "message": err_msg,
-                "details": str(e),
-                "current_version": current_version,
-                "current_commit": local_commit or current_version,
-                "release_url": f"{repo_url}/releases"
-            }
-        err_msg = f"Не удалось связаться с сервером обновлений: {e}"
-        append_log(f"[Updater] {err_msg}")
-        return {
-            "ok": False,
-            "error_code": "ERR_GITHUB_UNREACHABLE",
-            "message": err_msg,
-            "details": str(e),
-            "current_version": current_version,
-            "current_commit": local_commit or current_version,
-            "release_url": f"{repo_url}/releases"
-        }
-    except Exception as e:
-        err_msg = f"Не удалось связаться с сервером обновлений: {e}"
-        append_log(f"[Updater] {err_msg}")
-        return {
-            "ok": False,
-            "error_code": "ERR_GITHUB_UNREACHABLE",
-            "message": err_msg,
-            "details": str(e),
-            "current_version": current_version,
-            "current_commit": local_commit or current_version,
-            "release_url": f"{repo_url}/releases"
-        }
-
-    # 2. Запрос контрольных сумм SHA256SUMS.txt из релиза для сопоставления с локальным файлом
-    try:
-        req_sums = urllib.request.Request(checksums_url, headers={
-            "User-Agent": "PC-Control-Updater/2.0.1",
-            "Accept": "text/plain"
-        })
-        with urllib.request.urlopen(req_sums, timeout=4.5) as resp:
-            if resp.status == 200:
-                sums_data = resp.read().decode("utf-8-sig", errors="replace")
-                for line in sums_data.splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    parts = line.split(None, 1)
-                    if len(parts) == 2:
-                        h, fpath = parts[0].strip(), parts[1].strip()
-                        fpath = fpath.lstrip("*").strip().replace("\\", "/")
-                        fname = fpath.split("/")[-1]
-                        if fname.lower() == "launcher.exe":
-                            remote_exe_hash = h.lower()
-                            break
-    except urllib.error.HTTPError as e:
-        if e.code == 403:
-            err_msg = "Превышен лимит запросов к GitHub API (HTTP 403) при получении SHA256SUMS.txt."
-            append_log(f"[Updater] {err_msg}")
-            return {
-                "ok": False,
-                "error_code": "ERR_RATE_LIMITED",
-                "message": err_msg,
-                "details": str(e),
-                "current_version": current_version,
-                "current_commit": local_commit or current_version,
-                "release_url": f"{repo_url}/releases"
-            }
-        err_msg = f"Ошибка получения файла контрольных сумм SHA256SUMS.txt: {e}"
-        append_log(f"[Updater] {err_msg}")
-        return {
-            "ok": False,
-            "error_code": "ERR_NO_CHECKSUM",
-            "message": err_msg,
-            "details": str(e),
-            "current_version": current_version,
-            "current_commit": local_commit or current_version,
-            "release_url": f"{repo_url}/releases"
-        }
-    except Exception as e:
-        err_msg = f"Ошибка сети при получении SHA256SUMS.txt: {e}"
-        append_log(f"[Updater] {err_msg}")
-        return {
-            "ok": False,
-            "error_code": "ERR_NO_CHECKSUM",
-            "message": err_msg,
-            "details": str(e),
-            "current_version": current_version,
-            "current_commit": local_commit or current_version,
-            "release_url": f"{repo_url}/releases"
-        }
-
-    # 3. Проверка наличия обновлений строго по источнику установки (релизу)
-    if remote_exe_hash and local_exe_hash:
-        has_update = (remote_exe_hash != local_exe_hash)
-    elif remote_version and remote_version != current_version:
-        has_update = True
-
-    result = {
-        "ok": True,
-        "current_version": current_version,
-        "current_commit": local_commit or current_version,
-        "latest_commit": remote_version or "release",
-        "commit_message": release_title or "Latest release",
-        "commit_date": release_date,
-        "has_update": has_update,
-        "remote_exe_hash": remote_exe_hash,
-        "remote_exe_size": remote_exe_size,
-        "download_url": download_url,
-        "release_url": f"{repo_url}/releases/latest",
-        "message": "A new version of PC Control is available" if has_update else "You are currently using the latest version."
-    }
-    LATEST_UPDATE_INFO = result
-    return result
+    from scripts import full_update
+    LATEST_UPDATE_INFO = full_update.check(BASE_DIR)
+    return LATEST_UPDATE_INFO
 
 
 def apply_github_update() -> dict:
-    """
-    Загружает актуальный проверенный Launcher.exe из официального релиза GitHub,
-    проверяет целостность по контрольной сумме SHA256SUMS.txt и PE-заголовкам,
-    и запускает scripts/updater.bat для безопасной замены исполняемого файла и перезапуска.
-    """
-    import urllib.request
-    import hashlib
-
-    # ВНИМАНИЕ: Проверка контрольной суммы SHA-256 из SHA256SUMS.txt в том же релизе
-    # защищает от повреждения файла при скачивании или рассинхронизации во время публикации релиза
-    # (от подмены в канале передачи данные защищены TLS/HTTPS).
-    # Однако сверка с хешем из того же релиза НЕ защищает от компрометации аккаунта автора
-    # (злоумышленник с доступом к репозиторию подменит и бинарник, и SHA256SUMS.txt).
-    # Для защиты от компрометации аккаунта необходима независимая цифровая подпись (Authenticode / minisign).
-
-    release_prefix = "https://github.com/lavi-666/pc-control/releases/latest/download/"
-    download_url = f"{release_prefix}Launcher.exe"
-    checksums_url = f"{release_prefix}SHA256SUMS.txt"
-
-    append_log(f"[Updater] Загрузка обновления из {download_url}...")
-
-    # 1. Скачивание во временный буфер
+    global _is_busy, _busy_action
+    from scripts import full_update
+    if not _background_lock.acquire(False):
+        return {"ok": False, "message": "Другая операция ещё выполняется."}
+    _is_busy, _busy_action = True, "Full project update"
+    restarting = False
     try:
-        req = urllib.request.Request(download_url, headers={
-            "User-Agent": "PC-Control-Updater/2.0.1",
-            "Accept": "application/octet-stream"
-        })
-        with urllib.request.urlopen(req, timeout=18.0) as resp:
-            if resp.status != 200:
-                return {
-                    "ok": False,
-                    "error_code": f"ERR_HTTP_{resp.status}",
-                    "message": f"Сервер вернул HTTP {resp.status} при загрузке обновления."
-                }
-            exe_data = resp.read()
-    except Exception as e:
-        append_log(f"[Updater] Ошибка загрузки: {e}")
-        return {
-            "ok": False,
-            "error_code": "ERR_DOWNLOAD_FAILED",
-            "message": f"Ошибка скачивания файла обновления: {e}"
-        }
+        result = full_update.prepare(BASE_DIR, CONTROL_PORT, is_server_running(), append_log)
+        restarting = bool(result.get('restarting'))
+        return result
+    finally:
+        if not restarting:
+            _is_busy, _busy_action = False, ""
+            _background_lock.release()
 
-    # 2. Скачивание файла контрольных сумм SHA256SUMS.txt
-    append_log(f"[Updater] Загрузка контрольных сумм из {checksums_url}...")
+
+def get_update_status():
     try:
-        req_sums = urllib.request.Request(checksums_url, headers={
-            "User-Agent": "PC-Control-Updater/2.0.1",
-            "Accept": "text/plain"
-        })
-        with urllib.request.urlopen(req_sums, timeout=10.0) as resp:
-            if resp.status != 200:
-                return {
-                    "ok": False,
-                    "error_code": "ERR_NO_CHECKSUM",
-                    "message": f"Файл контрольных сумм недоступен (HTTP {resp.status})."
-                }
-            sums_data = resp.read().decode("utf-8-sig", errors="replace")
-    except Exception as e:
-        append_log(f"[Updater] Ошибка загрузки контрольных сумм: {e}")
-        return {
-            "ok": False,
-            "error_code": "ERR_NO_CHECKSUM",
-            "message": f"Не удалось загрузить файл контрольных сумм SHA256SUMS.txt: {e}"
-        }
-
-    # 3. Поиск ожидаемого SHA-256 для Launcher.exe
-    expected_hash = None
-    for line in sums_data.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split(None, 1)
-        if len(parts) == 2:
-            h, fpath = parts[0].strip(), parts[1].strip()
-            # Допускаем '*' перед именем (бинарный режим sha256sum) и обратные слэши
-            fpath = fpath.lstrip("*").strip().replace("\\", "/")
-            fname = fpath.split("/")[-1]
-            if fname.lower() == "launcher.exe":
-                expected_hash = h.lower()
-                break
-
-    if not expected_hash:
-        return {
-            "ok": False,
-            "error_code": "ERR_NO_CHECKSUM",
-            "message": "В файле SHA256SUMS.txt отсутствует контрольная сумма для Launcher.exe."
-        }
-
-    # 4. Проверка контрольной суммы SHA-256
-    actual_hash = hashlib.sha256(exe_data).hexdigest().lower()
-    if actual_hash != expected_hash:
-        append_log(f"[Updater] Несовпадение контрольной суммы Launcher.exe: ожидалось {expected_hash}, получено {actual_hash}")
-        return {
-            "ok": False,
-            "error_code": "ERR_CHECKSUM_MISMATCH",
-            "message": f"Контрольная сумма файла обновления не совпадает (ожидалась {expected_hash[:8]}..., получена {actual_hash[:8]}...)."
-        }
-
-    # 5. Строгая проверка заголовков PE и размера
-    if len(exe_data) < 20480 or len(exe_data) > 52428800:
-        return {
-            "ok": False,
-            "error_code": "ERR_INVALID_SIZE",
-            "message": f"Некорректный размер файла обновления: {len(exe_data)} байт."
-        }
-
-    if exe_data[:2] != b"MZ":
-        return {
-            "ok": False,
-            "error_code": "ERR_CORRUPT_PE",
-            "message": "Файл обновления поврежден (отсутствует сигнатура MZ)."
-        }
-
-    pe_offset = int.from_bytes(exe_data[0x3C:0x40], byteorder="little")
-    if pe_offset + 4 > len(exe_data) or exe_data[pe_offset:pe_offset+4] != b"PE\0\0":
-        return {
-            "ok": False,
-            "error_code": "ERR_CORRUPT_PE",
-            "message": "Файл обновления поврежден (некорректный заголовок PE)."
-        }
-
-    # 6. Сохранение в Launcher.exe.new (только после прохождения всех проверок!)
-    new_exe = BASE_DIR / "Launcher.exe.new"
-    try:
-        new_exe.write_bytes(exe_data)
-    except Exception as e:
-        return {
-            "ok": False,
-            "error_code": "ERR_WRITE_FAILED",
-            "message": f"Не удалось сохранить временный файл обновления: {e}"
-        }
-
-    # 7. Запуск фонового скрипта updater.bat
-    updater_bat = BASE_DIR / "scripts" / "updater.bat"
-    if not updater_bat.exists():
-        return {
-            "ok": False,
-            "error_code": "ERR_UPDATER_MISSING",
-            "message": "Скрипт updater.bat не найден."
-        }
-
-    try:
-        cmd = ["cmd.exe", "/c", str(updater_bat), str(BASE_DIR), str(os.getpid())]
-        subprocess.Popen(
-            cmd,
-            cwd=str(BASE_DIR),
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP") else 0
-        )
-        append_log("[Updater] Скрипт updater.bat успешно запущен.")
-    except Exception as e:
-        append_log(f"[Updater] Ошибка запуска updater.bat: {e}")
-        return {
-            "ok": False,
-            "error_code": "ERR_UPDATER_LAUNCH",
-            "message": f"Не удалось запустить процесс обновления: {e}"
-        }
-
-    return {
-        "ok": True,
-        "message": "Обновление успешно загружено! Лаунчер перезапускается...",
-        "restarting": True
-    }
+        return json.loads((LOGS_DIR / 'update_status.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
 
 
 def get_windows_hello_status() -> dict:
@@ -1840,12 +1572,30 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/identity":
             self.send_json({"application": "PCControl", "instance": instance_id()})
             return
+        if path == "/download/apk":
+            apk = BASE_DIR / "PC_Control.apk"
+            if not apk.is_file():
+                self.send_json({"ok": False, "message": "PC_Control.apk is missing from the archive"}, 404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.android.package-archive")
+            self.send_header("Content-Disposition", 'attachment; filename="PC_Control.apk"')
+            self.send_header("Content-Length", str(apk.stat().st_size))
+            self.end_headers()
+            try:
+                with apk.open("rb") as stream:
+                    shutil.copyfileobj(stream, self.wfile)
+            except (ConnectionError, OSError):
+                pass
+            return
         elif path == "/api/status":
             cfg = load_config_data()
             port = int(cfg.get("port", 5000))
             server_up = is_server_running(port)
-            lan_ip = get_local_ip()
+            lan_ip = cfg.get("lan_ip") or get_local_ip()
             ts_info = get_tailscale_info()
+            cfg = sync_network_settings(cfg, ts_info)
+            lan_ip = cfg.get("lan_ip", "")
             fw_ok = is_firewall_configured()
             py_deps = check_python_deps()
 
@@ -1857,6 +1607,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "tailscale": ts_info,
                 "firewall_configured": fw_ok,
                 "python_deps": py_deps,
+                "apk_build_available": (BASE_DIR / "android_app" / "AndroidManifest.xml").is_file() and (BASE_DIR / ".android_sdk").is_dir(),
                 "windows_hello": get_windows_hello_status(),
                 "token": cfg.get("token", ""),
                 "mac_address": cfg.get("mac_address", "AA-BB-CC-DD-EE-FF"),
@@ -1871,7 +1622,8 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "is_busy": _is_busy,
                 "busy_action": _busy_action,
                 "setup_in_progress": bool(_is_busy and "Dependencies Installation" in _busy_action),
-                "update_info": LATEST_UPDATE_INFO
+                "update_info": LATEST_UPDATE_INFO,
+                "full_update_status": get_update_status()
             })
             return
 
@@ -1966,6 +1718,11 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/action":
             action = req_data.get("action", "")
 
+            if action == "detect_network":
+                cfg = sync_network_settings(load_config_data(), get_tailscale_info(), force=True)
+                self.send_json({"ok": bool(cfg.get("lan_ip")), "message": "Network detected" if cfg.get("lan_ip") else "No active LAN adapter found", "settings": cfg})
+                return
+
             if action == "get_settings":
                 cfg = load_config_data()
                 keys = ("lan_ip", "vpn_ip", "wol_relay_ip", "mac_address", "port", "relay_port")
@@ -1983,7 +1740,10 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     if settings["port"] != cfg.get("port", 5000) and is_server_running(int(cfg.get("port", 5000))):
                         self.send_json({"ok": False, "message": "Stop the server before changing its port / Сначала остановите сервер"}, 409)
                         return
+                    manual_addresses = any(settings[k] != cfg.get(k, '') for k in ('lan_ip', 'vpn_ip', 'mac_address'))
                     cfg.update(settings)
+                    if manual_addresses:
+                        cfg["auto_network"] = False
                     save_config_data(cfg)
                 self.send_json({"ok": True, "settings": settings})
                 return
@@ -2021,7 +1781,9 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 deps = check_python_deps()
                 if not deps.get("installed", False):
                     append_log("[FIRST RUN] Missing Python dependencies detected. Starting automated installation...")
-                    run_install_dependencies_task(auto_start_server=True)
+                    if not run_install_dependencies_task(auto_start_server=True):
+                        self.send_json({"ok": False, "message": "Another background task is already running"}, 409)
+                        return
                     self.send_json({
                         "ok": True,
                         "setup_started": True,
@@ -2068,8 +1830,8 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             if action == "install_deps":
-                run_install_dependencies_task(auto_start_server=True)
-                self.send_json({"ok": True, "message": "Dependencies installation started"})
+                started = run_install_dependencies_task(auto_start_server=True)
+                self.send_json({"ok": started, "message": "Dependencies installation started" if started else "Another background task is already running"}, 200 if started else 409)
                 return
 
             if action == "apply_firewall":
@@ -2218,7 +1980,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
 
             if action == "rebuild_apk":
                 global _is_busy, _busy_action
-                if _is_busy:
+                if not _background_lock.acquire(blocking=False):
                     self.send_json({
                         "ok": False,
                         "error_code": "ERR_SYSTEM_BUSY",
@@ -2233,6 +1995,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     script_path = BASE_DIR / "build_apk.py"
                 if not script_path.exists():
                     append_log("[ERROR] Script build_apk.py not found.")
+                    _background_lock.release()
                     self.send_json({
                         "ok": False,
                         "error_code": "ERR_SCRIPT_NOT_FOUND",
@@ -2293,10 +2056,25 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 finally:
                     _is_busy = False
                     _busy_action = ""
+                    _background_lock.release()
                 return
 
             if action == "launch_tailscale":
                 bins = find_tailscale_binaries()
+                if not bins.get("installed"):
+                    if not _background_lock.acquire(False):
+                        self.send_json({"ok": False, "message": "Another operation is running"}, 409)
+                        return
+                    try:
+                        from scripts.network_setup import download_tailscale
+                        installer = download_tailscale(BASE_DIR / "logs/installers")
+                        os.startfile(str(installer))
+                        self.send_json({"ok": True, "installer_launched": True, "message": "Tailscale: подтвердите установку Windows, затем войдите в аккаунт. IP подтянется автоматически."})
+                    except Exception as error:
+                        self.send_json({"ok": False, "message": "Tailscale installer: " + str(error)}, 500)
+                    finally:
+                        _background_lock.release()
+                    return
                 lang = req_data.get("lang") or "ru"
                 installer_file = None
                 for cand in [BASE_DIR / "tailscale-setup-1.102.4.exe"] + list(BASE_DIR.glob("tailscale-setup*.exe")):
@@ -2411,6 +2189,9 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                         except Exception:
                             pass
 
+                if not check_tailscale_web_accessible(target_url, timeout=1):
+                    self.send_json({"ok": False, "message": "Интерфейс Tailscale пока недоступен. Откройте значок Tailscale в трее, войдите в аккаунт и повторите."}, 503)
+                    return
                 # 4. Открываем окно приложения Tailscale
                 launched = launch_tailscale_app_window(target_url)
                 if launched:
@@ -2572,7 +2353,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
             if action == "apply_update":
                 res = apply_github_update()
                 self.send_json(res)
-                if res.get("ok"):
+                if res.get("ok") and res.get("restarting"):
                     threading.Timer(0.6, lambda: os._exit(0)).start()
                 return
 
@@ -2599,7 +2380,7 @@ def get_panel_html() -> bytes:
 
 
 def launch_browser_gui(url: str):
-    cache_bust_url = f"{url}/?v={int(time.time())}"
+    cache_bust_url = f"{url}/?v={int(time.time())}" + ("&show_update_banner=1" if "--check-update" in sys.argv else "")
     layout = get_desktop_window_layout()["launcher"]
     window_flags = [
         f"--window-position={layout['x']},{layout['y']}",

@@ -1,6 +1,8 @@
 param([string]$BaseDir = (Split-Path -Parent $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$env:PYTHONIOENCODING = 'utf-8'
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $BaseDir = [IO.Path]::GetFullPath($BaseDir)
 $pathHash = [Security.Cryptography.SHA256]::Create()
 $mutexSuffix = [BitConverter]::ToString($pathHash.ComputeHash([Text.Encoding]::UTF8.GetBytes($BaseDir.ToLowerInvariant()))).Replace('-', '')
@@ -12,7 +14,21 @@ $logDir = Join-Path $BaseDir 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logFile = Join-Path $logDir 'bootstrap.log'
 function Write-SetupLog([string]$Message) {
-    $Message | Out-File -LiteralPath $logFile -Append -Encoding utf8
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        try {
+            $Message | Out-File -LiteralPath $logFile -Append -Encoding utf8
+            return
+        } catch [IO.IOException] {
+            if ($attempt -eq 19) { throw }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+}
+function Get-SetupHash([string]$FilePath) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($FilePath)
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+    finally { $stream.Dispose(); $algorithm.Dispose() }
 }
 function Invoke-Runtime([string[]]$CommandArguments) {
     # Windows PowerShell 5 treats native stderr as ErrorRecord; pip warnings
@@ -42,7 +58,7 @@ try {
     Write-SetupLog 'Downloading Python (no system installation or administrator rights required)...'
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -UseBasicParsing -Uri $source.url -OutFile $archive -TimeoutSec 180
-    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $source.sha256) {
+    if ((Get-SetupHash $archive) -ne $source.sha256) {
         throw 'Python archive SHA-256 verification failed'
     }
     Write-SetupLog 'Verified Python archive. Extracting...'
@@ -58,7 +74,7 @@ try {
     Invoke-Runtime @('-I', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-warn-script-location', '--no-cache-dir', '--only-binary=:all:', '-r', (Join-Path $BaseDir 'requirements-runtime.lock'))
     Invoke-Runtime @('-I', '-m', 'pip', 'check')
     Invoke-Runtime @('-I', '-c', 'import flask, PIL, pycaw, comtypes, winsdk, aiortc, pyaudiowpatch, mss, qrcode, psutil, numpy; from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager')
-    @{ python = $source.python; source = $source.url; source_sha256 = $source.sha256; requirements_sha256 = (Get-FileHash (Join-Path $BaseDir 'requirements-runtime.lock')).Hash.ToLowerInvariant() } | ConvertTo-Json | Out-File (Join-Path $pythonDir 'pccontrol-runtime.json') -Encoding utf8
+    @{ python = $source.python; source = $source.url; source_sha256 = $source.sha256; requirements_sha256 = (Get-SetupHash (Join-Path $BaseDir 'requirements-runtime.lock')) } | ConvertTo-Json | Out-File (Join-Path $pythonDir 'pccontrol-runtime.json') -Encoding utf8
     Move-Item -LiteralPath $pythonDir -Destination $runtimeDir
     # Only this invocation's verified staging directory may be removed.
     if ((Split-Path -Parent ([IO.Path]::GetFullPath($stage))) -ne $BaseDir) { throw 'Invalid staging path' }

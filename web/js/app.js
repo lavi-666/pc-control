@@ -96,6 +96,7 @@ function getQrBaseHost() {
     if (curVpn && !curVpn.includes('127.0.0.1') && !curVpn.includes('localhost')) {
       return curVpn.replace(/\/+$/, '');
     }
+    return '';
   }
   // Домашняя сеть Wi-Fi (LAN)
   if (lanInfoCache && lanInfoCache.web_url && !lanInfoCache.web_url.includes('127.0.0.1') && !lanInfoCache.web_url.includes('localhost')) {
@@ -112,7 +113,7 @@ function getQrBaseHost() {
   if (origin && !origin.includes('127.0.0.1') && !origin.includes('localhost') && origin.startsWith('http')) {
     return origin.replace(/\/+$/, '');
   }
-  return 'http://192.168.0.100:5000';
+  return '';
 }
 
 function switchQrNetwork(net){
@@ -167,6 +168,13 @@ async function switchQrMode(mode){
 
   const tok = getToken();
   const baseHost = getQrBaseHost();
+  if (!baseHost) {
+    currentQrTargetUrl = '';
+    img.removeAttribute('src');
+    urlEl.innerText = '';
+    hint.innerText = 'LAN / VPN address is unavailable. Configure the network in the launcher.';
+    return;
+  }
 
   if (mode === 'web') {
     btnWeb.style.background = '#ff0033';
@@ -202,7 +210,7 @@ async function toggleQrModal(open){
     const btnEyeQr = document.getElementById('btnEyeQrUrl');
     if (btnEyeQr) btnEyeQr.classList.remove('revealed');
     try {
-      if (!lanInfoCache) {
+      {
         const res = await apiFetch('/api/lan_info');
         if (res && res.ok) {
           lanInfoCache = await res.json();

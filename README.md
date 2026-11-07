@@ -310,7 +310,7 @@ This starts the desktop control service on `http://127.0.0.1:5055` and opens a d
 Key launcher capabilities include:
 - **Automatic Startup Update Checks**: On startup, the launcher queries the official GitHub repository for updates. If a newer build is available, a dismissible non-intrusive banner appears: *"A new version of PC Control is available"*, with an **Update Now** button and an **✕** dismiss button.
 - **Manual Update Checks**: Clicking *"Check for Updates"* verifies availability and reports *"You are currently using the latest version."* when up to date.
-- **Detached In-Place Updater**: Clicking **Update Now** downloads the latest executable directly from GitHub, validates Portable Executable (PE) header integrity (`MZ` magic and `PE\0\0` headers), and invokes `scripts/updater.bat`. The updater process waits for the launcher to exit, safely swaps the executable, and relaunches the application.
+- **Full project updates through the launcher**: **Update Now** installs the official release package, including launcher, server, UI, modules and bundled dependencies. SHA-256 checks cover the archive and every managed file; even a single file change is detected independently of version numbers. User settings and pairings are preserved. A separate worker verifies startup and rolls back on failure; launching `Launcher.exe` recovers interrupted installations. Internet and at least 3 GB of free disk space are required (larger packages may require more).
 - **Browser Profile & Cache Cleaner**: One-click cleanup utility for temporary browser profiles and web cache files.
 - **Token Rotation**: Secure one-click generation and rotation of the access token without restarting the system.
 
@@ -512,7 +512,7 @@ All state-altering requests require authentication via the `X-Auth-Token` HTTP h
   - Inbound HTTP `Origin` headers are strictly validated against `cors_allowed_origins` in `config.json`.
   - Supports wildcard subnet patterns (`http://localhost:*`, `http://192.168.*`, `http://100.*`, `http://10.*`) for local LAN and Tailscale access. Requests from unauthorized origins are rejected with HTTP 403 Forbidden.
 - **Two-Point SHA-256 Release Integrity Verification**:
-  - Updates for `Launcher.exe` are sourced strictly from official GitHub Releases (`releases/latest/download/`) rather than mutable branches.
+  - Full updates come from official GitHub Releases and require `PC_Control_Windows.zip`, `release-manifest.json` and `SHA256SUMS.txt`. Legacy releases without these assets are not installed.
   - An official `SHA256SUMS.txt` manifest is parsed and validated in memory before any binary touches the file system (implemented across both Python `control_panel.py` and C# `Launcher.cs`).
   - Strict Portable Executable (PE) validation (`MZ` magic bytes, `PE\0\0` offset) and file size sanity checks (20 KB – 50 MB) are enforced.
   - Unauthenticated `git pull origin main` execution has been eliminated.

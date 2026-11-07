@@ -12,8 +12,8 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("PC Control")]
 [assembly: AssemblyDescription("PC Control Center Launcher")]
 [assembly: AssemblyCompany("PC Control")]
-[assembly: AssemblyVersion("2.0.1.0")]
-[assembly: AssemblyFileVersion("2.0.1.0")]
+[assembly: AssemblyVersion("2.4.0.0")]
+[assembly: AssemblyFileVersion("2.4.0.0")]
 
 static class Program
 {
@@ -65,7 +65,11 @@ static class Program
                     timer.Tick += delegate {
                         try {
                             string log = Path.Combine(baseDir, "logs", "bootstrap.log");
-                            if (File.Exists(log)) { output.Text = File.ReadAllText(log); output.SelectionStart = output.TextLength; output.ScrollToCaret(); }
+                            if (File.Exists(log)) {
+                                using (FileStream stream = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                                using (StreamReader reader = new StreamReader(stream)) { output.Text = reader.ReadToEnd(); }
+                                output.SelectionStart = output.TextLength; output.ScrollToCaret();
+                            }
                             if (process.HasExited) { success = process.ExitCode == 0; timer.Stop(); form.Close(); }
                         } catch (IOException) { }
                     };
@@ -89,12 +93,28 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
-        if (args.Length > 0 && (args[0] == "--check-update" || args[0] == "-u" || args[0] == "/update"))
+        // Updater verifies the executable can load before committing a transaction.
+        if (Array.IndexOf(args, "--update-self-test") >= 0) return;
+        bool showUpdate = Array.IndexOf(args, "--check-update") >= 0 || Array.IndexOf(args, "-u") >= 0 || Array.IndexOf(args, "/update") >= 0;
+        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        string pending = Path.Combine(baseDir, ".pccontrol-update.pending");
+        if (File.Exists(pending))
         {
-            CheckForUpdates(true);
+            try {
+                string job = Path.GetFullPath(File.ReadAllText(pending).Trim());
+                string parent = Directory.GetParent(baseDir.TrimEnd('\\')).FullName;
+                if (!string.Equals(Directory.GetParent(job).FullName, parent, StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(job).StartsWith(".pccontrol-update-"))
+                    throw new InvalidDataException("Invalid update recovery location");
+                ProcessStartInfo recovery = new ProcessStartInfo(Path.Combine(job, "runner", "python.exe"), "-I \"" + Path.Combine(job, "worker.py") + "\" --job \"" + job + "\" --recover");
+                recovery.UseShellExecute = false;
+                recovery.CreateNoWindow = true;
+                recovery.WorkingDirectory = job;
+                Process.Start(recovery);
+            } catch (Exception error) {
+                MessageBox.Show("Не удалось восстановить обновление: " + error.Message, "PC Control");
+            }
             return;
         }
-        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
         string scriptPath = Path.Combine(baseDir, "scripts", "control_panel.py");
 
         if (!File.Exists(scriptPath))
@@ -109,7 +129,7 @@ static class Program
             if (!IsOwnPanel(baseDir))
                 MessageBox.Show("Порт панели занят другой программой или другой копией PC Control. Закройте её и повторите запуск.", "PC Control", MessageBoxButtons.OK, MessageBoxIcon.Error);
             else if (Array.IndexOf(args, "--no-browser") < 0)
-                LaunchBrowser("http://127.0.0.1:" + CONTROL_PORT);
+                LaunchBrowser("http://127.0.0.1:" + CONTROL_PORT, showUpdate);
             return;
         }
 
@@ -126,6 +146,7 @@ static class Program
         psi.FileName = pythonwExe;
         psi.Arguments = "\"" + scriptPath + "\"";
         if (Array.IndexOf(args, "--no-browser") >= 0) psi.Arguments += " --no-browser";
+        if (showUpdate) psi.Arguments += " --check-update";
         psi.WorkingDirectory = baseDir;
         psi.UseShellExecute = false;
         psi.CreateNoWindow = true;
@@ -217,9 +238,9 @@ static class Program
         }
     }
 
-    static void LaunchBrowser(string url)
+    static void LaunchBrowser(string url, bool showUpdate = false)
     {
-        string cacheBustUrl = url + "/?v=" + DateTime.UtcNow.Ticks;
+        string cacheBustUrl = url + "/?v=" + DateTime.UtcNow.Ticks + (showUpdate ? "&show_update_banner=1" : "");
         int x, y, w, h;
         GetLauncherWindowLayout(out x, out y, out w, out h);
         string windowFlags = string.Format(" --window-position={0},{1} --window-size={2},{3} ", x, y, w, h);
@@ -284,184 +305,4 @@ static class Program
         }
     }
 
-    static bool CheckForUpdates(bool showPrompt)
-    {
-        try
-        {
-            System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072 | System.Net.SecurityProtocolType.Tls;
-            using (var wc = new System.Net.WebClient())
-            {
-                wc.Headers.Add("User-Agent", "PC-Control-Launcher/2.0.1");
-
-                string sumsUrl = "https://github.com/lavi-666/pc-control/releases/latest/download/SHA256SUMS.txt";
-                string downloadUrl = "https://github.com/lavi-666/pc-control/releases/latest/download/Launcher.exe";
-
-                string sumsText = wc.DownloadString(sumsUrl);
-                string expectedHash = null;
-                if (!string.IsNullOrEmpty(sumsText))
-                {
-                    if (sumsText.StartsWith("\uFEFF")) sumsText = sumsText.Substring(1);
-                    string[] lines = sumsText.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (string rawLine in lines)
-                    {
-                        string line = rawLine.Trim();
-                        if (line.Length == 0 || line.StartsWith("#")) continue;
-                        int firstSpace = line.IndexOfAny(new char[] { ' ', '\t' });
-                        if (firstSpace > 0)
-                        {
-                            string hash = line.Substring(0, firstSpace).Trim().ToLowerInvariant();
-                            string fpath = line.Substring(firstSpace).Trim().TrimStart('*').Trim().Replace('\\', '/');
-                            string fname = Path.GetFileName(fpath);
-                            if (string.Equals(fname, "Launcher.exe", StringComparison.OrdinalIgnoreCase))
-                            {
-                                expectedHash = hash;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if (string.IsNullOrEmpty(expectedHash))
-                {
-                    if (showPrompt)
-                    {
-                        MessageBox.Show(
-                            "Не удалось проверить обновления: в файле SHA256SUMS.txt отсутствует контрольная сумма для Launcher.exe.",
-                            "PC Control — Ошибка обновления",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Warning
-                        );
-                    }
-                    return false;
-                }
-
-                string currentExe = Assembly.GetExecutingAssembly().Location;
-                string localHash = "";
-                if (File.Exists(currentExe))
-                {
-                    using (var sha = System.Security.Cryptography.SHA256.Create())
-                    {
-                        byte[] bytes = File.ReadAllBytes(currentExe);
-                        byte[] hash = sha.ComputeHash(bytes);
-                        var sb = new System.Text.StringBuilder();
-                        foreach (byte b in hash) sb.Append(b.ToString("x2"));
-                        localHash = sb.ToString();
-                    }
-                }
-
-                bool hasUpdate = false;
-                if (!string.IsNullOrEmpty(localHash) && !string.IsNullOrEmpty(expectedHash))
-                {
-                    if (!string.Equals(localHash, expectedHash, StringComparison.OrdinalIgnoreCase))
-                    {
-                        hasUpdate = true;
-                    }
-                }
-
-                if (showPrompt)
-                {
-                    if (hasUpdate)
-                    {
-                        DialogResult dr = MessageBox.Show(
-                            "Доступна новая версия лаунчера PC Control!\n\n" +
-                            "Загрузить и применить обновление сейчас?",
-                            "PC Control — Доступно обновление",
-                            MessageBoxButtons.YesNo,
-                            MessageBoxIcon.Information
-                        );
-                        if (dr == DialogResult.Yes)
-                        {
-                            byte[] dlBytes = wc.DownloadData(downloadUrl);
-
-                            // 1. Обязательная проверка контрольной суммы SHA-256
-                            string dlHash = "";
-                            using (var sha = System.Security.Cryptography.SHA256.Create())
-                            {
-                                byte[] hash = sha.ComputeHash(dlBytes);
-                                var sb = new System.Text.StringBuilder();
-                                foreach (byte b in hash) sb.Append(b.ToString("x2"));
-                                dlHash = sb.ToString();
-                            }
-
-                            if (!string.Equals(dlHash, expectedHash, StringComparison.OrdinalIgnoreCase))
-                            {
-                                MessageBox.Show(
-                                    "Ошибка проверки целостности обновления!\n\nКонтрольная сумма SHA-256 не совпадает.\nОбновление отменено в целях безопасности.",
-                                    "PC Control — Ошибка целостности",
-                                    MessageBoxButtons.OK,
-                                    MessageBoxIcon.Error
-                                );
-                                return false;
-                            }
-
-                            // 2. Проверка размера и PE-заголовков
-                            if (dlBytes.Length < 20480 || dlBytes.Length > 52428800 || dlBytes[0] != 'M' || dlBytes[1] != 'Z')
-                            {
-                                MessageBox.Show(
-                                    "Файл обновления поврежден (некорректный размер или сигнатура MZ).",
-                                    "PC Control — Ошибка обновления",
-                                    MessageBoxButtons.OK,
-                                    MessageBoxIcon.Error
-                                );
-                                return false;
-                            }
-
-                            int peOffset = BitConverter.ToInt32(dlBytes, 0x3C);
-                            if (peOffset < 0 || peOffset + 4 > dlBytes.Length ||
-                                dlBytes[peOffset] != 'P' || dlBytes[peOffset + 1] != 'E' || dlBytes[peOffset + 2] != 0 || dlBytes[peOffset + 3] != 0)
-                            {
-                                MessageBox.Show(
-                                    "Файл обновления поврежден (некорректный заголовок PE).",
-                                    "PC Control — Ошибка обновления",
-                                    MessageBoxButtons.OK,
-                                    MessageBoxIcon.Error
-                                );
-                                return false;
-                            }
-
-                            // 3. Сохранение файла на диск только после успешных проверок
-                            string newExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Launcher.exe.new");
-                            File.WriteAllBytes(newExe, dlBytes);
-
-                            string updaterBat = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "scripts", "updater.bat");
-                            if (File.Exists(updaterBat))
-                            {
-                                string baseDirNoSlash = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
-                                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c \"" + updaterBat + "\" \"" + baseDirNoSlash + "\" " + Process.GetCurrentProcess().Id);
-                                psi.CreateNoWindow = true;
-                                psi.UseShellExecute = false;
-                                Process.Start(psi);
-                                Environment.Exit(0);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        MessageBox.Show(
-                            "Вы используете последнюю версию программы. (2.0.1)\n\n" +
-                            "Репозиторий PC Control актуален.",
-                            "PC Control — Обновления",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information
-                        );
-                    }
-                }
-                return true;
-            }
-        }
-        catch (Exception ex)
-        {
-            if (showPrompt)
-            {
-                MessageBox.Show(
-                    "Не удалось проверить обновления: сервер GitHub недоступен.\n\n" +
-                    "Проверьте подключение к интернету.\n(" + ex.Message + ")",
-                    "PC Control — Ошибка сети",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning
-                );
-            }
-        }
-        return false;
-    }
 }

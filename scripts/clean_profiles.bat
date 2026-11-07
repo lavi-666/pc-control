@@ -1,16 +1,9 @@
 @echo off
 chcp 65001 >nul
-title PC Control — Очистка профилей браузеров
-echo ======================================================================
-echo          ОЧИСТКА ВРЕМЕННЫХ ПРОФИЛЕЙ БРАУЗЕРОВ PC CONTROL             
-echo ======================================================================
-echo.
-echo Удаление профилей из %%LOCALAPPDATA%%\PCControl...
-if exist "%LOCALAPPDATA%\PCControl" (
-    rmdir /s /q "%LOCALAPPDATA%\PCControl" >nul 2>&1
-    echo [OK] Профили браузеров (Edge / Chrome) успешно очищены.
-) else (
-    echo [INFO] Папка %%LOCALAPPDATA%%\PCControl уже чиста.
+cd /d "%~dp0.."
+if not exist "runtime\python.exe" (
+    echo Private runtime missing. Run Launcher.exe first.
+    exit /b 1
 )
-echo.
-pause
+"runtime\python.exe" -E -s scripts\manage_server.py clean-profiles
+exit /b %ERRORLEVEL%

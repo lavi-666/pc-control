@@ -1,259 +1,185 @@
-import unittest
-from unittest.mock import patch, MagicMock
-import urllib.error
+"""Full-project update regressions, with disposable files and no network access."""
 import hashlib
-import sys
+import io
+import json
 from pathlib import Path
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BASE_DIR))
-
-from scripts.control_panel import (
-    check_github_updates,
-    apply_github_update,
-    get_local_launcher_hash
-)
+import tempfile
+import unittest
+from unittest.mock import patch
+import zipfile
+from scripts import full_update as update
 
 
-def make_mock_resp(status_code: int, data: bytes):
-    mock = MagicMock()
-    mock.status = status_code
-    mock.read.return_value = data
-    cm = MagicMock()
-    cm.__enter__.return_value = mock
-    cm.__exit__.return_value = None
-    return cm
+def manifest(files, revision='same-version'):
+    hashes = {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}
+    material = json.dumps({'files': hashes, 'revision': revision}, sort_keys=True, separators=(',', ':')).encode()
+    return {'schema': 1, 'files': hashes, 'revision': revision, 'build_id': hashlib.sha256(material).hexdigest()}
 
 
 class TestUpdateSystem(unittest.TestCase):
-    """
-    Validation suite for the PC Control Updater subsystem covering:
-    1. Update is available (release SHA-256 differs).
-    2. No update is available (release SHA-256 matches local).
-    3. GitHub is unavailable / network offline.
-    4. Download is interrupted / corrupt file.
-    5. Update completes successfully (SHA-256 and PE validation and updater handover).
-    6. Live GitHub connectivity test.
-    7. Checksum mismatch rejection (no installation, Popen not called, no temp file).
-    8. Missing checksum or SHA256SUMS.txt unavailable rejection.
-    9. SHA256SUMS format variations (BOM, asterisks, backslashes).
-    """
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.base = self.root / 'application'
+        self.base.mkdir()
+        self.files = {name: b'original' for name in ('Launcher.exe', 'server.py', 'scripts/control_panel.py', 'runtime/python.exe', 'runtime/pythonw.exe', 'web/index.html')}
+        self.data = manifest(self.files)
+        for name, content in self.files.items():
+            target = self.base / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        (self.base / update.MANIFEST).write_text(json.dumps(self.data))
+        self.remote = {'manifest': self.data, 'manifest_raw': json.dumps(self.data).encode(), 'tag': 'same', 'title': 'release', 'date': ''}
 
-    def test_01_no_update_available(self):
-        """Scenario: Local SHA-256 matches release SHA256SUMS -> returns has_update: False and up to date message."""
-        local_hash = get_local_launcher_hash() or "f42deaa07d14297ec7bd3f3909fbb3942de5d0bb"
-        
-        cm_rel = make_mock_resp(200, b'{"tag_name": "v2.0.1", "name": "PC Control v2.0.1", "published_at": "2026-10-24T12:00:00Z", "assets": [{"name": "Launcher.exe", "size": 60416, "browser_download_url": "https://github.com/lavi-666/pc-control/releases/latest/download/Launcher.exe"}]}')
-        cm_sums = make_mock_resp(200, f"{local_hash}  Launcher.exe\n".encode("utf-8"))
+    def archive(self, files=None, extra=None):
+        files = self.files if files is None else files
+        raw = json.dumps(self.data).encode()
+        archive = self.root / 'package.zip'
+        with zipfile.ZipFile(archive, 'w') as zf:
+            for name, content in files.items():
+                zf.writestr('PC_Control/' + name, content)
+            zf.writestr('PC_Control/' + update.MANIFEST, raw)
+            zf.writestr('PC_Control/launch_presets.json', b'[]')
+            if extra:
+                zf.writestr(*extra)
+        return archive, raw
 
-        with patch("urllib.request.urlopen", side_effect=[cm_rel, cm_sums]):
-            res = check_github_updates()
+    def test_identical_files_no_update(self):
+        with patch.object(update, 'remote_release', return_value=self.remote):
+            self.assertFalse(update.check(self.base)['has_update'])
 
-        self.assertTrue(res.get("ok"))
-        self.assertFalse(res.get("has_update"))
-        self.assertEqual(res.get("message"), "You are currently using the latest version.")
+    def test_one_code_change_same_version_detected(self):
+        (self.base / 'server.py').write_bytes(b'changed')
+        with patch.object(update, 'remote_release', return_value=self.remote):
+            result = update.check(self.base)
+        self.assertTrue(result['has_update'])
+        self.assertEqual(result['changed_files'], ['server.py'])
 
-    def test_02_update_is_available(self):
-        """Scenario: Release SHA-256 differs from local SHA-256 -> returns has_update: True."""
-        cm_rel = make_mock_resp(200, b'{"tag_name": "v2.1.0", "name": "PC Control v2.1.0", "published_at": "2026-10-24T13:00:00Z", "assets": [{"name": "Launcher.exe", "size": 62000, "browser_download_url": "https://github.com/lavi-666/pc-control/releases/latest/download/Launcher.exe"}]}')
-        cm_sums = make_mock_resp(200, b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  Launcher.exe\n")
+    def test_missing_file_detected(self):
+        (self.base / 'web/index.html').unlink()
+        self.assertEqual(update.compare(self.base, self.data)[0], ['web/index.html'])
 
-        with patch("urllib.request.urlopen", side_effect=[cm_rel, cm_sums]):
-            res = check_github_updates()
+    def test_new_commit_same_contents_detected(self):
+        self.remote['manifest'] = manifest(self.files, 'another-commit')
+        with patch.object(update, 'remote_release', return_value=self.remote):
+            self.assertTrue(update.check(self.base)['has_update'])
 
-        self.assertTrue(res.get("ok"))
-        self.assertTrue(res.get("has_update"))
-        self.assertEqual(res.get("message"), "A new version of PC Control is available")
+    def test_settings_do_not_trigger_update(self):
+        (self.base / 'config.json').write_text('{"token":"user-password"}')
+        (self.base / 'launch_presets.json').write_text('["user-script"]')
+        self.assertEqual(update.compare(self.base, self.data)[:2], ([], []))
 
-    def test_03_github_unavailable_offline(self):
-        """Scenario: Network offline / GitHub down -> returns ok: False and never reports 'up to date'."""
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Network is unreachable")):
-            res = check_github_updates()
+    def test_removed_managed_file_detected(self):
+        future = dict(self.files)
+        del future['web/index.html']
+        self.assertEqual(update.compare(self.base, manifest(future))[1], ['web/index.html'])
 
-        self.assertFalse(res.get("ok"))
-        self.assertEqual(res.get("error_code"), "ERR_GITHUB_UNREACHABLE")
-        self.assertIn("Не удалось связаться с сервером обновлений", res.get("message", ""))
-        self.assertNotIn("последнюю версию", res.get("message", ""))
+    def test_no_local_manifest_requires_initial_sync(self):
+        (self.base / update.MANIFEST).unlink()
+        with patch.object(update, 'remote_release', return_value=self.remote):
+            self.assertTrue(update.check(self.base)['has_update'])
 
-    def test_03b_github_rate_limited_403(self):
-        """Scenario: GitHub API returns 403 rate limit -> returns ok: False and never reports 'up to date'."""
-        err_403 = urllib.error.HTTPError(
-            url="https://api.github.com/repos/lavi-666/pc-control/releases/latest",
-            code=403,
-            msg="rate limit exceeded",
-            hdrs={},
-            fp=None
-        )
-        with patch("urllib.request.urlopen", side_effect=err_403):
-            res = check_github_updates()
+    def test_bad_manifest_identifier_rejected(self):
+        self.data['build_id'] = 'a' * 64
+        with self.assertRaises(ValueError):
+            update.validate_manifest(self.data)
 
-        self.assertFalse(res.get("ok"))
-        self.assertEqual(res.get("error_code"), "ERR_RATE_LIMITED")
-        self.assertIn("Превышен лимит запросов", res.get("message", ""))
-        self.assertNotIn("последнюю версию", res.get("message", ""))
+    def test_manifest_cannot_target_user_config(self):
+        self.files['config.json'] = b'bad'
+        with self.assertRaises(ValueError):
+            update.validate_manifest(manifest(self.files))
 
-    def test_03c_checksums_fetch_error_not_up_to_date(self):
-        """Scenario: Release exists but SHA256SUMS.txt fails network -> returns ok: False and never claims up to date."""
-        cm_rel = make_mock_resp(200, b'{"tag_name": "v2.0.1", "name": "PC Control v2.0.1", "published_at": "2026-10-24T12:00:00Z", "assets": [{"name": "Launcher.exe", "size": 60416, "browser_download_url": "https://github.com/lavi-666/pc-control/releases/latest/download/Launcher.exe"}]}')
-        err_network = urllib.error.URLError("Connection reset by peer")
+    def test_paths_and_device_names_rejected(self):
+        for name in ('../server.py', '/server.py', 'scripts/../../config.json', 'scripts/CON.py', 'scripts/a.py:stream', 'scripts/a.py.', 'scripts\\a.py'):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                update.managed_name(name)
 
-        with patch("urllib.request.urlopen", side_effect=[cm_rel, err_network]):
-            res = check_github_updates()
+    def test_case_collisions_rejected(self):
+        self.files['web/INDEX.html'] = b'conflict'
+        with self.assertRaises(ValueError):
+            update.validate_manifest(manifest(self.files))
 
-        self.assertFalse(res.get("ok"))
-        self.assertEqual(res.get("error_code"), "ERR_NO_CHECKSUM")
-        self.assertNotIn("последнюю версию", res.get("message", ""))
+    def test_foreign_release_url_rejected(self):
+        for url in ('https://evil.example/PC_Control_Windows.zip', 'http://github.com/lavi-666/pc-control/releases/download/v1/PC_Control_Windows.zip', 'https://github.com/other/repo/releases/download/v1/PC_Control_Windows.zip'):
+            with self.assertRaises(ValueError):
+                update.release_url(url, update.PACKAGE)
 
-    def test_04_download_corrupt_rejected(self):
-        """Scenario: Downloaded file is corrupt or HTML 404 -> rejected before replacing Launcher.exe."""
-        corrupt_data = b"<html>404 Not Found</html>"
-        corrupt_hash = hashlib.sha256(corrupt_data).hexdigest()
-        cm_exe = make_mock_resp(200, corrupt_data)
-        cm_sums = make_mock_resp(200, f"{corrupt_hash}  Launcher.exe\n".encode("utf-8"))
+    def test_missing_full_release_reports_error(self):
+        with patch.object(update, 'fetch', return_value=b'{"assets":[]}'):
+            result = update.check(self.base)
+        self.assertFalse(result['ok'])
+        self.assertIn('полного', result['message'])
 
-        with patch("urllib.request.urlopen", side_effect=[cm_exe, cm_sums]):
-            res = apply_github_update()
+    def test_valid_archive_extracts_without_user_presets(self):
+        archive, raw = self.archive()
+        stage = self.root / 'stage'
+        update.extract_package(archive, stage, self.data, raw)
+        self.assertFalse((stage / 'launch_presets.json').exists())
+        self.assertEqual((stage / 'server.py').read_bytes(), b'original')
 
-        self.assertFalse(res.get("ok"))
-        self.assertIn(res.get("error_code"), ["ERR_INVALID_SIZE", "ERR_CORRUPT_PE"])
+    def test_archive_traversal_rejected(self):
+        archive, raw = self.archive(extra=('PC_Control/../outside', b'bad'))
+        with self.assertRaises(ValueError):
+            update.extract_package(archive, self.root / 'stage', self.data, raw)
+        self.assertFalse((self.root / 'outside').exists())
 
-    def test_05_download_interrupted_rejected(self):
-        """Scenario: Download drops connection mid-stream -> handled safely without touching existing exe."""
-        with patch("urllib.request.urlopen", side_effect=TimeoutError("Connection timed out")):
-            res = apply_github_update()
+    def test_modified_archive_file_rejected(self):
+        files = dict(self.files, **{'server.py': b'corrupt'})
+        archive, raw = self.archive(files)
+        with self.assertRaisesRegex(ValueError, 'checksum'):
+            update.extract_package(archive, self.root / 'stage', self.data, raw)
 
-        self.assertFalse(res.get("ok"))
-        self.assertEqual(res.get("error_code"), "ERR_DOWNLOAD_FAILED")
+    def test_manifest_from_different_release_rejected(self):
+        archive, raw = self.archive()
+        with self.assertRaisesRegex(ValueError, 'manifest'):
+            update.extract_package(archive, self.root / 'stage', self.data, raw + b' ')
 
-    def test_06_update_success_valid_pe(self):
-        """Scenario: Valid PE executable and matching SHA-256 downloaded -> safely verified and handed off to updater."""
-        valid_pe = bytearray(30000)
-        valid_pe[0:2] = b"MZ"
-        valid_pe[0x3C:0x40] = (0x80).to_bytes(4, byteorder="little")
-        valid_pe[0x80:0x84] = b"PE\0\0"
-        pe_bytes = bytes(valid_pe)
-        expected_hash = hashlib.sha256(pe_bytes).hexdigest()
+    def test_full_replacement_removal_preserves_settings_and_rolls_back(self):
+        stage, backup = self.root / 'stage', self.root / 'backup'
+        stage.mkdir()
+        (stage / 'server.py').write_bytes(b'new')
+        (stage / 'modules').mkdir()
+        (stage / 'modules/new.py').write_bytes(b'added')
+        (self.base / 'config.json').write_bytes(b'private config')
+        plan = {'files': ['server.py', 'web/index.html', 'modules/new.py'], 'new_files': ['server.py', 'modules/new.py'], 'had_old': ['server.py', 'web/index.html']}
+        update.apply_files(self.base, stage, backup, plan)
+        self.assertEqual((self.base / 'server.py').read_bytes(), b'new')
+        self.assertFalse((self.base / 'web/index.html').exists())
+        self.assertEqual((self.base / 'config.json').read_bytes(), b'private config')
+        update.rollback(self.base, backup, plan)
+        self.assertEqual((self.base / 'server.py').read_bytes(), b'original')
+        self.assertTrue((self.base / 'web/index.html').exists())
+        self.assertFalse((self.base / 'modules/new.py').exists())
 
-        cm_exe = make_mock_resp(200, pe_bytes)
-        cm_sums = make_mock_resp(200, f"{expected_hash}  Launcher.exe\n".encode("utf-8"))
+    def test_partial_write_failure_restores_previous_files(self):
+        stage, backup = self.root / 'stage', self.root / 'backup'
+        stage.mkdir()
+        (stage / 'server.py').write_bytes(b'new')
+        plan = {'files': ['server.py', 'Launcher.exe'], 'new_files': ['server.py', 'Launcher.exe'], 'had_old': ['server.py', 'Launcher.exe']}
+        with self.assertRaises(FileNotFoundError):
+            update.apply_files(self.base, stage, backup, plan)
+        update.rollback(self.base, backup, plan)
+        self.assertEqual((self.base / 'server.py').read_bytes(), b'original')
+        self.assertEqual((self.base / 'Launcher.exe').read_bytes(), b'original')
 
-        new_exe = BASE_DIR / "Launcher.exe.new"
-        if new_exe.exists():
-            new_exe.unlink()
+    def test_metadata_checksum_mismatch_blocks_download(self):
+        urls = {name: 'https://github.com/lavi-666/pc-control/releases/download/v1/' + name for name in (update.MANIFEST, update.PACKAGE, 'SHA256SUMS.txt')}
+        release = json.dumps({'assets': [{'name': name, 'browser_download_url': url} for name, url in urls.items()]}).encode()
+        with patch.object(update, 'fetch', side_effect=[release, b'0' * 64 + b'  release-manifest.json', json.dumps(self.data).encode()]):
+            with self.assertRaisesRegex(ValueError, 'SHA-256'):
+                update.remote_release()
 
-        try:
-            with patch("urllib.request.urlopen", side_effect=[cm_exe, cm_sums]):
-                with patch("subprocess.Popen") as mock_popen:
-                    res = apply_github_update()
-
-            self.assertTrue(res.get("ok"))
-            self.assertTrue(res.get("restarting"))
-            mock_popen.assert_called_once()
-            self.assertTrue(new_exe.exists())
-        finally:
-            if new_exe.exists():
-                new_exe.unlink(missing_ok=True)
-
-    def test_07_live_github_connectivity(self):
-        """Scenario: Live connection to official GitHub repository succeeds with valid status."""
-        res = check_github_updates()
-        if not res.get("ok") and res.get("error_code") == "ERR_GITHUB_UNREACHABLE":
-            self.skipTest(f"Live GitHub repository not reachable: {res.get('details')}")
-        self.assertTrue(res.get("ok"))
-        self.assertIn("current_version", res)
-        self.assertIn("has_update", res)
-
-    def test_08_checksum_mismatch_rejected(self):
-        """Scenario: Checksum mismatch -> rejected with ERR_CHECKSUM_MISMATCH, no file written, Popen not called."""
-        valid_pe = bytearray(30000)
-        valid_pe[0:2] = b"MZ"
-        valid_pe[0x3C:0x40] = (0x80).to_bytes(4, byteorder="little")
-        valid_pe[0x80:0x84] = b"PE\0\0"
-        pe_bytes = bytes(valid_pe)
-
-        cm_exe = make_mock_resp(200, pe_bytes)
-        cm_sums = make_mock_resp(200, b"0000000000000000000000000000000000000000000000000000000000000000  Launcher.exe\n")
-
-        new_exe = BASE_DIR / "Launcher.exe.new"
-        if new_exe.exists():
-            new_exe.unlink()
-
-        with patch("urllib.request.urlopen", side_effect=[cm_exe, cm_sums]):
-            with patch("subprocess.Popen") as mock_popen:
-                res = apply_github_update()
-
-        self.assertFalse(res.get("ok"))
-        self.assertEqual(res.get("error_code"), "ERR_CHECKSUM_MISMATCH")
-        self.assertIn("Контрольная сумма", res.get("message", ""))
-        self.assertFalse(new_exe.exists(), "Launcher.exe.new must NOT be created when checksum mismatches")
-        mock_popen.assert_not_called()
-
-    def test_09_no_checksum_or_missing_entry_rejected(self):
-        """Scenario: SHA256SUMS.txt unavailable or missing Launcher.exe entry -> rejected with ERR_NO_CHECKSUM."""
-        valid_pe = bytearray(30000)
-        valid_pe[0:2] = b"MZ"
-        valid_pe[0x3C:0x40] = (0x80).to_bytes(4, byteorder="little")
-        valid_pe[0x80:0x84] = b"PE\0\0"
-        cm_exe = make_mock_resp(200, bytes(valid_pe))
-        cm_sums_other = make_mock_resp(200, b"1111111111111111111111111111111111111111111111111111111111111111  OtherFile.exe\n")
-
-        new_exe = BASE_DIR / "Launcher.exe.new"
-        if new_exe.exists():
-            new_exe.unlink()
-
-        with patch("urllib.request.urlopen", side_effect=[cm_exe, cm_sums_other]):
-            with patch("subprocess.Popen") as mock_popen:
-                res = apply_github_update()
-
-        self.assertFalse(res.get("ok"))
-        self.assertEqual(res.get("error_code"), "ERR_NO_CHECKSUM")
-        self.assertFalse(new_exe.exists())
-        mock_popen.assert_not_called()
-
-        with patch("urllib.request.urlopen", side_effect=[cm_exe, urllib.error.URLError("Not Found")]):
-            with patch("subprocess.Popen") as mock_popen:
-                res_err = apply_github_update()
-
-        self.assertFalse(res_err.get("ok"))
-        self.assertEqual(res_err.get("error_code"), "ERR_NO_CHECKSUM")
-        self.assertFalse(new_exe.exists())
-        mock_popen.assert_not_called()
-
-    def test_10_checksum_format_variations(self):
-        """Scenario: Handles BOM, asterisks prefix (*Launcher.exe), and backslashes in paths."""
-        valid_pe = bytearray(30000)
-        valid_pe[0:2] = b"MZ"
-        valid_pe[0x3C:0x40] = (0x80).to_bytes(4, byteorder="little")
-        valid_pe[0x80:0x84] = b"PE\0\0"
-        pe_bytes = bytes(valid_pe)
-        expected_hash = hashlib.sha256(pe_bytes).hexdigest()
-
-        variations = [
-            b"\xef\xbb\xbf" + f"{expected_hash}  Launcher.exe\n".encode("utf-8"),
-            f"{expected_hash} *Launcher.exe\n".encode("utf-8"),
-            f"{expected_hash}  tools\\release\\Launcher.exe\n".encode("utf-8"),
-            f"{expected_hash}  ./build/Launcher.exe\n".encode("utf-8"),
-        ]
-
-        new_exe = BASE_DIR / "Launcher.exe.new"
-        for sums_content in variations:
-            if new_exe.exists():
-                new_exe.unlink()
-            cm_exe = make_mock_resp(200, pe_bytes)
-            cm_sums = make_mock_resp(200, sums_content)
-
-            try:
-                with patch("urllib.request.urlopen", side_effect=[cm_exe, cm_sums]):
-                    with patch("subprocess.Popen") as mock_popen:
-                        res = apply_github_update()
-
-                self.assertTrue(res.get("ok"), f"Failed for variation: {sums_content}")
-                self.assertTrue(res.get("restarting"))
-                mock_popen.assert_called_once()
-            finally:
-                if new_exe.exists():
-                    new_exe.unlink(missing_ok=True)
+    def test_corrupt_download_leaves_application_untouched(self):
+        self.remote.update(url='https://github.com/lavi-666/pc-control/releases/download/v1/' + update.PACKAGE, sha256='a' * 64)
+        (self.base / 'server.py').write_bytes(b'local change')
+        with patch.object(update, 'remote_release', return_value=self.remote), patch.object(update.urllib.request, 'urlopen', return_value=io.BytesIO(b'corrupt')), patch.object(update.shutil, 'disk_usage') as disk:
+            disk.return_value.free = 10 * 1024**3
+            result = update.prepare(self.base, 12345)
+        self.assertFalse(result['ok'])
+        self.assertEqual((self.base / 'server.py').read_bytes(), b'local change')
+        self.assertFalse((self.base / update.PENDING).exists())
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

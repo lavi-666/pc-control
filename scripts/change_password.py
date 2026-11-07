@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 PC Control - Quick Server and App Password Utility.
-Updates config.json, web interface, rebuilds APK and restarts server.
+Updates the shared configuration; clients accept the password in their settings.
 """
 
 import json
@@ -42,16 +42,9 @@ def get_current_token() -> str:
 
 
 def save_token_to_config(token: str):
-    data = {}
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = {}
-    data["token"] = token
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    from control_panel import save_token_everywhere
+    if not save_token_everywhere(token):
+        raise ValueError("Password cannot be empty")
 
 
 def update_token_in_file(file_path: Path, token: str):
@@ -73,29 +66,11 @@ def update_token_in_file(file_path: Path, token: str):
 
 def restart_server():
     """Softly restarts the server.py process so that changes take effect."""
-    print("[*] Restarting PC Control server...")
-    try:
-        cmd_kill = 'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like \'*server.py*\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"'
-        subprocess.run(cmd_kill, shell=True, capture_output=True, timeout=5)
-        time.sleep(1)
-
-        server_script = str(SERVER_PY)
-        python_exe = sys.executable
-        pythonw_exe = Path(python_exe).parent / "pythonw.exe"
-        runner = str(pythonw_exe) if pythonw_exe.exists() else python_exe
-
-        creation_flags = 0x08000000  # CREATE_NO_WINDOW
-        subprocess.Popen(
-            [runner, server_script],
-            cwd=str(BASE_DIR),
-            creationflags=creation_flags,
-            close_fds=True
-        )
-        time.sleep(1.2)
-        print("[OK] PC Control server restarted successfully in background.")
-    except Exception as e:
-        print(f"[!] Could not restart server automatically: {e}")
-        print("    You can launch it manually: scripts\\3_start_server.bat")
+    from control_panel import restart_server_process
+    ok, code, title, message = restart_server_process()
+    if not ok:
+        raise RuntimeError(f"{code}: {title}: {message}")
+    print(message)
 
 
 def rebuild_apk():
@@ -146,16 +121,8 @@ def main():
     save_token_to_config(new_token)
     print("[OK] config.json file updated.")
 
-    # 2. Update web/index.html and android_app/assets/index.html
-    update_token_in_file(WEB_HTML, new_token)
-    update_token_in_file(APP_HTML, new_token)
-    print("[OK] Web interface and mobile assets synchronized.")
-
-    # 3. Rebuild APK
-    rebuild_apk()
-
-    # 4. Restart server
-    restart_server()
+    # Server reads the token from configuration on each request; client apps
+    # accept it in their settings. No APK rebuild or process restart is needed.
 
     lan_ip = "192.168.0.100"
     vpn_ip = ""
@@ -178,7 +145,6 @@ def main():
     print(f"  Tailscale link:    http://{vpn_ip}:{port}")
     print("=" * 68)
     print("Now enter this password when connecting from any device.")
-    print("Any temporary IP lockout cooldowns have been reset.")
     print("=" * 68)
 
 
