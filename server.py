@@ -35,7 +35,9 @@ from core.auth import (
     clear_lockout,
     is_private_ip,
     get_msg,
-    detect_language
+    detect_language,
+    create_pairing_ticket,
+    redeem_pairing_ticket,
 )
 from core.logger import get_history, log_action, log_error
 from modules.system import system_bp, _attach_input_desktop
@@ -170,6 +172,17 @@ def _ensure_interactive_desktop():
 
     if platform.system() == "Windows":
         _attach_input_desktop()
+
+    # Дедупликация повторных POST/PUT запросов с тем же X-Request-Id
+    req_id = request.headers.get("X-Request-Id")
+    if req_id and request.method in ("POST", "PUT", "DELETE"):
+        cached = check_idempotency(req_id)
+        if cached is not None:
+            c_resp = make_response(cached["body"], cached["status"])
+            c_resp.headers["Content-Type"] = cached.get("content_type", "application/json")
+            c_resp.headers["X-Idempotent-Replay"] = "1"
+            return _apply_cors_and_security_headers(c_resp)
+
     if request.method == "OPTIONS":
         origin = request.headers.get("Origin")
         if origin and not _is_origin_allowed(origin, request.remote_addr):
@@ -185,6 +198,13 @@ def _ensure_interactive_desktop():
 
 @app.after_request
 def _add_cors_headers(resp):
+    req_id = request.headers.get("X-Request-Id")
+    if req_id and request.method in ("POST", "PUT", "DELETE") and resp.status_code in (200, 201, 202):
+        store_idempotency_result(req_id, {
+            "body": resp.get_data(),
+            "status": resp.status_code,
+            "content_type": resp.headers.get("Content-Type", "application/json")
+        })
     return _apply_cors_and_security_headers(resp)
 
 
@@ -260,21 +280,22 @@ def index():
 
 def get_local_ip() -> str:
     try:
-        from scripts.network_setup import detect_network
-        detected = detect_network().get("lan_ip", "")
-        if detected and detected != "127.0.0.1":
-            return detected
+        from scripts.network_setup import get_best_lan_ip
+        best = get_best_lan_ip()
+        if best and best != "127.0.0.1":
+            return best
     except Exception:
         pass
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('10.255.255.255', 1))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = '127.0.0.1'
-    finally:
-        s.close()
-    return ip
+    for target in ('10.255.255.255', '192.168.1.1', '192.168.0.1', '172.16.0.1'):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((target, 1))
+                ip = s.getsockname()[0]
+                if ip and ip != "127.0.0.1":
+                    return ip
+        except Exception:
+            pass
+    return ""
 
 
 @app.route("/api/auth/login", methods=["POST"])
@@ -369,6 +390,57 @@ def api_auth_rotate():
     return resp
 
 
+@app.route("/api/pair/ticket", methods=["GET", "POST"])
+def api_pair_ticket():
+    """Выпуск одноразового билета сопряжения для QR-кодов и ссылок (срок жизни 5 минут)."""
+    # Доступен из локальной сети или при наличии аутентифицированной сессии
+    if not is_safe_test_mode() and not is_private_ip(request.remote_addr) and not check_token():
+        return jsonify({"ok": False, "message": get_msg("auth_required")}), 401
+
+    ticket = create_pairing_ticket(ttl=300)
+    return jsonify({
+        "ok": True,
+        "ticket": ticket,
+        "expires_in": 300,
+    })
+
+
+@app.route("/api/pair/exchange", methods=["POST"])
+def api_pair_exchange():
+    """Безопасный обмен одноразового билета сопряжения на сессионную cookie без передачи токена в открытом URL."""
+    data = request.get_json(silent=True) or {}
+    ticket = str(data.get("ticket") or "").strip()
+    if not ticket:
+        ticket = str(request.args.get("ticket") or "").strip()
+
+    token = redeem_pairing_ticket(ticket)
+    if not token:
+        return jsonify({"ok": False, "message": "Недействительный или истёкший билет сопряжения (Invalid or expired pairing ticket)"}), 401
+
+    resp = jsonify({
+        "ok": True,
+        "message": get_msg("login_success"),
+        "token": token,
+    })
+    resp.set_cookie(
+        "pc_token",
+        token,
+        max_age=31536000,
+        path="/",
+        httponly=True,
+        samesite="Strict",
+    )
+    resp.set_cookie(
+        "token",
+        token,
+        max_age=31536000,
+        path="/",
+        httponly=False,
+        samesite="Lax",
+    )
+    return resp
+
+
 @app.route("/api/cors", methods=["GET", "POST"])
 def api_cors_settings():
     """Получение и настройка гибкого списка разрешённых Origin для CORS."""
@@ -388,6 +460,46 @@ def api_cors_settings():
     return jsonify({"ok": True, "origins": get_cors_allowed_origins()})
 
 
+# ---------- Дедупликация и защита от повторного выполнения неидемпотентных команд (X-Request-Id) ----------
+_recent_request_ids: dict[str, tuple[float, any]] = {}
+_request_id_lock = threading.Lock()
+
+
+def check_idempotency(req_id: str):
+    if not req_id:
+        return None
+    now = time.time()
+    with _request_id_lock:
+        expired = [k for k, (t, _) in _recent_request_ids.items() if (now - t) > 10.0]
+        for k in expired:
+            _recent_request_ids.pop(k, None)
+        if req_id in _recent_request_ids:
+            return _recent_request_ids[req_id][1]
+    return None
+
+
+def store_idempotency_result(req_id: str, result_data):
+    if not req_id:
+        return
+    with _request_id_lock:
+        _recent_request_ids[req_id] = (time.time(), result_data)
+
+
+@app.route("/api/network/diagnose")
+def api_network_diagnose():
+    """Безопасная диагностика сетевых интерфейсов и доступности LAN без раскрытия секретов."""
+    if not is_safe_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
+        return jsonify({"message": get_msg("auth_required")}), 401
+    try:
+        from scripts.network_setup import get_network_diagnostics
+        diag = get_network_diagnostics()
+        cfg = load_app_config() or {}
+        diag["port"] = int(cfg.get("port", 5000))
+        return jsonify(diag)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/lan_info")
 def api_lan_info():
     if not is_safe_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
@@ -396,13 +508,26 @@ def api_lan_info():
     lan_ip = cfg.get("lan_ip") or get_local_ip()
     vpn_ip = cfg.get("vpn_ip", "")
     port = cfg.get("port", 5000)
+    alt_ips = []
+    is_wifi = False
+    try:
+        from scripts.network_setup import get_network_diagnostics
+        diag = get_network_diagnostics()
+        alt_ips = diag.get("alternative_ips", [])
+        phys = diag.get("physical_interfaces") or []
+        is_wifi = bool(phys and phys[0].get("is_wifi"))
+    except Exception:
+        pass
     return jsonify({
         "ip": lan_ip,
         "vpn_ip": vpn_ip,
         "mac_address": cfg.get("mac_address", ""),
-        "web_url": f"http://{lan_ip}:{port}",
+        "web_url": f"http://{lan_ip}:{port}" if lan_ip else "",
         "vpn_url": f"http://{vpn_ip}:{port}" if vpn_ip else "",
-        "apk_url": f"http://{lan_ip}:{port}/download/apk",
+        "apk_url": f"http://{lan_ip}:{port}/download/apk" if lan_ip else "",
+        "alternative_ips": alt_ips,
+        "is_wifi": is_wifi,
+        "has_lan": bool(lan_ip),
     })
 
 

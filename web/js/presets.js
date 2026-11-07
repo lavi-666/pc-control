@@ -1118,25 +1118,86 @@ function checkAuthAndInit(){
   }
 }
 
+// ---------- Адаптивный координатор фоновых опросов (Adaptive Poll Coordinator) ----------
+let _adaptivePollTimer = null;
+let _lastMediaPoll = 0;
+let _lastStatusPoll = 0;
+let _lastLangPoll = 0;
+let _lastPresetsPoll = 0;
+
+function isAppVisible(){
+  if (typeof document.hidden !== 'undefined' && document.hidden) return false;
+  if (typeof window.__hostAppActive !== 'undefined' && !window.__hostAppActive) return false;
+  return true;
+}
+
+async function adaptivePollTick(){
+  if (!isAppVisible()){
+    return; // В свёрнутом состоянии полностью останавливаем лишние HTTP-запросы
+  }
+
+  // Если сервер отключен или идет переподключение, не спамим запросами
+  if (typeof isServerConnected === 'function' && !isServerConnected()){
+    return;
+  }
+
+  const now = Date.now();
+
+  // 1. Опрос медиаплеера (интервал зависит от воспроизведения: 2.5с при игре, 5с на паузе, 10с без плеера)
+  const isPlaying = (typeof mediaState !== 'undefined' && mediaState.playing);
+  const mediaInterval = isPlaying ? 2500 : (mediaState && mediaState.duration > 0 ? 5000 : 9000);
+  if (now - _lastMediaPoll >= mediaInterval){
+    _lastMediaPoll = now;
+    if (typeof pollMedia === 'function') pollMedia();
+  }
+
+  // 2. Опрос статуса сервера (каждые 12с)
+  if (now - _lastStatusPoll >= 12000){
+    _lastStatusPoll = now;
+    if (typeof checkStatus === 'function') checkStatus();
+  }
+
+  // 3. Опрос языка ввода Windows (каждые 15с вместо 5с)
+  if (now - _lastLangPoll >= 15000){
+    _lastLangPoll = now;
+    if (typeof loadLanguages === 'function') loadLanguages();
+  }
+
+  // 4. Опрос статуса пресетов (каждые 3с ТОЛЬКО если модальное окно пресетов открыто)
+  const presetsOpen = !!(document.getElementById('presetsModalBackdrop')?.classList.contains('open'));
+  if (presetsOpen && (now - _lastPresetsPoll >= 3000)){
+    _lastPresetsPoll = now;
+    if (typeof pollPresetsStatus === 'function') pollPresetsStatus();
+  }
+}
+
+function startAdaptivePolling(){
+  if (_adaptivePollTimer) clearInterval(_adaptivePollTimer);
+  _adaptivePollTimer = setInterval(adaptivePollTick, 1000);
+}
+
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', checkAuthAndInit);
+  document.addEventListener('DOMContentLoaded', () => {
+    checkAuthAndInit();
+    startAdaptivePolling();
+  });
 } else {
   checkAuthAndInit();
+  startAdaptivePolling();
 }
-setInterval(checkStatus, 10000);
-setInterval(pollMedia, 1800);
-setInterval(loadLanguages, 5000);
-setInterval(pollPresetsStatus, 2000);
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible'){
-    pollMedia();
-    loadQueue();
-    loadPresetsList();
+    _lastMediaPoll = 0;
+    _lastStatusPoll = 0;
+    adaptivePollTick();
+    if (typeof loadQueue === 'function') loadQueue();
+    if (typeof loadPresetsList === 'function') loadPresetsList();
   }
 });
+
 window.addEventListener('focus', () => {
-  pollMedia();
-  loadQueue();
-  loadPresetsList();
+  _lastMediaPoll = 0;
+  adaptivePollTick();
+  if (typeof loadQueue === 'function') loadQueue();
 });

@@ -2,7 +2,6 @@ name: Release Build & Distribution
 
 on:
   push:
-    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
@@ -40,7 +39,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build C# Desktop Launcher (Launcher.exe)
+      - name: Build C# Desktop Launcher & Uninstaller
         run: |
           $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
           if (-not (Test-Path $csc)) {
@@ -48,7 +47,13 @@ jobs:
           }
           & $csc /nologo /optimize+ /target:winexe /win32icon:pc_control.ico /out:Launcher.exe scripts\Launcher.cs
           if ($LASTEXITCODE -ne 0) { throw "Launcher build failed" }
+          & $csc /nologo /optimize+ /target:winexe /win32icon:pc_control.ico /out:unstaller.exe /r:System.IO.Compression.FileSystem.dll /r:System.IO.Compression.dll scripts\Uninstall.cs
+          if ($LASTEXITCODE -ne 0) { throw "unstaller.exe build failed" }
+          Copy-Item unstaller.exe Uninstall.exe -Force
+          python scripts/verify_release_consistency.py
+          if ($LASTEXITCODE -ne 0) { throw "Release consistency check failed" }
           Write-Host "Launcher.exe built: $((Get-Item Launcher.exe).Length) bytes"
+          Write-Host "unstaller.exe built: $((Get-Item unstaller.exe).Length) bytes"
 
       - name: Set up Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -73,15 +78,16 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Build Android Client (PC_Control.apk)
+      - name: Build Android Client (PC-Control.apk)
         run: |
           python scripts/build_apk.py
           if ($LASTEXITCODE -ne 0) { throw "APK build failed" }
-          Write-Host "PC_Control.apk built: $((Get-Item PC_Control.apk).Length) bytes"
+          Copy-Item PC_Control.apk PC-Control.apk -Force
+          Write-Host "PC-Control.apk built: $((Get-Item PC-Control.apk).Length) bytes"
 
-      - name: Build complete Windows package
+      - name: Run Release Regression Tests & Packaging
         run: |
-          python -m unittest tests.test_update_system tests.test_distribution_audit tests.test_launcher_audit tests.test_network_setup tests.test_uninstall_and_lifecycle tests.test_installer -q
+          python -m unittest tests.test_binary_sync tests.test_update_system tests.test_distribution_audit tests.test_launcher_audit tests.test_network_setup tests.test_uninstall_and_lifecycle tests.test_uninstall_foreign_files tests.test_installer -q
           if ($LASTEXITCODE -ne 0) { throw "Release regression tests failed" }
           python scripts/build_runtime.py
           if ($LASTEXITCODE -ne 0) { throw "Portable runtime build failed" }
@@ -89,35 +95,34 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Windows packaging failed" }
           python scripts/build_installer.py
           if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
-          Copy-Item dist/PC_Control_Windows.zip PC_Control_Windows.zip
-          Copy-Item dist/release-manifest.json release-manifest.json
+          Copy-Item dist/PC-Control-Portable.zip PC-Control-Portable.zip -Force
 
-      - name: Generate release checksums
+      - name: Generate Release Checksums (SHA256SUMS.txt)
         run: |
-          $files = @("PC-Control-Setup.exe", "Launcher.exe", "tools/streamer.exe", "PC_Control.apk", "PC_Control_Windows.zip", "release-manifest.json")
+          $files = @("PC-Control-Setup.exe", "PC-Control-Portable.zip", "PC-Control.apk")
           $lines = foreach ($f in $files) {
             if (Test-Path $f) {
               $hash = (Get-FileHash -Path $f -Algorithm SHA256).Hash.ToLower()
               "$hash  $f"
+            } else {
+              throw "Missing required release asset: $f"
             }
           }
           $lines | Out-File -FilePath SHA256SUMS.txt -Encoding utf8
+          Write-Host "--- SHA256SUMS.txt ---"
           Get-Content SHA256SUMS.txt
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag_name || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || format('build-{0}', github.run_number) }}
+          tag_name: ${{ github.event.inputs.tag_name || (startsWith(github.ref, 'refs/tags/') && github.ref_name) }}
           target_commitish: ${{ github.sha }}
           make_latest: "true"
           files: |
             PC-Control-Setup.exe
-            Launcher.exe
-            tools/streamer.exe
-            PC_Control.apk
+            PC-Control-Portable.zip
+            PC-Control.apk
             SHA256SUMS.txt
-            PC_Control_Windows.zip
-            release-manifest.json
           generate_release_notes: true
           draft: false
           prerelease: false

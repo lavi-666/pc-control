@@ -45,6 +45,7 @@ public class MainActivity extends Activity {
     private static MainActivity instance;
     private FrameLayout rootLayout;
     private WebView webView;
+    private NativeScreenView nativeScreenView;
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
 
@@ -240,6 +241,36 @@ public class MainActivity extends Activity {
         public void toggleBackgroundMode() {
             setBackgroundMode(!BackgroundAudioService.isRunning);
         }
+
+        @JavascriptInterface
+        public boolean isNativeScreenSupported() {
+            return true;
+        }
+
+        @JavascriptInterface
+        public void startNativeScreen(final String serverUrl, final String token, final int monitor, final int height, final int fps, final int bitrate, final String quality, final String codec) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (nativeScreenView != null) {
+                        nativeScreenView.configure(serverUrl, token, monitor, height, fps, bitrate, quality, codec);
+                        nativeScreenView.startStream();
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void stopNativeScreen() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (nativeScreenView != null) {
+                        nativeScreenView.stopStream();
+                    }
+                }
+            });
+        }
     }
 
     @Override
@@ -407,6 +438,22 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
+
+        nativeScreenView = new NativeScreenView(this);
+        nativeScreenView.setVisibility(View.GONE);
+        nativeScreenView.setOnCloseListener(new NativeScreenView.OnCloseListener() {
+            @Override
+            public void onCloseRequested() {
+                if (webView != null) {
+                    webView.evaluateJavascript("if (typeof onNativeScreenClosed === 'function') { onNativeScreenClosed(); }", null);
+                }
+            }
+        });
+        rootLayout.addView(nativeScreenView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+
         setContentView(rootLayout);
 
         String html = loadAssetHtml("index.html");
@@ -450,6 +497,13 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (nativeScreenView != null && nativeScreenView.getVisibility() == View.VISIBLE) {
+            nativeScreenView.stopStream();
+            if (webView != null) {
+                webView.evaluateJavascript("if (typeof onNativeScreenClosed === 'function') { onNativeScreenClosed(); }", null);
+            }
+            return;
+        }
         if (customView != null) {
             webView.getWebChromeClient().onHideCustomView();
             return;
@@ -494,16 +548,31 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        super.onPause();
+        if (webView != null) {
+            webView.evaluateJavascript("window.__hostAppActive = false;", null);
+            if (!BackgroundAudioService.isRunning) {
+                webView.onPause();
+            }
+        }
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         if (webView != null) {
             webView.onResume();
+            webView.evaluateJavascript("window.__hostAppActive = true; if (typeof adaptivePollTick === 'function') adaptivePollTick();", null);
         }
         notifyBackgroundStateChanged(BackgroundAudioService.isRunning);
     }
 
     @Override
     protected void onDestroy() {
+        if (nativeScreenView != null) {
+            nativeScreenView.stopStream();
+        }
         instance = null;
         super.onDestroy();
     }

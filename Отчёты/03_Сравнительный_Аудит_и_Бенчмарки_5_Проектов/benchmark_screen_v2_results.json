@@ -1,0 +1,35 @@
+{
+  "encoder_benchmarks": {
+    "libx264": {
+      "label": "Old Baseline: libx264 Ultrafast Baseline",
+      "avg_encode_ms": 6.34,
+      "p95_encode_ms": 7.43,
+      "achieved_fps": 157.6,
+      "actual_bitrate_mbps": 0.65,
+      "status": "PASS"
+    },
+    "h264_nvenc": {
+      "label": "New Sunshine NVENC: Low-Latency High Profile",
+      "avg_encode_ms": 8.86,
+      "p95_encode_ms": 10.07,
+      "achieved_fps": 112.9,
+      "actual_bitrate_mbps": 14.4,
+      "status": "PASS"
+    },
+    "hevc_nvenc": {
+      "label": "New Sunshine HEVC NVENC: High Bitrate",
+      "avg_encode_ms": 8.01,
+      "p95_encode_ms": 9.21,
+      "achieved_fps": 124.8,
+      "actual_bitrate_mbps": 0.43,
+      "status": "PASS"
+    }
+  },
+  "color_benchmarks": {
+    "old_psnr_db": 35.95,
+    "new_psnr_db": 40.63,
+    "psnr_improvement_db": 4.69,
+    "old_dark_level_drift": 0.21,
+    "new_dark_level_drift": 0.17
+  }
+}

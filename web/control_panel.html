@@ -2188,7 +2188,7 @@
       The new password will be saved in config.json and applied to all mobile app and web remote connections.
     </div>
     <div class="modal-input-wrap">
-      <input type="text" class="modal-input pwd-masked" id="pwdInput" placeholder="Enter new password" data-i18n-ph="pwd_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" name="pc_auth_token_field" onkeydown="if(event.key==='Enter'){event.preventDefault();submitNewPassword();}">
+      <input type="text" class="modal-input pwd-masked" id="pwdInput" placeholder="Enter security key" data-i18n-ph="pwd_placeholder" autocomplete="one-time-code" autocorrect="off" autocapitalize="off" spellcheck="false" role="presentation" aria-autocomplete="none" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" name="sys_secret_key_token" onkeydown="if(event.key==='Enter'){event.preventDefault();submitNewPassword();}">
       <button type="button" class="secret-action-btn eye-toggle-btn" id="btnEyePwdModal" onclick="togglePwdModalEye()" title="Show / Hide" data-i18n-title="tip_toggle_val">
         <span class="sec-icon-stack">
           <svg class="sec-svg icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
@@ -2413,7 +2413,7 @@
       chevron_tip_close: "Close console output",
       pwd_modal_title: "Change Access Password",
       pwd_modal_sub: "The new password will be saved in config.json and applied to all mobile app and web remote connections.",
-      pwd_placeholder: "Enter new password",
+      pwd_placeholder: "Enter security key / token",
       btn_cancel: "Cancel",
       btn_save: "Save",
       err_title_fallback: "Execution Error",
@@ -2587,7 +2587,7 @@
       chevron_tip_close: "Скрыть консоль вывода",
       pwd_modal_title: "Смена пароля доступа",
       pwd_modal_sub: "Новый пароль будет сохранен в config.json и применен для всех подключений мобильного приложения и веб-пульта.",
-      pwd_placeholder: "Введите новый пароль",
+      pwd_placeholder: "Ключ безопасности / токен",
       btn_cancel: "Отмена",
       btn_save: "Сохранить",
       err_title_fallback: "Ошибка выполнения",
@@ -2761,7 +2761,7 @@
       chevron_tip_close: "Приховати консоль виводу",
       pwd_modal_title: "Зміна пароля доступу",
       pwd_modal_sub: "Новий пароль буде збережено в config.json та застосовано для всіх підключень мобільного додатку та веб-пульта.",
-      pwd_placeholder: "Введіть новий пароль",
+      pwd_placeholder: "Ключ безпеки / токен",
       btn_cancel: "Скасувати",
       btn_save: "Зберегти",
       err_title_fallback: "Помилка виконання",
@@ -2884,6 +2884,19 @@
     act_uninstall_desc:'Відновити налаштування Windows і видалити',
     tip_build_apk:'Збирає та підписує PC_Control.apk з налаштуваннями мережі цього ПК. Автоматично завантажує портативний Android SDK і OpenJDK 17 за потреби.'
   });
+  async function getPairingTargetUrl(base) {
+    let authParam = 'token=' + encodeURIComponent((currentStatus && currentStatus.token) || '');
+    try {
+      const srvPort = (currentStatus && currentStatus.port) || 5000;
+      const resp = await fetch('http://127.0.0.1:' + srvPort + '/api/pair/ticket', {headers: {'X-Auth-Token': (currentStatus && currentStatus.token) || ''}});
+      const data = await resp.json();
+      if (data && data.ok && data.ticket) {
+        authParam = 'ticket=' + encodeURIComponent(data.ticket);
+      }
+    } catch(e) {}
+    return base + '/?' + authParam + '&lang=' + encodeURIComponent(currentLang);
+  }
+
   function closePhoneSetup() {
     document.getElementById('phoneModal').classList.remove('open');
     document.getElementById('phoneQr').removeAttribute('src');
@@ -2943,7 +2956,7 @@
             if (saveRes && saveRes.ok) {
               await fetchStatus();
               const base = 'http://' + currentStatus.lan_ip + ':' + currentStatus.port;
-              const target = base + '/?token=' + encodeURIComponent(currentStatus.token) + '&lang=' + encodeURIComponent(currentLang);
+              const target = await getPairingTargetUrl(base);
               document.getElementById('phoneQr').src = '/api/qr?url=' + encodeURIComponent(target);
               document.getElementById('phoneAddress').textContent = base;
               await updatePhoneDiagnosticsUI();
@@ -2969,7 +2982,7 @@
         await fetchStatus();
       }
       const base = 'http://' + currentStatus.lan_ip + ':' + currentStatus.port;
-      const target = base + '/?token=' + encodeURIComponent(currentStatus.token) + '&lang=' + encodeURIComponent(currentLang);
+      const target = await getPairingTargetUrl(base);
       const img = document.getElementById('phoneQr');
       await new Promise((resolve, reject) => {
         img.onload = resolve;
@@ -3738,7 +3751,7 @@
     const token = (currentStatus && currentStatus.token) ? currentStatus.token : '';
     const lanIp = (currentStatus && currentStatus.lan_ip) ? currentStatus.lan_ip : '127.0.0.1';
     const srvPort = (currentStatus && currentStatus.port) ? currentStatus.port : 5000;
-    const remoteUrl = 'http://127.0.0.1:' + srvPort + '/?token=' + encodeURIComponent(token) + '&lang=' + encodeURIComponent(currentLang);
+    const remoteUrl = await getPairingTargetUrl('http://127.0.0.1:' + srvPort);
 
     const container = document.getElementById('remoteViewContainer');
     const iframe = document.getElementById('remoteIframe');
@@ -4001,15 +4014,22 @@
 
   async function submitNewPassword() {
     const dict = I18N[currentLang] || I18N.en;
-    const val = document.getElementById('pwdInput').value.trim();
+    const input = document.getElementById('pwdInput');
+    const val = input ? input.value.trim() : '';
     if (!val) {
       alert(dict.pwd_empty_alert);
       return;
     }
+    // Очищаем поле ввода перед закрытием, чтобы менеджер паролей браузера не перехватывал его
+    if (input) input.value = '';
+    closePasswordModal();
     const result = await runAction('set_password', {password: val});
-    if (result.ok) {
+    if (result && result.ok) {
       if (currentStatus) currentStatus.token = val;
-      closePasswordModal();
+    } else {
+      // При ошибке восстанавливаем значение
+      if (input) input.value = val;
+      openPasswordModal();
     }
   }
 

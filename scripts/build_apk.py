@@ -15,7 +15,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_SDK_DIR = BASE_DIR / ".android_sdk"
+_env_sdk = os.environ.get("PC_CONTROL_SDK_DIR", "").strip()
+DEFAULT_SDK_DIR = Path(_env_sdk).resolve() if _env_sdk and Path(_env_sdk).is_dir() else (BASE_DIR / ".android_sdk")
 SDK_DIR = DEFAULT_SDK_DIR
 APP_DIR = BASE_DIR / "android_app"
 OUT_APK = BASE_DIR / "PC_Control.apk"
@@ -41,14 +42,19 @@ REQUIRED_TOOL_PATTERNS = {
 def _get_shared_sdk_candidates() -> list[Path]:
     """Возвращает дополнительные локальные пути поиска портативного SDK (кэш в AppData или соседние директории)."""
     candidates: list[Path] = []
+    env_sdk = os.environ.get("PC_CONTROL_SDK_DIR", "").strip()
+    if env_sdk and Path(env_sdk).is_dir():
+        candidates.append(Path(env_sdk).resolve())
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         candidates.append(Path(local_app_data) / "PCControl" / "android_sdk")
     try:
-        for parent in (BASE_DIR.parent, BASE_DIR.parent.parent):
-            cand = parent / ".android_sdk"
+        cur = BASE_DIR
+        for _ in range(4):
+            cur = cur.parent
+            cand = cur / ".android_sdk"
             if cand != SDK_DIR and cand.is_dir():
-                candidates.append(cand)
+                candidates.append(cand.resolve())
     except Exception:
         pass
     return candidates

@@ -348,12 +348,13 @@ function initBackgroundMode(){
   }
 }
 
-// ---------- Демонстрация экрана ПК (выбор экрана, 720p/1080p, 30/60 FPS, Ultra 4:4:4) ----------
+// ---------- Демонстрация экрана ПК (выбор экрана, 480p-4K, 24-120 FPS, Sunshine BT.709, MediaCodec) ----------
 let screenPanelOpen = false;
 let screenStreamOn = false;
-let screenCfg = {monitor: 1, height: 1080, fps: 60};
+let screenCfg = {monitor: 1, height: 1080, fps: 60, quality: 'high', bitrate: 0, codec: 'auto'};
 let screenMonitors = [{id: 1, label: 'Экран 1'}, {id: 2, label: 'Экран 2'}, {id: 0, label: 'Все'}];
 let screenHudTimer = null;
+let screenTelemetryTimer = null;
 
 function isScreenFullscreen(){
   const stage = document.getElementById('screenStage');
@@ -412,14 +413,16 @@ document.addEventListener('webkitfullscreenchange', onScreenFullscreenChange);
 
 function updateScreenUI(){
   const monGroup = document.getElementById('screenMonGroup');
-  monGroup.innerHTML = '';
-  screenMonitors.forEach(m => {
-    const b = document.createElement('button');
-    b.className = 'seg-btn' + (screenCfg.monitor === m.id ? ' active' : '');
-    b.innerText = m.label;
-    b.onclick = () => setScreenOpt('monitor', m.id);
-    monGroup.appendChild(b);
-  });
+  if (monGroup){
+    monGroup.innerHTML = '';
+    screenMonitors.forEach(m => {
+      const b = document.createElement('button');
+      b.className = 'seg-btn' + (screenCfg.monitor === m.id ? ' active' : '');
+      b.innerText = m.label;
+      b.onclick = () => setScreenOpt('monitor', m.id);
+      monGroup.appendChild(b);
+    });
+  }
 
   document.querySelectorAll('#screenResGroup .seg-btn').forEach(b => {
     b.classList.toggle('active', parseInt(b.dataset.val) === screenCfg.height);
@@ -427,12 +430,47 @@ function updateScreenUI(){
   document.querySelectorAll('#screenFpsGroup .seg-btn').forEach(b => {
     b.classList.toggle('active', parseInt(b.dataset.val) === screenCfg.fps);
   });
+  document.querySelectorAll('#screenBitrateGroup .seg-btn').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.val) === (screenCfg.bitrate || 0));
+  });
 
   const monObj = screenMonitors.find(m => m.id === screenCfg.monitor) || {label: t('screen_lbl_monitor') + ' ' + screenCfg.monitor};
   const monName = (screenCfg.monitor === 1) ? t('screen_mon_1') : (screenCfg.monitor === 2) ? t('screen_mon_2') : (screenCfg.monitor === 0) ? t('screen_mon_all') : monObj.label;
   const resLabel = screenCfg.height === 0 ? t('screen_res_source') : screenCfg.height + 'p';
-  document.getElementById('screenBadgeText').innerText =
-    'LIVE · ' + monName + ' · ' + resLabel + ' · ' + screenCfg.fps + ' FPS';
+  const badge = document.getElementById('screenBadgeText');
+  if (badge){
+    badge.innerText = 'LIVE · ' + monName + ' · ' + resLabel + ' · ' + screenCfg.fps + ' FPS';
+  }
+}
+
+function startScreenTelemetry(){
+  stopScreenTelemetry();
+  screenTelemetryTimer = setInterval(async () => {
+    if (!screenStreamOn){
+      stopScreenTelemetry();
+      return;
+    }
+    try {
+      const res = await apiFetch('/screen/telemetry');
+      if (!res.ok) return;
+      const data = await res.json();
+      const badge = document.getElementById('screenBadgeText');
+      if (badge && data && data.active){
+        const enc = (data.encoder_name || 'H.264').toUpperCase().replace('_', ' ');
+        const fps = (data.measured_fps > 0) ? data.measured_fps.toFixed(0) : screenCfg.fps;
+        const mbps = (data.bitrate_kbps > 0) ? ((data.bitrate_kbps / 1000).toFixed(1) + ' Mbps') : '';
+        const resStr = (screenCfg.height === 0 ? t('screen_res_source') : screenCfg.height + 'p');
+        badge.innerText = 'LIVE · ' + enc + ' · ' + resStr + ' · ' + fps + ' FPS' + (mbps ? ' · ' + mbps : '');
+      }
+    } catch (e) {}
+  }, 2000);
+}
+
+function stopScreenTelemetry(){
+  if (screenTelemetryTimer){
+    clearInterval(screenTelemetryTimer);
+    screenTelemetryTimer = null;
+  }
 }
 
 async function loadMonitors(){
@@ -463,6 +501,9 @@ function toggleScreenPanel(){
 }
 
 async function setScreenOpt(key, val){
+  if (key === 'height' || key === 'fps' || key === 'bitrate' || key === 'monitor'){
+    val = parseInt(val, 10);
+  }
   screenCfg[key] = val;
   updateScreenUI();
   try {
@@ -477,6 +518,10 @@ async function setScreenOpt(key, val){
 let rtcScreenPc = null;
 
 async function stopScreenStream(notifyServer = true){
+  stopScreenTelemetry();
+  if (window.AndroidBridge && typeof window.AndroidBridge.stopNativeScreen === 'function'){
+    try { window.AndroidBridge.stopNativeScreen(); } catch (e) {}
+  }
   const video = document.getElementById('screenVideo');
   const img = document.getElementById('screenImg');
   const screenAudio = document.getElementById('screenRtcAudio');
@@ -485,7 +530,7 @@ async function stopScreenStream(notifyServer = true){
   const txt = document.getElementById('screenStartText');
   screenStreamOn = false;
   clearScreenHudTimer();
-  stage.classList.remove('hud-hidden', 'pseudo-fs', 'active');
+  if (stage) stage.classList.remove('hud-hidden', 'pseudo-fs', 'active');
   if (rtcScreenPc){
     try {
       rtcScreenPc.ontrack = null;
@@ -514,8 +559,8 @@ async function stopScreenStream(notifyServer = true){
     img.removeAttribute('src');
     img.style.display = 'none';
   }
-  btn.className = 'btn-ytm-red';
-  txt.innerText = t('btn_start_screen');
+  if (btn) btn.className = 'btn-ytm-red';
+  if (txt) txt.innerText = t('btn_start_screen');
   if (notifyServer){
     try {
       await apiFetch('/webrtc/close', {
@@ -526,6 +571,15 @@ async function stopScreenStream(notifyServer = true){
     } catch (e) {}
   }
 }
+
+window.onNativeScreenClosed = function(){
+  screenStreamOn = false;
+  stopScreenTelemetry();
+  const btn = document.getElementById('screenStartBtn');
+  const txt = document.getElementById('screenStartText');
+  if (btn) btn.className = 'btn-ytm-red';
+  if (txt) txt.innerText = t('btn_start_screen');
+};
 
 async function toggleScreenStream(){
   const video = document.getElementById('screenVideo');
@@ -539,6 +593,34 @@ async function toggleScreenStream(){
   if (screenStreamOn){
     await stopScreenStream(true);
     statusEl.innerText = t('btn_start_screen');
+    return;
+  }
+
+  // Проверяем, запущено ли приложение в Android APK с нативным MediaCodec SurfaceView декодером
+  if (window.AndroidBridge && typeof window.AndroidBridge.isNativeScreenSupported === 'function' && window.AndroidBridge.isNativeScreenSupported()){
+    screenStreamOn = true;
+    if (btn) btn.className = 'active-pill';
+    if (txt) txt.innerText = t('btn_stop_screen');
+    if (statusEl) statusEl.innerText = t('btn_screen_share') + ' (Moonlight MediaCodec)';
+    await setScreenOpt('monitor', screenCfg.monitor);
+    try {
+      const serverBase = getApiBase() || window.location.origin;
+      window.AndroidBridge.startNativeScreen(
+        serverBase,
+        getToken(),
+        screenCfg.monitor,
+        screenCfg.height,
+        screenCfg.fps,
+        screenCfg.bitrate || 0,
+        'auto',
+        'auto'
+      );
+    } catch (err) {
+      screenStreamOn = false;
+      if (btn) btn.className = 'btn-ytm-red';
+      if (txt) txt.innerText = t('btn_start_screen');
+      if (statusEl) statusEl.innerText = 'Native Screen Error: ' + err.message;
+    }
     return;
   }
 
@@ -562,9 +644,10 @@ async function toggleScreenStream(){
   stage.classList.add('active');
   btn.className = 'active-pill';
   txt.innerText = 'Подключение...';
-  statusEl.innerText = 'Запускаю 60 FPS демонстрацию экрана со звуком...';
+  statusEl.innerText = 'Запускаю WebRTC демонстрацию экрана со звуком...';
 
   await setScreenOpt('monitor', screenCfg.monitor);
+  startScreenTelemetry();
 
   try {
     const pc = new RTCPeerConnection({iceServers: []});

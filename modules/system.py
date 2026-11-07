@@ -407,28 +407,54 @@ def processes():
         return jsonify({"message": "Неверный пароль"}), 401
     now = time.time()
     with _procs_lock:
-        if (now - _procs_cache["time"]) < 1.5 and _procs_cache["data"]:
+        if (now - _procs_cache["time"]) < 1.0 and _procs_cache["data"]:
             return jsonify(_procs_cache["data"])
 
-    result = subprocess.run(
-        ["tasklist", "/FO", "CSV", "/NH"],
-        capture_output=True, text=True, creationflags=NO_WINDOW,
-    )
     procs = []
     seen = set()
-    for row in csv.reader(result.stdout.strip().splitlines()):
-        if len(row) >= 2:
-            name, pid = row[0].strip(), row[1].strip()
-            if not name or not pid.isdigit():
+    try:
+        for p in psutil.process_iter(["pid", "name", "create_time"]):
+            try:
+                info = p.info
+                name = info.get("name")
+                pid = info.get("pid")
+                if not name or pid is None or pid <= 0:
+                    continue
+                lname = name.lower()
+                if lname in HIDDEN_PROCESSES or "svchost" in lname:
+                    continue
+                key = (lname, pid)
+                if key in seen:
+                    continue
+                seen.add(key)
+                procs.append({
+                    "name": name,
+                    "pid": pid,
+                    "create_time": info.get("create_time", 0.0)
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
-            lname = name.lower()
-            if lname in HIDDEN_PROCESSES or "svchost" in lname:
-                continue
-            key = (lname, pid)
-            if key in seen:
-                continue
-            seen.add(key)
-            procs.append({"name": name, "pid": pid})
+    except Exception as e:
+        # Резервный фоллбэк на tasklist, если psutil дал сбой
+        result = subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, creationflags=NO_WINDOW,
+        )
+        for row in csv.reader(result.stdout.strip().splitlines()):
+            if len(row) >= 2:
+                name, pid_str = row[0].strip(), row[1].strip()
+                if not name or not pid_str.isdigit():
+                    continue
+                lname = name.lower()
+                if lname in HIDDEN_PROCESSES or "svchost" in lname:
+                    continue
+                pid_int = int(pid_str)
+                key = (lname, pid_int)
+                if key in seen:
+                    continue
+                seen.add(key)
+                procs.append({"name": name, "pid": pid_int, "create_time": 0.0})
+
     procs.sort(key=lambda p: p["name"].lower())
     with _procs_lock:
         _procs_cache["time"] = now
@@ -445,6 +471,9 @@ def kill_process():
     if not isinstance(data, dict):
         data = {}
     raw_pid = data.get("pid")
+    expected_name = str(data.get("expected_name") or data.get("name") or "").strip().lower()
+    expected_create_time = data.get("create_time")
+
     if raw_pid is None or isinstance(raw_pid, bool):
         return jsonify({"message": "Не указан или некорректный PID"}), 400
     try:
@@ -457,21 +486,115 @@ def kill_process():
     if pid == os.getpid():
         return jsonify({"message": "Нельзя завершать процесс самого сервера"}), 400
 
-    if is_safe_test_mode() or request.headers.get("X-Safe-Mode") == "1":
-        log_action("kill_process", {"pid": pid})
-        return jsonify({"message": f"[SAFE_MODE] Завершение процесса {pid} сымитировано"})
+    if pid in (0, 4):
+        return jsonify({"ok": False, "message": "Запрещено завершать критический системный процесс"}), 403
 
-    result = subprocess.run(
-        ["taskkill", "/PID", str(pid), "/F"],
-        capture_output=True, text=True, creationflags=NO_WINDOW,
-    )
-    with _procs_lock:
-        _procs_cache["time"] = 0.0
-        _procs_cache["data"] = []
-    log_action("kill_process", {"pid": pid})
-    ok = result.returncode == 0
-    message = (result.stdout or result.stderr or "").strip()
-    return jsonify({"message": message if message else ("Процесс завершён" if ok else "Не удалось завершить процесс")})
+    CRITICAL_SYSTEM_NAMES = {
+        "system", "system idle process", "registry", "smss.exe", "csrss.exe",
+        "wininit.exe", "winlogon.exe", "services.exe", "lsass.exe", "dwm.exe"
+    }
+
+    if expected_name and expected_name in CRITICAL_SYSTEM_NAMES:
+        return jsonify({"ok": False, "message": f"Запрещено завершать критический системный процесс {expected_name}"}), 403
+
+    try:
+        proc = psutil.Process(pid)
+        actual_name = proc.name()
+        actual_create_time = proc.create_time()
+
+        if actual_name.lower() in CRITICAL_SYSTEM_NAMES:
+            return jsonify({"ok": False, "message": f"Запрещено завершать критический системный процесс {actual_name}"}), 403
+
+        # Защита от PID recycling: сверяем имя и время создания процесса
+        if expected_name and expected_name != actual_name.lower():
+            return jsonify({
+                "ok": False,
+                "message": f"PID {pid} уже переиспользован другим процессом ({actual_name} вместо {expected_name}). Операция отменена."
+            }), 409
+
+        if expected_create_time is not None:
+            try:
+                exp_ct = float(expected_create_time)
+                if exp_ct > 0 and abs(actual_create_time - exp_ct) > 2.0:
+                    return jsonify({
+                        "ok": False,
+                        "message": f"Процесс {actual_name} (PID {pid}) был перезапущен с момента выборки. Операция отменена во избежание ошибки."
+                    }), 409
+            except (ValueError, TypeError):
+                pass
+
+        if is_safe_test_mode() or request.headers.get("X-Safe-Mode") == "1":
+            log_action("kill_process", {"pid": pid, "simulated": True})
+            return jsonify({"ok": True, "message": f"[SAFE_MODE] Завершение процесса {pid} сымитировано"})
+
+        # Пытаемся завершить корректно (SIGTERM/terminate), при необходимости форсированно (kill)
+        try:
+            proc.terminate()
+            proc.wait(timeout=0.3)
+        except (psutil.TimeoutExpired, psutil.AccessDenied):
+            try:
+                proc.kill()
+                proc.wait(timeout=0.3)
+            except Exception:
+                # Если psutil не справился из-за привилегий, используем taskkill
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True, creationflags=NO_WINDOW)
+
+        is_alive = False
+        try:
+            is_alive = proc.is_running()
+        except psutil.NoSuchProcess:
+            is_alive = False
+
+        with _procs_lock:
+            _procs_cache["time"] = 0.0
+            _procs_cache["data"] = []
+
+        log_action("kill_process", {"pid": pid, "name": actual_name, "success": not is_alive})
+        if not is_alive:
+            return jsonify({
+                "ok": True,
+                "pid": pid,
+                "message": f"Процесс {actual_name} (PID {pid}) успешно завершён"
+            })
+        else:
+            return jsonify({
+                "ok": False,
+                "pid": pid,
+                "message": f"Недостаточно прав для завершения процесса {actual_name} (PID {pid})"
+            }), 403
+
+    except psutil.NoSuchProcess:
+        with _procs_lock:
+            _procs_cache["time"] = 0.0
+            _procs_cache["data"] = []
+        return jsonify({
+            "ok": True,
+            "pid": pid,
+            "message": f"Процесс PID {pid} уже был завершён ранее"
+        })
+    except psutil.AccessDenied:
+        return jsonify({
+            "ok": False,
+            "pid": pid,
+            "message": f"Отказано в доступе при попытке завершить процесс PID {pid}. Требуются права администратора."
+        }), 403
+    except Exception as e:
+        # Резервный вызов taskkill
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"],
+            capture_output=True, text=True, creationflags=NO_WINDOW,
+        )
+        with _procs_lock:
+            _procs_cache["time"] = 0.0
+            _procs_cache["data"] = []
+        log_action("kill_process", {"pid": pid, "fallback": True})
+        ok = result.returncode == 0
+        message = (result.stdout or result.stderr or "").strip()
+        return jsonify({
+            "ok": ok,
+            "pid": pid,
+            "message": message if message else ("Процесс завершён" if ok else "Не удалось завершить процесс")
+        })
 
 
 def get_windows_hello_status() -> dict:

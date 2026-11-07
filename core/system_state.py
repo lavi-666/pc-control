@@ -498,6 +498,106 @@ def capture_shortcut_before_change(
     )
 
 
+def query_wol_adapter(adapter_name: str, interface_desc: str) -> Dict[str, Any]:
+    """Проверяет текущие параметры Wake-on-LAN сетевого адаптера и статус пробуждения powercfg."""
+    sandbox = get_sandbox_dir()
+    if sandbox is not None:
+        state = load_sandbox_windows_state(sandbox)
+        adapters = state.get("wol_adapters", {})
+        info = adapters.get(adapter_name) or adapters.get(interface_desc) or {}
+        return {
+            "adapter_name": adapter_name,
+            "interface_description": interface_desc,
+            "wake_on_magic_packet": str(info.get("WakeOnMagicPacket", "0")),
+            "wake_on_pattern": str(info.get("WakeOnPattern", "0")),
+            "wake_armed": bool(info.get("wake_armed", False)),
+        }
+
+    if platform.system() != "Windows":
+        return {
+            "adapter_name": adapter_name,
+            "interface_description": interface_desc,
+            "wake_on_magic_packet": "0",
+            "wake_on_pattern": "0",
+            "wake_armed": False,
+        }
+
+    # Читаем powercfg /devicequery wake_armed
+    wake_armed = False
+    try:
+        res = subprocess.run(
+            ["powercfg", "/devicequery", "wake_armed"],
+            capture_output=True,
+            text=True,
+            encoding="cp866",
+            errors="replace",
+            creationflags=NO_WINDOW,
+            timeout=5,
+        )
+        if res.returncode == 0:
+            armed_list = [line.strip().lower() for line in res.stdout.splitlines() if line.strip()]
+            desc_lower = interface_desc.strip().lower()
+            wake_armed = any(desc_lower in line or line in desc_lower for line in armed_list)
+    except Exception:
+        pass
+
+    # Читаем через PowerShell свойства сетевого адаптера
+    wake_magic = "0"
+    wake_pattern = "0"
+    try:
+        ps_cmd = (
+            f"$m = (Get-NetAdapterAdvancedProperty -Name '{adapter_name}' -RegistryKeyword '*WakeOnMagicPacket' -ErrorAction SilentlyContinue).RegistryValue; "
+            f"$p = (Get-NetAdapterAdvancedProperty -Name '{adapter_name}' -RegistryKeyword '*WakeOnPattern' -ErrorAction SilentlyContinue).RegistryValue; "
+            f"Write-Output \"$m|$p\""
+        )
+        ps_res = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            creationflags=NO_WINDOW,
+            timeout=8,
+        )
+        if ps_res.returncode == 0 and "|" in ps_res.stdout:
+            parts = ps_res.stdout.strip().split("|", 1)
+            wake_magic = parts[0].strip() or "0"
+            wake_pattern = parts[1].strip() or "0"
+    except Exception:
+        pass
+
+    return {
+        "adapter_name": adapter_name,
+        "interface_description": interface_desc,
+        "wake_on_magic_packet": wake_magic,
+        "wake_on_pattern": wake_pattern,
+        "wake_armed": wake_armed,
+    }
+
+
+def capture_wol_adapter_before_change(
+    adapter_name: str,
+    interface_desc: str,
+    base_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Фиксирует исходные параметры Wake-on-LAN сетевого адаптера перед их активацией."""
+    cur = query_wol_adapter(adapter_name, interface_desc)
+    applied = {
+        "adapter_name": adapter_name,
+        "interface_description": interface_desc,
+        "wake_on_magic_packet": "1",
+        "wake_on_pattern": "1",
+        "wake_armed": True,
+    }
+    safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", adapter_name.lower())
+    return record_state_change(
+        component_id=f"wol.adapter.{safe_name}",
+        category="wol_adapter",
+        description=f"Параметры Wake-on-LAN для сетевого адаптера {adapter_name} ({interface_desc})",
+        original_state=cur,
+        applied_state=applied,
+        base_dir=base_dir,
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="PC Control System State Journal CLI")
     sub = parser.add_subparsers(dest="cmd")
@@ -517,6 +617,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_sc.add_argument("--path", required=True)
     p_sc.add_argument("--target", required=True)
     p_sc.add_argument("--desc", default="Ярлык PC Control")
+
+    p_wol = sub.add_parser("capture-wol-adapter", help="Record Wake-on-LAN adapter settings before activating")
+    p_wol.add_argument("--name", required=True)
+    p_wol.add_argument("--desc", required=True)
+
+    sub.add_parser("status", help="Show current system state journal")
+
+    args = parser.parse_args(argv)
+    if args.cmd == "capture-firewall":
+        capture_firewall_before_change(args.server_port, args.relay_port)
+        return 0
+    if args.cmd == "capture-hello":
+        capture_windows_hello_before_change(bool(args.enabled))
+        return 0
+    if args.cmd == "capture-hiberboot":
+        capture_hiberboot_before_change(args.value)
+        return 0
+    if args.cmd == "capture-shortcut":
+        capture_shortcut_before_change(args.id, Path(args.path), args.target, args.desc)
+        return 0
+    if args.cmd == "capture-wol-adapter":
+        capture_wol_adapter_before_change(args.name, args.desc)
+        return 0
 
     sub.add_parser("status", help="Show current system state journal")
 

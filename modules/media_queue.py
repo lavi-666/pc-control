@@ -50,8 +50,8 @@ _queue_fetching_for: str = ""
 _queue_fetch_in_progress: bool = False
 _last_synced_title: str = ""
 _playback_track_title: str = ""
-_cached_thumb_key: tuple[str, str] = ("", "")
-_cached_thumb_data: str | None = None
+_thumb_cache: dict[tuple[str, str], str] = {}
+_thumb_cache_max = 48
 _ytm_cache: dict[str, list[dict]] = {}
 _track_meta_cache: dict[str, dict] = {}
 _negative_meta_cache: set[str] = set()
@@ -699,7 +699,7 @@ def _sync_queue_with_playing(title: str, artist: str, album: str, duration: floa
 
 
 async def _read_media_info():
-    global _cached_thumb_key, _cached_thumb_data, _playback_track_title
+    global _playback_track_title
     import datetime
     import modules.media as _media_mod
     from winsdk.windows.media.control import (
@@ -762,8 +762,8 @@ async def _read_media_info():
                 if not thumbnail_data_url:
                     thumb_ref = props.thumbnail if props else None
                     track_key = (title_str, artist_str)
-                    if track_key == _cached_thumb_key and _cached_thumb_data:
-                        thumbnail_data_url = _cached_thumb_data
+                    if track_key in _thumb_cache:
+                        thumbnail_data_url = _thumb_cache[track_key]
                     elif thumb_ref:
                         try:
                             stream = await asyncio.wait_for(thumb_ref.open_read_async(), timeout=0.5)
@@ -776,11 +776,11 @@ async def _read_media_info():
                                 reader.read_bytes(raw)
                                 mime = getattr(stream, "content_type", None) or "image/jpeg"
                                 thumbnail_data_url = f"data:{mime};base64," + base64.b64encode(bytes(raw)).decode("ascii")
-                                _cached_thumb_key = track_key
-                                _cached_thumb_data = thumbnail_data_url
+                                if len(_thumb_cache) >= _thumb_cache_max:
+                                    _thumb_cache.pop(next(iter(_thumb_cache)), None)
+                                _thumb_cache[track_key] = thumbnail_data_url
                         except Exception:
-                            _cached_thumb_key = track_key
-                            _cached_thumb_data = None
+                            pass
 
                 position = 0.0
                 duration = 0.0

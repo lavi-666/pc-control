@@ -23,7 +23,9 @@ OUT_SETUP_EXE = BASE_DIR / "PC-Control-Setup.exe"
 ROOT_FILES = (
     "Launcher.exe",
     "Uninstall.exe",
+    "unstaller.exe",
     "PC_Control.apk",
+    "version.json",
     "pc_control.ico",
     "server.py",
     "open_app.pyw",
@@ -66,20 +68,29 @@ def ensure_binaries():
             cwd=str(BASE_DIR),
         )
 
-    # 2. Uninstall.exe
+    # 2. unstaller.exe and Uninstall.exe
+    unstaller_exe = BASE_DIR / "unstaller.exe"
     uninstall_exe = BASE_DIR / "Uninstall.exe"
-    if not uninstall_exe.is_file():
-        print("Compiling Uninstall.exe...", flush=True)
+    uninstall_cs = BASE_DIR / "scripts" / "Uninstall.cs"
+    need_compile_uninst = not unstaller_exe.is_file() or not uninstall_exe.is_file()
+    if not need_compile_uninst and uninstall_cs.is_file():
+        need_compile_uninst = (uninstall_cs.stat().st_mtime > unstaller_exe.stat().st_mtime)
+
+    if need_compile_uninst:
+        print("Compiling unstaller.exe and Uninstall.exe...", flush=True)
         subprocess.run(
             [
                 str(csc), "/nologo", "/optimize+", "/target:winexe",
                 f"/win32icon:{BASE_DIR / 'pc_control.ico'}",
-                f"/out:{uninstall_exe}",
-                str(BASE_DIR / "scripts" / "Uninstall.cs"),
+                f"/out:{unstaller_exe}",
+                "/r:System.IO.Compression.FileSystem.dll",
+                "/r:System.IO.Compression.dll",
+                str(uninstall_cs),
             ],
             check=True,
             cwd=str(BASE_DIR),
         )
+        shutil.copy2(unstaller_exe, uninstall_exe)
 
     # 3. Streamer
     streamer_exe = BASE_DIR / "tools" / "streamer.exe"
@@ -114,11 +125,14 @@ def build_installer(output_path: Path = OUT_SETUP_EXE) -> Path:
         if streamer_exe.is_file():
             paths.append(streamer_exe)
 
-        runtime_dir = BASE_DIR / "runtime"
-        if runtime_dir.is_dir():
-            for p in runtime_dir.rglob("*"):
-                if p.is_file() and "__pycache__" not in p.parts and p.suffix not in (".pyc", ".pyo"):
-                    paths.append(p)
+        # Bundling runtime is optional (for offline release artifacts) to keep the repository installer < 2 MB
+        include_runtime = os.environ.get("PCCONTROL_BUNDLE_RUNTIME", "").strip().lower() in ("1", "true", "yes")
+        if include_runtime:
+            runtime_dir = BASE_DIR / "runtime"
+            if runtime_dir.is_dir():
+                for p in runtime_dir.rglob("*"):
+                    if p.is_file() and "__pycache__" not in p.parts and p.suffix not in (".pyc", ".pyo"):
+                        paths.append(p)
 
         for folder in ("core", "modules", "scripts", "web"):
             f_dir = BASE_DIR / folder

@@ -17,12 +17,18 @@ RFC1918_NETS = (
     ip_network('172.16.0.0/12'),
 )
 VIRTUAL_ADAPTERS = (
-    'tailscale', 'loopback', 'vethernet', 'virtual', 'wsl',
+    'tailscale', 'loopback', 'vethernet', 'virtual', 'wsl', 'wslg',
     'vmware', 'vmnet', 'vbox', 'virtualbox', 'radmin', 'hamachi',
-    'zerotier', 'docker', 'hyper-v', 'bluetooth', 'teredo', 'isatap',
+    'zerotier', 'zt', 'docker', 'hyper-v', 'bluetooth', 'teredo', 'isatap',
     '6to4', 'wireguard', 'openvpn', 'tap-windows', 'wintun',
-    'protonvpn', 'nordlynx', 'warp', 'cloudflare', 'amnezia',
-    'outline', 'anyconnect', 'fortinet', 'pangp', 'npcap', 'miniport',
+    'protonvpn', 'nordlynx', 'nord', 'mullvad', 'expressvpn', 'surfshark',
+    'warp', 'cloudflare', 'amnezia', 'adguard', 'sing-box', 'v2ray', 'xray',
+    'hiddify', 'clash', 'outline', 'anyconnect', 'fortinet', 'pangp', 'npcap',
+    'miniport', 'multipass', 'qemu', 'kvm',
+)
+VIRTUAL_SUBNETS = (
+    ip_network('192.168.56.0/24'),  # VirtualBox host-only
+    ip_network('172.17.0.0/16'),     # Docker default bridge
 )
 SAFE_INSTALLER = re.compile(r'^tailscale-setup-[\w.-]+\.exe$', re.ASCII)
 
@@ -64,6 +70,13 @@ def _is_virtual_adapter(name: str, ip: str, mac: str) -> bool:
     # Layer-3 VPN/TUN interfaces lack a hardware Ethernet MAC address
     if not mac:
         return True
+    # Subnet-based virtual checks
+    try:
+        addr = ip_address(ip)
+        if any(addr in net for net in VIRTUAL_SUBNETS):
+            return True
+    except ValueError:
+        pass
     # VirtualBox Host-Only default IP (192.168.56.1)
     if ip == '192.168.56.1':
         return True
@@ -75,7 +88,7 @@ def _is_virtual_adapter(name: str, ip: str, mac: str) -> bool:
 
 def _probe_route_ips() -> list[str]:
     found: list[str] = []
-    for target in ('10.255.255.255', '192.168.1.1', '192.168.0.1'):
+    for target in ('10.255.255.255', '192.168.1.1', '192.168.0.1', '172.16.0.1', '1.1.1.1', '8.8.8.8'):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.connect((target, 1))
@@ -161,6 +174,27 @@ def detect_network() -> dict[str, str]:
         if not item.get('is_virtual'):
             return {'lan_ip': item['ip'], 'mac_address': item['mac']}
     return {'lan_ip': '', 'mac_address': ''}
+
+
+def get_best_lan_ip() -> str:
+    """Возвращает лучший физический IPv4 адрес для локального подключения телефона или '' если сеть недоступна."""
+    return detect_network().get('lan_ip', '')
+
+
+def get_network_diagnostics() -> dict:
+    interfaces = list_network_interfaces()
+    physical = [item for item in interfaces if not item.get('is_virtual')]
+    virtual = [item for item in interfaces if item.get('is_virtual')]
+    primary = physical[0]['ip'] if physical else ''
+    alternatives = [p['ip'] for p in physical[1:]]
+    return {
+        'ok': bool(primary),
+        'has_lan': bool(primary),
+        'primary_ip': primary,
+        'alternative_ips': alternatives,
+        'physical_interfaces': physical,
+        'virtual_interfaces': [{'name': v['name'], 'ip': v['ip']} for v in virtual],
+    }
 
 
 def powershell_env() -> dict[str, str]:

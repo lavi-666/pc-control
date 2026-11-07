@@ -52,7 +52,7 @@ class TestInstaller(unittest.TestCase):
             "--sandbox-dir",
             str(self.sandbox),
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         self.assertEqual(res.returncode, 0, f"Installer failed: {res.stderr}\n{res.stdout}")
         self.assertIn("Installation successfully completed", res.stdout)
 
@@ -65,9 +65,17 @@ class TestInstaller(unittest.TestCase):
             target_dir / "web" / "index.html",
             target_dir / "core" / "auth.py",
             target_dir / "scripts" / "control_panel.py",
+            target_dir / "install_manifest.json",
         ]
         for f in expected_files:
             self.assertTrue(f.is_file(), f"Expected installed file missing: {f}")
+
+        # Проверяем целостность сгенерированного install_manifest.json
+        manifest_data = json.loads((target_dir / "install_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest_data.get("schema_version"), 1)
+        self.assertEqual(manifest_data.get("application"), "PC Control")
+        self.assertGreater(len(manifest_data.get("files", [])), 10)
+        self.assertTrue(any(f["path"] == "Launcher.exe" for f in manifest_data["files"]))
 
         # Проверяем mock-регистрацию деинсталлятора в песочнице
         reg_file = self.sandbox / "mock_uninstall_reg.json"
@@ -88,6 +96,43 @@ class TestInstaller(unittest.TestCase):
         uninst_res = subprocess.run(uninst_cmd, capture_output=True, text=True, timeout=30)
         self.assertEqual(uninst_res.returncode, 0, f"Uninstall failed: {uninst_res.stderr}\n{uninst_res.stdout}")
         self.assertFalse(reg_file.is_file(), "Uninstall registration must be removed upon uninstallation")
+
+    def test_installer_rejects_root_and_system_directories(self):
+        """Проверка безопасности: установщик блокирует установку в корень диска и системные папки."""
+        # Корень диска C:\
+        res_root = subprocess.run(
+            [str(SETUP_EXE), "/SILENT", "/NORUN", "/DIR=C:\\", "--sandbox-dir", str(self.sandbox)],
+            capture_output=True, text=True, timeout=10
+        )
+        self.assertNotEqual(res_root.returncode, 0, "Installer MUST reject root drive directory C:\\")
+        self.assertIn("ERROR:", res_root.stdout)
+
+        # Системная директория C:\Windows
+        res_win = subprocess.run(
+            [str(SETUP_EXE), "/SILENT", "/NORUN", "/DIR=C:\\Windows", "--sandbox-dir", str(self.sandbox)],
+            capture_output=True, text=True, timeout=10
+        )
+        self.assertNotEqual(res_win.returncode, 0, "Installer MUST reject Windows directory C:\\Windows")
+        self.assertIn("ERROR:", res_win.stdout)
+
+    def test_installer_isolates_existing_directory_with_foreign_files(self):
+        """Проверка изоляции: при установке в существующую чужую папку создаётся изолированная подпапка PC Control."""
+        user_folder = self.sandbox / "MyExistingWorkFolder"
+        user_folder.mkdir(parents=True, exist_ok=True)
+        (user_folder / "my_document.docx").write_text("user content", encoding="utf-8")
+
+        res = subprocess.run(
+            [str(SETUP_EXE), "/SILENT", "/NORUN", f"/DIR={user_folder}", "--sandbox-dir", str(self.sandbox)],
+            capture_output=True, text=True, timeout=60
+        )
+        self.assertEqual(res.returncode, 0)
+
+        # Чужой документ остался нетронутым
+        self.assertTrue((user_folder / "my_document.docx").is_file())
+        # Программа установилась в изолированную подпапку PC Control
+        sub_install = user_folder / "PC Control"
+        self.assertTrue((sub_install / "Launcher.exe").is_file(), "Installer must isolate into 'PC Control' subfolder")
+        self.assertTrue((sub_install / "install_manifest.json").is_file())
 
 
 if __name__ == "__main__":

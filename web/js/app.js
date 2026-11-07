@@ -19,11 +19,37 @@ let _memoryToken = '';
   try {
     const params = new URLSearchParams(window.location.search);
     const urlTok = (params.get('token') || '').trim();
+    const urlTicket = (params.get('ticket') || '').trim();
     const urlLan = (params.get('lan') || params.get('lan_host') || '').trim();
     const urlVpn = (params.get('vpn') || params.get('vpn_host') || '').trim();
     const urlMac = (params.get('mac') || '').trim();
     const urlRelay = (params.get('relay') || '').trim();
     let changed = false;
+
+    if (urlTicket) {
+      params.delete('ticket');
+      changed = true;
+      fetch(resolveApiUrl('/api/pair/exchange'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ticket: urlTicket})
+      }).then(r => r.json()).then(data => {
+        if (data && data.ok && data.token) {
+          _memoryToken = data.token;
+          try { sessionStorage.setItem('pc_token', data.token); } catch(e){}
+          try { localStorage.setItem('pc_token', data.token); } catch(e){}
+          try { document.cookie = 'token=' + encodeURIComponent(data.token) + '; path=/; max-age=31536000; SameSite=Lax'; } catch(e){}
+          if (typeof checkAuthAndConnect === 'function') checkAuthAndConnect();
+        } else {
+          const statusEl = document.getElementById('statusMsg');
+          if (statusEl) statusEl.innerText = (data && data.message) ? data.message : 'Срок действия QR-кода истёк или билет уже был использован';
+          if (typeof requestNewToken === 'function') requestNewToken('Срок действия ссылки сопряжения истёк. Введите пароль или отсканируйте новый QR.');
+        }
+      }).catch(err => {
+        const statusEl = document.getElementById('statusMsg');
+        if (statusEl) statusEl.innerText = 'Ошибка соединения при попытке сопряжения по QR-коду';
+      });
+    }
 
     if (urlTok) {
       _memoryToken = urlTok;
@@ -70,7 +96,7 @@ let _memoryToken = '';
     }
     if (changed && window.history && window.history.replaceState) {
       const cleanUrl = new URL(window.location.href);
-      ['token', 'lan', 'lan_host', 'vpn', 'vpn_host', 'mac', 'relay'].forEach(k => cleanUrl.searchParams.delete(k));
+      ['token', 'ticket', 'lan', 'lan_host', 'vpn', 'vpn_host', 'mac', 'relay'].forEach(k => cleanUrl.searchParams.delete(k));
       window.history.replaceState({}, document.title, cleanUrl.toString());
     }
   } catch (e) {}
@@ -278,7 +304,15 @@ async function switchQrMode(mode){
     btnApk.style.background = 'transparent';
     btnApk.style.color = 'var(--muted)';
     hint.innerText = (currentQrNetwork === 'vpn') ? (t('qr_hint_web_vpn') || 'Камера смартфона откроет пульт через интернет (Tailscale):') : t('qr_hint_web');
-    const target = tok ? (baseHost + '/?token=' + encodeURIComponent(tok)) : baseHost;
+    let authParam = tok ? ('token=' + encodeURIComponent(tok)) : '';
+    try {
+      const ticketRes = await fetch(resolveApiUrl('/api/pair/ticket'), {headers: {'X-Auth-Token': tok}});
+      const tData = await ticketRes.json();
+      if (tData && tData.ok && tData.ticket) {
+        authParam = 'ticket=' + encodeURIComponent(tData.ticket);
+      }
+    } catch(e) {}
+    const target = authParam ? (baseHost + '/?' + authParam) : baseHost;
     currentQrTargetUrl = target;
     urlEl.innerText = connSecState.qrUrl ? target : '••••••••••••••••••••••••';
     loadQrImage(target);
@@ -296,30 +330,44 @@ async function switchQrMode(mode){
   }
 }
 
+let _qrRefreshTimer = null;
+
 async function toggleQrModal(open){
   const el = document.getElementById('qrModalBackdrop');
   if (!el) return;
   if (open === undefined) open = !el.classList.contains('open');
   el.classList.toggle('open', open);
+  if (_qrRefreshTimer) {
+    clearInterval(_qrRefreshTimer);
+    _qrRefreshTimer = null;
+  }
   if (open) {
     connSecState.qrUrl = false;
     const btnEyeQr = document.getElementById('btnEyeQrUrl');
     if (btnEyeQr) btnEyeQr.classList.remove('revealed');
     try {
-      {
-        const res = await apiFetch('/api/lan_info');
-        if (res && res.ok) {
-          lanInfoCache = await res.json();
-          if (lanInfoCache && lanInfoCache.mac_address && !localStorage.getItem('pc_mac_address')) {
-            try { localStorage.setItem('pc_mac_address', lanInfoCache.mac_address); } catch(e){}
-          }
-          if (lanInfoCache && lanInfoCache.vpn_url && !localStorage.getItem('pc_vpn_host')) {
-            try { localStorage.setItem('pc_vpn_host', lanInfoCache.vpn_url); } catch(e){}
-          }
+      const res = await apiFetch('/api/lan_info');
+      if (res && res.ok) {
+        lanInfoCache = await res.json();
+        if (lanInfoCache && lanInfoCache.mac_address && !localStorage.getItem('pc_mac_address')) {
+          try { localStorage.setItem('pc_mac_address', lanInfoCache.mac_address); } catch(e){}
+        }
+        if (lanInfoCache && lanInfoCache.vpn_url && !localStorage.getItem('pc_vpn_host')) {
+          try { localStorage.setItem('pc_vpn_host', lanInfoCache.vpn_url); } catch(e){}
         }
       }
     } catch(e) {}
     switchQrMode(currentQrMode || 'web');
+    // Автоматически обновляем билет сопряжения каждые 4 минуты пока окно открыто, чтобы QR не тух
+    _qrRefreshTimer = setInterval(() => {
+      const m = document.getElementById('qrModalBackdrop');
+      if (m && m.classList.contains('open')) {
+        switchQrMode(currentQrMode || 'web');
+      } else {
+        clearInterval(_qrRefreshTimer);
+        _qrRefreshTimer = null;
+      }
+    }, 240000);
   }
 }
 
@@ -426,6 +474,8 @@ function openLoginModal(errorMessage = ''){
 function closeLoginModal(){
   const backdrop = document.getElementById('loginModalBackdrop');
   if (backdrop) backdrop.classList.remove('open');
+  const pwdInp = document.getElementById('loginPasswordInput');
+  if (pwdInp) pwdInp.value = '';
 }
 
 function requestNewToken(errorMessage = ''){
@@ -522,9 +572,9 @@ function toggleLoginPwdVisibility(){
   const pwdInp = document.getElementById('loginPasswordInput');
   const btn = document.getElementById('btnEyeLoginPwd');
   if (!pwdInp) return;
-  const isPass = (pwdInp.type === 'password');
-  pwdInp.type = isPass ? 'text' : 'password';
-  if (btn) btn.classList.toggle('revealed', isPass);
+  const isRevealed = pwdInp.classList.contains('pwd-revealed');
+  pwdInp.classList.toggle('pwd-revealed', !isRevealed);
+  if (btn) btn.classList.toggle('revealed', !isRevealed);
 }
 
 function toggleLoginRemember(){
@@ -866,37 +916,216 @@ async function manualStopServer(){
 }
 
 
+// ---------- Единая модель состояний соединения (Connection State Machine) ----------
+const ConnState = {
+  DISCONNECTED: 'DISCONNECTED',
+  CONNECTING: 'CONNECTING',
+  CONNECTED: 'CONNECTED',
+  RECONNECTING: 'RECONNECTING',
+  AUTH_REQUIRED: 'AUTH_REQUIRED',
+  SERVER_UNAVAILABLE: 'SERVER_UNAVAILABLE',
+  MANUALLY_DISCONNECTED: 'MANUALLY_DISCONNECTED'
+};
+
+let currentConnState = ConnState.DISCONNECTED;
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+let isReconnectingActive = false;
+
+function isServerConnected(){
+  return currentConnState === ConnState.CONNECTED;
+}
+
+function setConnectionState(newState, reason = ''){
+  const prevState = currentConnState;
+  currentConnState = newState;
+  const dot = document.getElementById('dot');
+  const text = document.getElementById('pctext');
+  const offBanner = document.getElementById('offlineBanner');
+  const statusMsg = document.getElementById('statusMsg');
+
+  switch (newState) {
+    case ConnState.CONNECTED:
+      reconnectAttempts = 0;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (dot) dot.className = 'dot online';
+      if (offBanner) offBanner.classList.remove('show');
+      if (prevState !== ConnState.CONNECTED && prevState !== ConnState.CONNECTING) {
+        if (statusMsg) statusMsg.innerText = (typeof t === 'function' ? t('status_online') : 'Подключено');
+      }
+      break;
+
+    case ConnState.CONNECTING:
+      if (dot) dot.className = 'dot connecting';
+      if (text) text.innerText = (typeof t === 'function' ? t('status_checking') : 'Подключение...');
+      break;
+
+    case ConnState.RECONNECTING:
+      if (dot) dot.className = 'dot reconnecting';
+      if (text) text.innerText = (typeof t === 'function' ? t('status_reconnecting') : 'Восстановление связи...');
+      if (offBanner) offBanner.classList.add('show');
+      scheduleAutoReconnect();
+      break;
+
+    case ConnState.AUTH_REQUIRED:
+      if (dot) dot.className = 'dot auth-required';
+      if (text) text.innerText = (typeof t === 'function' ? t('status_auth_required') : 'Требуется пароль');
+      if (offBanner) offBanner.classList.remove('show');
+      break;
+
+    case ConnState.SERVER_UNAVAILABLE:
+    case ConnState.DISCONNECTED:
+      if (dot) dot.className = 'dot offline';
+      if (text) text.innerText = (typeof t === 'function' ? t('status_offline') : 'Не в сети');
+      if (offBanner) offBanner.classList.add('show');
+      scheduleAutoReconnect();
+      break;
+
+    case ConnState.MANUALLY_DISCONNECTED:
+      if (dot) dot.className = 'dot offline';
+      if (text) text.innerText = 'Отключено пользователем';
+      if (offBanner) offBanner.classList.add('show');
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      break;
+  }
+}
+
+function scheduleAutoReconnect(){
+  if (currentConnState === ConnState.CONNECTED ||
+      currentConnState === ConnState.MANUALLY_DISCONNECTED ||
+      currentConnState === ConnState.AUTH_REQUIRED) {
+    return;
+  }
+  if (isReconnectingActive) return;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+
+  reconnectAttempts++;
+  // Экспоненциальный backoff: 1.2s, 1.8s, 2.7s ... максимум 20s + случайный jitter
+  const backoff = Math.min(20000, 1000 * Math.pow(1.5, Math.min(reconnectAttempts, 7)));
+  const jitter = Math.random() * 500;
+  const delay = Math.round(backoff + jitter);
+
+  reconnectTimer = setTimeout(async () => {
+    if (currentConnState === ConnState.CONNECTED || currentConnState === ConnState.MANUALLY_DISCONNECTED) return;
+    isReconnectingActive = true;
+    try {
+      const winner = await probeBestServer();
+      if (winner) {
+        const tok = getToken();
+        let authOk = true;
+        if (tok) {
+          try {
+            const vRes = await fetchWithTimeout(winner.url + '/api/auth/verify', {
+              headers: {'X-Auth-Token': encodeURIComponent(tok)}
+            }, 3000);
+            if (vRes.status === 401) {
+              authOk = false;
+            }
+          } catch(e) {}
+        }
+        if (!authOk) {
+          setConnectionState(ConnState.AUTH_REQUIRED);
+          requestNewToken();
+        } else {
+          setConnectionState(ConnState.CONNECTED);
+          const pcName = (winner.data && winner.data.hostname) ? winner.data.hostname : 'PC Control';
+          const text = document.getElementById('pctext');
+          if (text) text.innerText = pcName + (winner.label ? ' · ' + winner.label : '');
+          if (typeof pollMedia === 'function') pollMedia();
+          if (typeof loadQueue === 'function') loadQueue();
+          if (typeof checkTimerStatus === 'function') checkTimerStatus();
+        }
+      } else {
+        setConnectionState(ConnState.RECONNECTING);
+      }
+    } catch (e) {
+      setConnectionState(ConnState.RECONNECTING);
+    } finally {
+      isReconnectingActive = false;
+    }
+  }, delay);
+}
+
+window.addEventListener('online', () => {
+  reconnectAttempts = 0;
+  if (currentConnState !== ConnState.CONNECTED) {
+    setConnectionState(ConnState.CONNECTING);
+    checkStatus();
+  }
+});
+window.addEventListener('offline', () => {
+  setConnectionState(ConnState.DISCONNECTED, 'Потеряно сетевое подключение на устройстве');
+});
+
+let _inFlightGetRequests = new Map();
+
 async function apiFetch(url, options = {}){
-  const headers = Object.assign({}, options.headers, {'X-Auth-Token': encodeURIComponent(getToken())});
-  let targetUrl = resolveApiUrl(url);
-  let res;
-  try {
-    res = await fetch(targetUrl, Object.assign({}, options, {headers}));
-  } catch (err) {
-    // Если текущий маршрут недоступен (например, вышел из дома и переключился на Tailscale),
-    // автоматически находим рабочий маршрут и повторяем запрос
-    const switched = await probeBestServer();
-    if (switched){
-      targetUrl = resolveApiUrl(url);
+  const method = (options.method || 'GET').toUpperCase();
+  const isMutating = (method === 'POST' || method === 'PUT' || method === 'DELETE');
+
+  // In-flight дедупликация параллельных GET-запросов к одинаковым маршрутам
+  if (!isMutating) {
+    const cacheKey = method + ':' + url;
+    if (_inFlightGetRequests.has(cacheKey)) {
+      return _inFlightGetRequests.get(cacheKey);
+    }
+  }
+
+  const doFetch = async () => {
+    const headers = Object.assign({}, options.headers, {'X-Auth-Token': encodeURIComponent(getToken())});
+    if (isMutating && !headers['X-Request-Id']) {
+      headers['X-Request-Id'] = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+    }
+    let targetUrl = resolveApiUrl(url);
+    let res;
+    try {
       res = await fetch(targetUrl, Object.assign({}, options, {headers}));
-    } else {
-      throw err;
+    } catch (err) {
+      if (isMutating) {
+        // КРИТИЧЕСКОЕ ТРЕБОВАНИЕ: При сбое сети запрещено вслепую повторно выполнять неидемпотентный POST!
+        setConnectionState(ConnState.RECONNECTING, 'Сбой сети во время выполнения команды');
+        throw err;
+      }
+      // Для идемпотентного GET: ищем рабочий маршрут и повторяем
+      const switched = await probeBestServer();
+      if (switched) {
+        targetUrl = resolveApiUrl(url);
+        res = await fetch(targetUrl, Object.assign({}, options, {headers}));
+      } else {
+        setConnectionState(ConnState.SERVER_UNAVAILABLE);
+        throw err;
+      }
     }
+    if (res.status === 401) {
+      setConnectionState(ConnState.AUTH_REQUIRED);
+      try { localStorage.removeItem('pc_token'); } catch (e) {}
+      const newTok = await requestNewToken();
+      if (newTok) {
+        headers['X-Auth-Token'] = encodeURIComponent(newTok);
+        return await fetch(targetUrl, Object.assign({}, options, {headers}));
+      }
+      const statusEl = document.getElementById('statusMsg');
+      if (statusEl) {
+        statusEl.innerText = (typeof t === 'function' ? t('msg_auth_err') : 'Неверный пароль доступа к серверу');
+      }
+      throw new Error('unauthorized');
+    }
+    if (res.ok && currentConnState !== ConnState.CONNECTED) {
+      setConnectionState(ConnState.CONNECTED);
+    }
+    return res;
+  };
+
+  if (!isMutating) {
+    const cacheKey = method + ':' + url;
+    const p = doFetch().finally(() => {
+      _inFlightGetRequests.delete(cacheKey);
+    });
+    _inFlightGetRequests.set(cacheKey, p);
+    return p;
   }
-  if (res.status === 401){
-    try { localStorage.removeItem('pc_token'); } catch (e) {}
-    const newTok = await requestNewToken();
-    if (newTok){
-      headers['X-Auth-Token'] = encodeURIComponent(newTok);
-      return await fetch(targetUrl, Object.assign({}, options, {headers}));
-    }
-    const statusEl = document.getElementById('statusMsg');
-    if (statusEl){
-      statusEl.innerText = (typeof t === 'function' ? t('msg_auth_err') : 'Неверный пароль доступа к серверу');
-    }
-    throw new Error('unauthorized');
-  }
-  return res;
+
+  return doFetch();
 }
 
 // ---------- Защита ползунков от случайного свайпа при прокрутке экрана ----------
@@ -1293,20 +1522,19 @@ async function triggerWakeOnLan(){
 }
 
 async function checkStatus(){
-  const dot = document.getElementById('dot');
+  if (currentConnState === ConnState.MANUALLY_DISCONNECTED) return;
   const text = document.getElementById('pctext');
-  const offBanner = document.getElementById('offlineBanner');
   try {
     const winner = await probeBestServer();
-    if (!winner) throw new Error('offline');
-    dot.className = 'dot online';
+    if (!winner) {
+      setConnectionState(ConnState.SERVER_UNAVAILABLE);
+      return;
+    }
     const pcName = (winner.data && winner.data.hostname) ? winner.data.hostname : 'PC Control';
-    text.innerText = pcName + (winner.label ? ' · ' + winner.label : '');
-    if (offBanner) offBanner.classList.remove('show');
+    if (text) text.innerText = pcName + (winner.label ? ' · ' + winner.label : '');
+    setConnectionState(ConnState.CONNECTED);
   } catch (e) {
-    dot.className = 'dot offline';
-    text.innerText = t('status_offline');
-    if (offBanner) offBanner.classList.add('show');
+    setConnectionState(ConnState.SERVER_UNAVAILABLE);
   }
 }
 
@@ -1601,7 +1829,29 @@ function escapeHtml(str){
     .replace(/'/g, '&#39;');
 }
 
-async function loadProcessesList(){
+let _procAutoPollTimer = null;
+let _procSearchDebounce = null;
+
+function startProcAutoPoll(){
+  stopProcAutoPoll();
+  _procAutoPollTimer = setInterval(() => {
+    const box = document.getElementById('processesBox');
+    if (box && box.style.display === 'block' && isAppVisible() && isServerConnected()){
+      loadProcessesList(true);
+    } else {
+      stopProcAutoPoll();
+    }
+  }, 4000);
+}
+
+function stopProcAutoPoll(){
+  if (_procAutoPollTimer){
+    clearInterval(_procAutoPollTimer);
+    _procAutoPollTimer = null;
+  }
+}
+
+async function loadProcessesList(isSilentBackground = false){
   const listEl = document.getElementById('processesList');
   if (!listEl) return;
   const scrollPos = listEl.scrollTop;
@@ -1612,8 +1862,10 @@ async function loadProcessesList(){
     renderProcessesList();
     listEl.scrollTop = scrollPos;
   } catch (e) {
-    listEl.innerHTML = '<div style="padding:14px 6px; text-align:center; color:var(--muted); font-size:12px;">' +
-      t('msg_server_err') + '</div>';
+    if (!isSilentBackground){
+      listEl.innerHTML = '<div style="padding:14px 6px; text-align:center; color:var(--muted); font-size:12px;">' +
+        (typeof t === 'function' ? t('msg_server_err') : 'Ошибка загрузки процессов') + '</div>';
+    }
   }
 }
 
@@ -1624,6 +1876,13 @@ function clearProcSearch(){
     inp.focus();
   }
   renderProcessesList();
+}
+
+function onProcSearchInput(){
+  if (_procSearchDebounce) clearTimeout(_procSearchDebounce);
+  _procSearchDebounce = setTimeout(() => {
+    renderProcessesList();
+  }, 100);
 }
 
 function renderProcessesList(){
@@ -1656,21 +1915,52 @@ function renderProcessesList(){
 
   if (filtered.length === 0){
     listEl.innerHTML = '<div style="padding:14px 6px; text-align:center; color:var(--muted); font-size:12px;">' +
-      (allProcessesData.length === 0 ? t('proc_empty') : t('proc_not_found')) +
+      (allProcessesData.length === 0 ? (typeof t === 'function' ? t('proc_empty') : 'Нет активных процессов') : (typeof t === 'function' ? t('proc_not_found') : 'Процессы не найдены')) +
       '</div>';
     return;
   }
 
-  listEl.innerHTML = filtered.map(p => {
+  // Дифференциальное обновление DOM по data-pid (сохраняет фокус и плавность)
+  const existingMap = new Map();
+  Array.from(listEl.querySelectorAll('.drawer-row[data-pid]')).forEach(el => {
+    existingMap.set(el.dataset.pid, el);
+  });
+
+  const termText = (typeof t === 'function' ? t('btn_terminate') : 'Завершить');
+  const docFrag = document.createDocumentFragment();
+
+  filtered.forEach(p => {
+    const pidStr = String(p.pid);
     const cleanName = escapeHtml((p.name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
-    return '<div class="drawer-row">' +
-      '<span style="display:inline-flex; align-items:center; gap:6px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' +
-        '<span style="font-weight:500; overflow:hidden; text-overflow:ellipsis;">' + escapeHtml(p.name) + '</span>' +
-        '<span style="color:var(--muted); font-family:var(--font-mono); font-size:11px; flex-shrink:0;">#' + p.pid + '</span>' +
-      '</span>' +
-      '<button class="danger-soft" onclick="killProcess(\'' + p.pid + '\', \'' + cleanName + '\')">' + t('btn_terminate') + '</button>' +
-    '</div>';
-  }).join('');
+    const ct = p.create_time || 0.0;
+    let row = existingMap.get(pidStr);
+
+    if (row){
+      existingMap.delete(pidStr);
+      // Обновляем имя, если изменилось
+      const nameEl = row.querySelector('.proc-name');
+      if (nameEl && nameEl.textContent !== p.name) nameEl.textContent = p.name;
+    } else {
+      row = document.createElement('div');
+      row.className = 'drawer-row';
+      row.dataset.pid = pidStr;
+      row.innerHTML =
+        '<span style="display:inline-flex; align-items:center; gap:6px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' +
+          '<span class="proc-name" style="font-weight:500; overflow:hidden; text-overflow:ellipsis;">' + escapeHtml(p.name) + '</span>' +
+          '<span style="color:var(--muted); font-family:var(--font-mono); font-size:11px; flex-shrink:0;">#' + pidStr + '</span>' +
+        '</span>' +
+        '<button class="danger-soft" onclick="killProcess(' + p.pid + ', \'' + cleanName + '\', ' + ct + ')">' + termText + '</button>';
+    }
+    docFrag.appendChild(row);
+  });
+
+  // Удаляем строки процессов, которых больше нет
+  existingMap.forEach(deadRow => {
+    if (deadRow.parentNode) deadRow.parentNode.removeChild(deadRow);
+  });
+
+  listEl.innerHTML = '';
+  listEl.appendChild(docFrag);
 }
 
 async function showProcesses(){
@@ -1680,22 +1970,30 @@ async function showProcesses(){
   if (box.style.display === 'block'){
     box.style.display = 'none';
     if (btn) btn.classList.remove('active');
+    stopProcAutoPoll();
     return;
   }
   box.style.display = 'block';
   if (btn) btn.classList.add('active');
   await loadProcessesList();
+  startProcAutoPoll();
 }
 
-async function killProcess(pid, name){
+async function killProcess(pid, name, createTime){
   if (!confirm(t('msg_confirm_kill', {name, pid}))) return;
   try {
     const res = await apiFetch('/processes/kill', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({pid})
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        pid: parseInt(pid, 10),
+        expected_name: name || '',
+        create_time: createTime || 0.0
+      })
     });
     const data = await res.json();
-    document.getElementById('statusMsg').innerText = data.message;
+    const statusEl = document.getElementById('statusMsg');
+    if (statusEl && data.message) statusEl.innerText = data.message;
     await loadProcessesList();
   } catch (e) {}
 }

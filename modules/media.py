@@ -504,12 +504,14 @@ async def _get_media_manager():
         return None
 
 
+_last_controlled_app_id: str = ""
+
 async def _get_scored_media_sessions():
     from winsdk.windows.media.control import (
         GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
     )
 
-    global _media_manager
+    global _media_manager, _last_controlled_app_id
     manager = await _get_media_manager()
     if manager is None:
         return []
@@ -556,6 +558,10 @@ async def _get_scored_media_sessions():
             score += 300
         elif status_val in (PlaybackStatus.CHANGING, PlaybackStatus.OPENED):
             score += 100
+
+        # Сессионный аффинитет: если пользователь недавно управлял этим плеером, отдаем ему приоритет
+        if _last_controlled_app_id and _last_controlled_app_id in app_id:
+            score += 250
 
         if is_browser:
             score += 50
@@ -709,6 +715,10 @@ async def _control_media(action: str, position: float | None = None):
             else:
                 ok = False
             if ok:
+                try:
+                    _last_controlled_app_id = (session.source_app_user_model_id or "").lower()
+                except Exception:
+                    pass
                 invalidate_dom_cache()
                 return True, None
     except Exception:

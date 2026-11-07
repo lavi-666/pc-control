@@ -7,6 +7,7 @@ import json
 import secrets
 import threading
 import time
+from typing import Any
 from pathlib import Path
 from flask import request
 from core.config import LOGS_DIR, get_auth_token, is_safe_test_mode, load_app_config
@@ -302,3 +303,46 @@ def check_token(allow_stream_query: bool = False) -> bool:
         register_failure(ip)
 
     return False
+
+
+# ---------- Одноразовые билеты сопряжения (Pairing Tickets) ----------
+_pairing_tickets: dict[str, dict[str, Any]] = {}
+_pairing_lock = threading.RLock()
+PAIRING_TICKET_TTL = 300  # 5 минут
+
+
+def create_pairing_ticket(ttl: int = PAIRING_TICKET_TTL) -> str:
+    """Создаёт криптографически стойкий одноразовый билет сопряжения с ограниченным временем жизни (TTL)."""
+    with _pairing_lock:
+        now = time.time()
+        expired = [t for t, data in _pairing_tickets.items() if data.get("expires_at", 0) <= now or data.get("used")]
+        for t in expired:
+            _pairing_tickets.pop(t, None)
+
+        ticket = secrets.token_urlsafe(24)
+        _pairing_tickets[ticket] = {
+            "created_at": now,
+            "expires_at": now + max(60, ttl),
+            "used": False,
+        }
+        return ticket
+
+
+def redeem_pairing_ticket(ticket: str) -> str | None:
+    """Проверяет и погашает одноразовый билет сопряжения.
+    Возвращает токен доступа при успехе или None при недействительном/истёкшем билете.
+    Использованный билет немедленно инвалидируется (single-use)."""
+    if not ticket or not isinstance(ticket, str):
+        return None
+    with _pairing_lock:
+        now = time.time()
+        data = _pairing_tickets.get(ticket)
+        if not data:
+            return None
+        if data.get("used") or data.get("expires_at", 0) <= now:
+            _pairing_tickets.pop(ticket, None)
+            return None
+
+        data["used"] = True
+        _pairing_tickets.pop(ticket, None)
+        return get_auth_token()

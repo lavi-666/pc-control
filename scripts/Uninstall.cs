@@ -852,6 +852,21 @@ namespace PCControl
                         item.PlannedAction = "NONE";
                     }
                 }
+                else if (cat == "wol_adapter")
+                {
+                    string nicName = orig["adapter_name"] != null ? orig["adapter_name"].AsString : "";
+                    string nicDesc = orig["interface_description"] != null ? orig["interface_description"].AsString : "";
+                    string origMagic = orig["wake_on_magic_packet"] != null ? orig["wake_on_magic_packet"].AsString : "0";
+                    string origPattern = orig["wake_on_pattern"] != null ? orig["wake_on_pattern"].AsString : "0";
+                    bool origArmed = orig["wake_armed"] != null && orig["wake_armed"].AsBool;
+
+                    item.ExistedBefore = true;
+                    item.OriginalValue = string.Format("Magic:{0}, Pattern:{1}, Armed:{2}", origMagic, origPattern, origArmed);
+                    item.AppliedValue = "Magic:1, Pattern:1, Armed:True";
+                    item.CurrentValue = "Active";
+
+                    item.PlannedAction = "RESTORE_WOL_ADAPTER";
+                }
 
                 plan.Add(item);
             }
@@ -939,6 +954,101 @@ namespace PCControl
                     }
                     item.ExecutionResult = "SHORTCUT_REMOVED";
                 }
+                else if (item.PlannedAction == "RESTORE_WOL_ADAPTER" && opts.RestoreSystemSettings)
+                {
+                    var entry = journal != null && journal["entries"] != null && journal["entries"][item.ComponentId] != null
+                        ? journal["entries"][item.ComponentId] : null;
+                    if (entry != null && entry["original_state"] != null)
+                    {
+                        var orig = entry["original_state"];
+                        string nicName = orig["adapter_name"] != null ? orig["adapter_name"].AsString : "";
+                        string nicDesc = orig["interface_description"] != null ? orig["interface_description"].AsString : "";
+                        string origMagic = orig["wake_on_magic_packet"] != null ? orig["wake_on_magic_packet"].AsString : "0";
+                        string origPattern = orig["wake_on_pattern"] != null ? orig["wake_on_pattern"].AsString : "0";
+                        bool origArmed = orig["wake_armed"] != null && orig["wake_armed"].AsBool;
+
+                        log("Restoring network adapter WOL settings for: " + nicName);
+                        RestoreWolAdapter(nicName, nicDesc, origMagic, origPattern, origArmed, opts, log);
+                        item.ExecutionResult = "ADAPTER_RESTORED";
+                    }
+                }
+            }
+        }
+
+        public static void RunPowerShell(string script)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("powershell.exe", "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"" + script.Replace("\"", "\\\"") + "\"")
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+                var p = Process.Start(psi);
+                if (p != null) p.WaitForExit(5000);
+            }
+            catch { }
+        }
+
+        public static void RestoreWolAdapter(string nicName, string nicDesc, string origMagic, string origPattern, bool origArmed, UninstallOptions opts, Action<string> log)
+        {
+            if (opts.DryRun)
+            {
+                log(string.Format("[DRY-RUN] Restore adapter '{0}': WakeOnMagicPacket={1}, WakeOnPattern={2}, WakeArmed={3}", nicName, origMagic, origPattern, origArmed));
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(opts.SandboxDir))
+            {
+                string mockFile = Path.Combine(opts.SandboxDir, "mock_windows_state.json");
+                try
+                {
+                    if (File.Exists(mockFile))
+                    {
+                        var state = JsonValue.Parse(File.ReadAllText(mockFile, Encoding.UTF8));
+                        if (state != null && state["wol_adapters"] != null)
+                        {
+                            var adapters = state["wol_adapters"].AsObject;
+                            if (adapters.ContainsKey(nicName))
+                            {
+                                adapters[nicName]["WakeOnMagicPacket"] = JsonValue.From(origMagic);
+                                adapters[nicName]["WakeOnPattern"] = JsonValue.From(origPattern);
+                                adapters[nicName]["wake_armed"] = JsonValue.From(origArmed);
+                                File.WriteAllText(mockFile, state.ToString(), new UTF8Encoding(false));
+                            }
+                        }
+                    }
+                }
+                catch { }
+                log(string.Format("Restored sandbox WOL adapter '{0}' to original state.", nicName));
+                return;
+            }
+
+            try
+            {
+                if (origMagic != "1")
+                {
+                    RunPowerShell(string.Format("Set-NetAdapterAdvancedProperty -Name '{0}' -RegistryKeyword '*WakeOnMagicPacket' -RegistryValue '{1}' -ErrorAction SilentlyContinue", nicName, origMagic));
+                }
+                if (origPattern != "1")
+                {
+                    RunPowerShell(string.Format("Set-NetAdapterAdvancedProperty -Name '{0}' -RegistryKeyword '*WakeOnPattern' -RegistryValue '{1}' -ErrorAction SilentlyContinue", nicName, origPattern));
+                }
+                if (!origArmed && !string.IsNullOrEmpty(nicDesc))
+                {
+                    var psi = new ProcessStartInfo("powercfg", string.Format("/devicedisablewake \"{0}\"", nicDesc))
+                    {
+                        CreateNoWindow = true,
+                        UseShellExecute = false
+                    };
+                    Process.Start(psi);
+                }
+                log(string.Format("Restored network adapter '{0}' Wake-on-LAN and powercfg settings.", nicName));
+            }
+            catch (Exception ex)
+            {
+                log("Warning restoring network adapter: " + ex.Message);
             }
         }
 
@@ -973,62 +1083,197 @@ namespace PCControl
                 }
             }
 
-            // 2. Clean files in project directory
+            // 2. Clean mock registration if in sandbox mode
             if (!string.IsNullOrEmpty(opts.SandboxDir))
             {
                 string mockReg = Path.Combine(opts.SandboxDir, "mock_uninstall_reg.json");
                 if (File.Exists(mockReg)) { try { File.Delete(mockReg); } catch { } }
-                log("Sandbox directory files and mock registration cleaned.");
+
+                // Если baseDir не находится внутри песочницы (например, запуск Uninstall.exe из каталога репозитория для юнит-тестов),
+                // не производим удаление файлов рабочего каталога репозитория!
+                string fullBase = Path.GetFullPath(baseDir).TrimEnd('\\', '/');
+                string fullSandbox = Path.GetFullPath(opts.SandboxDir).TrimEnd('\\', '/');
+                if (!fullBase.StartsWith(fullSandbox, StringComparison.OrdinalIgnoreCase))
+                {
+                    log("Sandbox mode: baseDir is outside sandbox directory, skipping application files deletion.");
+                    return;
+                }
+            }
+            else
+            {
+                // Clean Windows Add/Remove Programs registration
+                try
+                {
+                    string uninstSubkey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PC Control";
+                    Registry.CurrentUser.DeleteSubKeyTree(uninstSubkey, false);
+                    Registry.LocalMachine.DeleteSubKeyTree(uninstSubkey, false);
+                }
+                catch { }
+
+                // Clean Start Menu shortcuts
+                try
+                {
+                    string startMenu = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "PC Control");
+                    if (Directory.Exists(startMenu)) Directory.Delete(startMenu, true);
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrEmpty(baseDir) || !Directory.Exists(baseDir))
+            {
                 return;
             }
 
-            // Clean Windows Add/Remove Programs registration
-            try
-            {
-                string uninstSubkey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PC Control";
-                Registry.CurrentUser.DeleteSubKeyTree(uninstSubkey, false);
-                Registry.LocalMachine.DeleteSubKeyTree(uninstSubkey, false);
-            }
-            catch { }
-
-            // Clean Start Menu shortcuts
-            try
-            {
-                string startMenu = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "PC Control");
-                if (Directory.Exists(startMenu)) Directory.Delete(startMenu, true);
-            }
-            catch { }
-
             log("Cleaning application directory files in " + baseDir);
+            string selfExe = Process.GetCurrentProcess().MainModule.FileName;
+            string manifestPath = Path.Combine(baseDir, "install_manifest.json");
+
+            // Проверяем наличие install_manifest.json
+            bool manifestHandled = false;
+            if (File.Exists(manifestPath))
+            {
+                try
+                {
+                    string json = File.ReadAllText(manifestPath, Encoding.UTF8);
+                    var manifest = JsonValue.Parse(json);
+                    if (manifest != null && manifest["files"] != null && manifest["files"].AsList != null)
+                    {
+                        log("Using verified installation manifest to safely delete only installed files.");
+                        var filesList = manifest["files"].AsList;
+                        var dirSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                        foreach (var fItem in filesList)
+                        {
+                            if (fItem == null) continue;
+                            string rel = fItem["path"] != null ? fItem["path"].AsString : null;
+                            if (string.IsNullOrWhiteSpace(rel)) continue;
+
+                            string fullPath = Path.Combine(baseDir, rel.Replace('/', '\\'));
+
+                            // Защита пользовательских данных
+                            if (opts.KeepUserData)
+                            {
+                                string fName = Path.GetFileName(fullPath);
+                                if (fName.Equals("config.json", StringComparison.OrdinalIgnoreCase) ||
+                                    fName.Equals("launch_presets.json", StringComparison.OrdinalIgnoreCase) ||
+                                    rel.StartsWith("logs", StringComparison.OrdinalIgnoreCase) ||
+                                    rel.StartsWith("backups", StringComparison.OrdinalIgnoreCase) ||
+                                    fName.EndsWith(".user.json", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    log("Preserved user configuration: " + rel);
+                                    continue;
+                                }
+                            }
+
+                            if (string.Equals(fullPath, selfExe, StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            if (File.Exists(fullPath))
+                            {
+                                try
+                                {
+                                    File.Delete(fullPath);
+                                    string dir = Path.GetDirectoryName(fullPath);
+                                    if (!string.Equals(dir, baseDir, StringComparison.OrdinalIgnoreCase))
+                                        dirSet.Add(dir);
+                                }
+                                catch { }
+                            }
+                        }
+
+                        // Удаляем директории проекта снизу вверх ТОЛЬКО если они пусты
+                        var dirsSorted = new List<string>(dirSet);
+                        dirsSorted.Sort((a, b) => b.Length.CompareTo(a.Length));
+                        foreach (string d in dirsSorted)
+                        {
+                            try
+                            {
+                                if (Directory.Exists(d) && Directory.GetFileSystemEntries(d).Length == 0)
+                                {
+                                    Directory.Delete(d, false); // Без рекурсии!
+                                }
+                            }
+                            catch { }
+                        }
+
+                        // Удаляем сам манифест
+                        try { File.Delete(manifestPath); } catch { }
+                        manifestHandled = true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log("Manifest parsing warning: " + ex.Message + ". Falling back to strict whitelist safety cleanup.");
+                }
+            }
+
+            if (!manifestHandled)
+            {
+                // Fallback: манифест отсутствует или повреждён.
+                // Строгий белый список: удаляются ИСКЛЮЧИТЕЛЬНО известные файлы PC Control!
+                // Ни один посторонний файл или папка пользователя не будет затронут!
+                log("Executing safe strict whitelist cleanup (foreign files will be completely preserved).");
+                var knownRootFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "Launcher.exe", "Uninstall.exe", "unstaller.exe", "PC-Control-Setup.exe", "server.py", "open_app.pyw",
+                    "pc_control.ico", "requirements.txt", "requirements-runtime.lock", "runtime-source.json",
+                    "config.example.json", "README.md", "README.ru.md", "LICENSE", "START_HERE.txt",
+                    "launcher.bat", "start_server.bat", "stop_server.bat", "change_password.bat", "uninstall.bat",
+                    "release-manifest.json", "install_manifest.json", "PC_Control.apk", "PC-Control.apk", "watchdog.pyw"
+                };
+
+                if (!opts.KeepUserData)
+                {
+                    knownRootFiles.Add("config.json");
+                    knownRootFiles.Add("launch_presets.json");
+                }
+
+                // Корневые файлы
+                foreach (string fName in knownRootFiles)
+                {
+                    string fPath = Path.Combine(baseDir, fName);
+                    if (string.Equals(fPath, selfExe, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (File.Exists(fPath))
+                    {
+                        try { File.Delete(fPath); } catch { }
+                    }
+                }
+
+                // Проектные подпапки (только строго определённые)
+                var projectSubdirs = new string[] { "web", "core", "modules", "scripts", "android_app", "tools", "runtime", "streamer_rs", "tests", "docs" };
+                foreach (string sub in projectSubdirs)
+                {
+                    string subPath = Path.Combine(baseDir, sub);
+                    if (Directory.Exists(subPath))
+                    {
+                        try
+                        {
+                            foreach (string subFile in Directory.GetFiles(subPath, "*.*", SearchOption.AllDirectories))
+                            {
+                                try { File.Delete(subFile); } catch { }
+                            }
+                            Directory.Delete(subPath, true);
+                        }
+                        catch { }
+                    }
+                }
+
+                if (!opts.KeepUserData)
+                {
+                    string logsPath = Path.Combine(baseDir, "logs");
+                    if (Directory.Exists(logsPath)) { try { Directory.Delete(logsPath, true); } catch { } }
+                }
+            }
+
+            // Попытка удалить корневую директорию ТОЛЬКО ЕСЛИ ОНА ПОЛНОСТЬЮ ПУСТА
             try
             {
-                var dirInfo = new DirectoryInfo(baseDir);
-                string selfExe = Process.GetCurrentProcess().MainModule.FileName;
-
-                // Delete directories except self
-                foreach (var sub in dirInfo.GetDirectories())
+                if (Directory.Exists(baseDir) && Directory.GetFileSystemEntries(baseDir).Length == 0)
                 {
-                    try { sub.Delete(true); } catch { }
-                }
-
-                // Delete files except self and optionally user config
-                foreach (var file in dirInfo.GetFiles())
-                {
-                    if (string.Equals(file.FullName, selfExe, StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    if (opts.KeepUserData && (file.Name.Equals("config.json", StringComparison.OrdinalIgnoreCase) ||
-                                              file.Name.Equals("launch_presets.json", StringComparison.OrdinalIgnoreCase)))
-                    {
-                        log("Preserved user configuration: " + file.Name);
-                        continue;
-                    }
-                    try { file.Delete(); } catch { }
+                    Directory.Delete(baseDir, false);
                 }
             }
-            catch (Exception ex)
-            {
-                log("Warning during directory cleanup: " + ex.Message);
-            }
+            catch { }
         }
 
         public static void ScheduleSelfDeletion(string baseDir, UninstallOptions opts, Action<string> log)
@@ -1042,7 +1287,8 @@ namespace PCControl
             try
             {
                 string selfExe = Process.GetCurrentProcess().MainModule.FileName;
-                string cmdArgs = string.Format("/c ping 127.0.0.1 -n 3 >nul & del /f /q \"{0}\" & rmdir /s /q \"{1}\"", selfExe, baseDir);
+                // ВНИМАНИЕ: rmdir вызывается БЕЗ /s /q, чтобы исключить удаление непустой папки с чужими файлами!
+                string cmdArgs = string.Format("/c ping 127.0.0.1 -n 3 >nul & del /f /q \"{0}\" & rmdir \"{1}\"", selfExe, baseDir);
                 var psi = new ProcessStartInfo("cmd.exe", cmdArgs);
                 psi.CreateNoWindow = true;
                 psi.UseShellExecute = false;

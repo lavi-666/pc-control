@@ -141,12 +141,19 @@ def get_logs() -> list:
 
 
 def get_local_ip() -> str:
+    try:
+        from scripts.network_setup import get_best_lan_ip
+        best = get_best_lan_ip()
+        if best and best != "127.0.0.1":
+            return best
+    except Exception:
+        pass
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("10.255.255.255", 1))
         ip = s.getsockname()[0]
     except Exception:
-        ip = "127.0.0.1"
+        ip = ""
     finally:
         s.close()
     return ip
@@ -419,9 +426,10 @@ def launch_tailscale_app_window(target_url: str = "http://100.100.100.100") -> b
     """Запуск приложения Tailscale в компактном нормальном окне справа от PC Control."""
     layout = get_desktop_window_layout()["tailscale"]
     edge_anti_translate = [
-        "--disable-features=Translate,msEdgeTranslate,TranslateUI",
+        "--disable-features=Translate,msEdgeTranslate,TranslateUI,AutofillServerCommunication",
         "--disable-translate",
         "--no-first-run",
+        "--disable-save-password-bubble",
     ]
     window_flags = [
         f"--window-position={layout['x']},{layout['y']}",
@@ -1657,8 +1665,8 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "firewall_configured": fw_ok,
                 "python_deps": py_deps,
                 "apk_build_available": (SCRIPTS_DIR / "build_apk.py").is_file(),
-                "apk_exists": (BASE_DIR / "PC_Control.apk").is_file(),
-                "uninstaller_available": (BASE_DIR / "Uninstall.exe").is_file() or (BASE_DIR / "uninstall.bat").is_file(),
+                "apk_exists": (BASE_DIR / "PC_Control.apk").is_file() or (BASE_DIR / "PC-Control.apk").is_file(),
+                "uninstaller_available": (BASE_DIR / "unstaller.exe").is_file() or (BASE_DIR / "Uninstall.exe").is_file() or (BASE_DIR / "uninstall.bat").is_file(),
                 "windows_hello": get_windows_hello_status(),
                 "token": cfg.get("token", ""),
                 "mac_address": cfg.get("mac_address", "AA-BB-CC-DD-EE-FF"),
@@ -2303,8 +2311,13 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
 
                 lang = req_data.get("lang") or cfg.get("language", "ru")
                 token = cfg.get("token", "")
-                token_param = f"token={urllib.parse.quote(token)}&" if token else ""
-                remote_url = f"http://127.0.0.1:{port}/?{token_param}lang={urllib.parse.quote(lang)}"
+                from core.auth import create_pairing_ticket
+                try:
+                    ticket = create_pairing_ticket(ttl=300)
+                    auth_param = f"ticket={urllib.parse.quote(ticket)}&"
+                except Exception:
+                    auth_param = f"token={urllib.parse.quote(token)}&" if token else ""
+                remote_url = f"http://127.0.0.1:{port}/?{auth_param}lang={urllib.parse.quote(lang)}"
 
                 layout = get_desktop_window_layout()["remote"]
                 window_flags = [
@@ -2312,9 +2325,10 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     f"--window-size={layout['w']},{layout['h']}",
                 ]
                 edge_anti_translate = [
-                    "--disable-features=Translate,msEdgeTranslate,TranslateUI",
+                    "--disable-features=Translate,msEdgeTranslate,TranslateUI,AutofillServerCommunication",
                     "--disable-translate",
                     "--no-first-run",
+                    "--disable-save-password-bubble",
                 ]
                 edge_paths = [
                     Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
@@ -2523,7 +2537,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                         "network_interfaces": interfaces,
                         "tailscale": get_tailscale_info(),
                         "apk_exists": (BASE_DIR / "PC_Control.apk").is_file(),
-                        "uninstaller_exists": (BASE_DIR / "Uninstall.exe").is_file(),
+                        "uninstaller_exists": (BASE_DIR / "unstaller.exe").is_file() or (BASE_DIR / "Uninstall.exe").is_file(),
                         "system_state_journal_entries": list((journal_data.get("entries") or {}).keys()),
                         "recent_logs": get_logs()[-50:],
                     }
@@ -2536,13 +2550,13 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             if action == "launch_uninstaller":
-                uninst_exe = BASE_DIR / "Uninstall.exe"
+                uninst_exe = BASE_DIR / "unstaller.exe" if (BASE_DIR / "unstaller.exe").is_file() else BASE_DIR / "Uninstall.exe"
                 uninst_bat = BASE_DIR / "uninstall.bat"
                 if uninst_exe.is_file():
                     try:
                         os.startfile(str(uninst_exe))
-                        append_log("Launched Uninstall.exe")
-                        self.send_json({"ok": True, "message": "Окно деинсталлятора Uninstall.exe открыто."})
+                        append_log(f"Launched {uninst_exe.name}")
+                        self.send_json({"ok": True, "message": f"Окно деинсталлятора {uninst_exe.name} открыто."})
                         return
                     except Exception as e:
                         self.send_json({"ok": False, "message": str(e)}, 500)
@@ -2583,9 +2597,10 @@ def launch_browser_gui(url: str):
         f"--window-size={layout['w']},{layout['h']}",
     ]
     edge_anti_translate = [
-        "--disable-features=Translate,msEdgeTranslate,TranslateUI",
+        "--disable-features=Translate,msEdgeTranslate,TranslateUI,AutofillServerCommunication",
         "--disable-translate",
         "--no-first-run",
+        "--disable-save-password-bubble",
     ]
     edge_paths = [
         Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
@@ -2609,7 +2624,12 @@ def launch_browser_gui(url: str):
     for p in chrome_paths:
         if p.exists():
             try:
-                subprocess.Popen([str(p), f"--app={cache_bust_url}"] + window_flags + ["--disable-features=Translate,TranslateUI", "--disable-translate"])
+                subprocess.Popen([str(p), f"--app={cache_bust_url}"] + window_flags + [
+                    "--disable-features=Translate,TranslateUI,AutofillServerCommunication",
+                    "--disable-translate",
+                    "--no-first-run",
+                    "--disable-save-password-bubble",
+                ])
                 enforce_window_geometry_async(["control panel", "панель управления", "5055"], layout['x'], layout['y'], layout['w'], layout['h'])
                 return
             except Exception:

@@ -3,15 +3,16 @@ from pathlib import Path
 import hashlib
 import zipfile
 import json
+import shutil
 import subprocess
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ROOT_FILES = (
-    "Launcher.exe", "Uninstall.exe", "PC_Control.apk", "pc_control.ico", "server.py", "open_app.pyw",
+    "Launcher.exe", "Uninstall.exe", "unstaller.exe", "PC_Control.apk", "version.json", "pc_control.ico", "server.py", "open_app.pyw",
     "requirements.txt", "requirements-runtime.lock", "runtime-source.json", "config.example.json", "README.md", "README.ru.md", "LICENSE",
     "launcher.bat", "start_server.bat", "stop_server.bat", "change_password.bat", "uninstall.bat",
 )
-SOURCE_EXTENSIONS = {".py", ".pyw", ".cs", ".bat", ".cmd", ".ps1", ".vbs", ".html", ".css", ".js", ".png", ".ico"}
+SOURCE_EXTENSIONS = {".py", ".pyw", ".cs", ".bat", ".cmd", ".ps1", ".vbs", ".html", ".css", ".js", ".png", ".ico", ".json"}
 
 
 def package(base_dir=BASE_DIR):
@@ -74,7 +75,13 @@ def package(base_dir=BASE_DIR):
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     archive.with_suffix(".zip.sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
     print(f"Created {archive} ({archive.stat().st_size} bytes)")
-    return archive
+
+    portable_archive = output_dir / "PC-Control-Portable.zip"
+    shutil.copy2(archive, portable_archive)
+    p_digest = hashlib.sha256(portable_archive.read_bytes()).hexdigest()
+    portable_archive.with_suffix(".zip.sha256").write_text(f"{p_digest}  {portable_archive.name}\n", encoding="utf-8")
+    print(f"Created {portable_archive} ({portable_archive.stat().st_size} bytes)")
+    return portable_archive
 
 
 if __name__ == "__main__":

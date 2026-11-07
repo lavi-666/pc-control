@@ -6,7 +6,9 @@ using System.IO;
 using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -84,7 +86,9 @@ namespace PCControl.Installer
                         k.SetValue("InstallLocation", installDir, RegistryValueKind.String);
                         string ico = Path.Combine(installDir, "pc_control.ico");
                         if (File.Exists(ico)) k.SetValue("DisplayIcon", ico, RegistryValueKind.String);
-                        string uninst = Path.Combine(installDir, "Uninstall.exe");
+                        string uninst = File.Exists(Path.Combine(installDir, "unstaller.exe")) 
+                            ? Path.Combine(installDir, "unstaller.exe") 
+                            : Path.Combine(installDir, "Uninstall.exe");
                         k.SetValue("UninstallString", "\"" + uninst + "\"", RegistryValueKind.String);
                         k.SetValue("QuietUninstallString", "\"" + uninst + "\" --silent", RegistryValueKind.String);
                         k.SetValue("URLInfoAbout", "https://github.com/lavi-666/pc-control", RegistryValueKind.String);
@@ -112,6 +116,126 @@ namespace PCControl.Installer
                     Console.SetOut(new StreamWriter(stdOut, new UTF8Encoding(false)) { AutoFlush = true });
             }
             catch { }
+        }
+
+        public static bool ValidateInstallDirectory(string rawPath, out string validationError, out string normalizedPath)
+        {
+            validationError = null;
+            normalizedPath = null;
+
+            if (string.IsNullOrWhiteSpace(rawPath))
+            {
+                validationError = "Путь к папке установки не может быть пустым.";
+                return false;
+            }
+
+            try
+            {
+                normalizedPath = Path.GetFullPath(rawPath.Trim().Trim('"', '\''));
+            }
+            catch (Exception ex)
+            {
+                validationError = "Недопустимый формат пути: " + ex.Message;
+                return false;
+            }
+
+            // Запрет установки непосредственно в корень любого диска (C:\, D:\, etc.)
+            string root = Path.GetPathRoot(normalizedPath);
+            if (!string.IsNullOrEmpty(root))
+            {
+                string normTrim = normalizedPath.TrimEnd('\\', '/');
+                string rootTrim = root.TrimEnd('\\', '/');
+                if (string.Equals(normTrim, rootTrim, StringComparison.OrdinalIgnoreCase) ||
+                    Regex.IsMatch(normalizedPath, @"^[a-zA-Z]:\\?$"))
+                {
+                    validationError = "Установка непосредственно в корень диска (" + root + ") запрещена в целях безопасности системы. Выберите отдельную подпапку (например, " + Path.Combine(root, "PC Control") + ").";
+                    return false;
+                }
+            }
+
+            // Запрет установки в системные каталоги Windows
+            string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (!string.IsNullOrEmpty(winDir) && normalizedPath.StartsWith(winDir, StringComparison.OrdinalIgnoreCase))
+            {
+                validationError = "Установка в системную директорию Windows (" + winDir + ") строго запрещена.";
+                return false;
+            }
+
+            string sysDir = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            if (!string.IsNullOrEmpty(sysDir) && normalizedPath.StartsWith(sysDir, StringComparison.OrdinalIgnoreCase))
+            {
+                validationError = "Установка в системную директорию System32 строго запрещена.";
+                return false;
+            }
+
+            // Защита от установки прямо в корни системных папок пользователя
+            var genericFolders = new Environment.SpecialFolder[]
+            {
+                Environment.SpecialFolder.ProgramFiles,
+                Environment.SpecialFolder.ProgramFilesX86,
+                Environment.SpecialFolder.UserProfile,
+                Environment.SpecialFolder.Desktop,
+                Environment.SpecialFolder.DesktopDirectory,
+                Environment.SpecialFolder.MyDocuments,
+                Environment.SpecialFolder.ApplicationData,
+                Environment.SpecialFolder.LocalApplicationData
+            };
+
+            foreach (var sf in genericFolders)
+            {
+                try
+                {
+                    string specPath = Environment.GetFolderPath(sf);
+                    if (!string.IsNullOrEmpty(specPath) && string.Equals(normalizedPath.TrimEnd('\\', '/'), specPath.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+                    {
+                        normalizedPath = Path.Combine(specPath, "PC Control");
+                        break;
+                    }
+                }
+                catch { }
+            }
+
+            // Проверка на посторонние файлы в уже существующей директории
+            if (Directory.Exists(normalizedPath))
+            {
+                try
+                {
+                    var existingFiles = Directory.GetFiles(normalizedPath);
+                    if (existingFiles.Length > 0)
+                    {
+                        bool isPcControl = File.Exists(Path.Combine(normalizedPath, "install_manifest.json")) ||
+                                           File.Exists(Path.Combine(normalizedPath, "Launcher.exe")) ||
+                                           File.Exists(Path.Combine(normalizedPath, "pc_control.ico"));
+                        if (!isPcControl)
+                        {
+                            // Директория содержит посторонние файлы — изолируем в подпапку PC Control
+                            normalizedPath = Path.Combine(normalizedPath, "PC Control");
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            return true;
+        }
+
+        public class ManifestFileInfo
+        {
+            public string RelPath;
+            public long Size;
+            public string Sha256;
+        }
+
+        public static string ComputeFileSha256(string filePath)
+        {
+            using (var sha = SHA256.Create())
+            using (var fs = File.OpenRead(filePath))
+            {
+                byte[] hash = sha.ComputeHash(fs);
+                var sb = new StringBuilder(hash.Length * 2);
+                foreach (byte b in hash) sb.Append(b.ToString("x2"));
+                return sb.ToString();
+            }
         }
 
         public static string GetDefaultInstallDir()
@@ -160,6 +284,8 @@ namespace PCControl.Installer
             try
             {
                 Directory.CreateDirectory(targetDir);
+                var installedFiles = new List<ManifestFileInfo>();
+
                 using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read))
                 {
                     int total = archive.Entries.Count;
@@ -168,7 +294,7 @@ namespace PCControl.Installer
                     foreach (var entry in archive.Entries)
                     {
                         count++;
-                        int pct = Math.Min(95, (int)((count * 100.0) / Math.Max(1, total)));
+                        int pct = Math.Min(90, (int)((count * 100.0) / Math.Max(1, total)));
 
                         // Убираем префикс корневой папки, если архив упакован как PC_Control/...
                         string relName = entry.FullName;
@@ -190,10 +316,60 @@ namespace PCControl.Installer
                         Directory.CreateDirectory(Path.GetDirectoryName(destPath));
                         progressCallback("Распаковка: " + relName, pct);
 
-                        // Извлекаем с заменой
-                        entry.ExtractToFile(destPath, true);
+                        // Извлечение и вычисление SHA-256 в один потоковый проход
+                        long fileLen = 0;
+                        string shaHex;
+                        using (var entryStream = entry.Open())
+                        using (var outFs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                        using (var sha = SHA256.Create())
+                        {
+                            byte[] buffer = new byte[64 * 1024];
+                            int read;
+                            while ((read = entryStream.Read(buffer, 0, buffer.Length)) > 0)
+                            {
+                                outFs.Write(buffer, 0, read);
+                                sha.TransformBlock(buffer, 0, read, null, 0);
+                                fileLen += read;
+                            }
+                            sha.TransformFinalBlock(new byte[0], 0, 0);
+                            byte[] hashBytes = sha.Hash;
+                            var sbHash = new StringBuilder(hashBytes.Length * 2);
+                            foreach (byte b in hashBytes) sbHash.Append(b.ToString("x2"));
+                            shaHex = sbHash.ToString();
+                        }
+
+                        installedFiles.Add(new ManifestFileInfo
+                        {
+                            RelPath = relName.Replace('/', '\\'),
+                            Size = fileLen,
+                            Sha256 = shaHex
+                        });
                     }
                 }
+
+                // Запись манифеста установки install_manifest.json
+                progressCallback("Формирование манифеста целостности установки...", 92);
+                string manifestPath = Path.Combine(targetDir, "install_manifest.json");
+                var sb = new StringBuilder();
+                sb.AppendLine("{");
+                sb.AppendLine("  \"schema_version\": 1,");
+                sb.AppendLine("  \"application\": \"PC Control\",");
+                sb.AppendLine("  \"version\": \"2.4.0\",");
+                sb.AppendLine(string.Format("  \"installed_at\": \"{0:o}\",", DateTime.UtcNow));
+                sb.AppendLine(string.Format("  \"install_dir\": \"{0}\",", targetDir.Replace("\\", "\\\\")));
+                sb.AppendLine("  \"files\": [");
+                for (int i = 0; i < installedFiles.Count; i++)
+                {
+                    var f = installedFiles[i];
+                    sb.Append(string.Format("    {{\"path\": \"{0}\", \"size\": {1}, \"sha256\": \"{2}\"}}",
+                        f.RelPath.Replace("\\", "\\\\"), f.Size, f.Sha256));
+                    if (i < installedFiles.Count - 1) sb.Append(",");
+                    sb.AppendLine();
+                }
+                sb.AppendLine("  ]");
+                sb.AppendLine("}");
+                File.WriteAllText(manifestPath, sb.ToString(), new UTF8Encoding(false));
+
                 return true;
             }
             catch (Exception ex)
@@ -433,7 +609,16 @@ namespace PCControl.Installer
                 return;
             }
 
-            _opts.TargetDir = target;
+            string valErr;
+            string normPath;
+            if (!SetupEngine.ValidateInstallDirectory(target, out valErr, out normPath))
+            {
+                MessageBox.Show(valErr, "PC Control Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            _opts.TargetDir = normPath;
+            _txtTargetDir.Text = normPath;
             _opts.CreateDesktopShortcut = _chkDesktop.Checked;
             _opts.CreateStartMenuShortcut = _chkStartMenu.Checked;
             _opts.CreateStartupShortcut = _chkStartup.Checked;
@@ -529,7 +714,9 @@ namespace PCControl.Installer
                 ShellHelper.CreateShortcut(lnk, launcherExe, target, iconPath, "PC Control Center");
 
                 string uninstLnk = Path.Combine(startDir, "Удалить PC Control.lnk");
-                string uninstExe = Path.Combine(target, "Uninstall.exe");
+                string uninstExe = File.Exists(Path.Combine(target, "unstaller.exe")) 
+                    ? Path.Combine(target, "unstaller.exe") 
+                    : Path.Combine(target, "Uninstall.exe");
                 ShellHelper.CreateShortcut(uninstLnk, uninstExe, target, iconPath, "Удаление PC Control");
             }
 
@@ -601,6 +788,22 @@ namespace PCControl.Installer
                 opts.TargetDir = !string.IsNullOrEmpty(opts.SandboxDir)
                     ? Path.Combine(opts.SandboxDir, "installed_app")
                     : SetupEngine.GetDefaultInstallDir();
+            }
+
+            string valErr;
+            string normPath;
+            if (!SetupEngine.ValidateInstallDirectory(opts.TargetDir, out valErr, out normPath))
+            {
+                if (opts.Silent)
+                {
+                    SetupEngine.EnsureConsoleOutput();
+                    Console.WriteLine("ERROR: " + valErr);
+                    return 1;
+                }
+            }
+            else
+            {
+                opts.TargetDir = normPath;
             }
 
             if (!opts.Silent)

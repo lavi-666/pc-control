@@ -59,3 +59,9 @@ push.bat
 /.pccontrol-update.pending
 /release-manifest.json
 /docs/screenshots/
+external_projects/
+comparison-reports/
+Сравнение/
+
+comparison-benchmarks/
+PC-Control.apk

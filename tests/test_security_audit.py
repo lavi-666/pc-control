@@ -178,6 +178,37 @@ class TestSecurityAudit(unittest.TestCase):
         data = json.loads(resp.data.decode("utf-8"))
         self.assertEqual(data.get("message"), "Authentication required")
 
+    def test_pairing_ticket_lifecycle_and_single_use(self):
+        """Проверка безопасности: одноразовый билет сопряжения обменивается на сессионную cookie и сгорает."""
+        # 1. Получение билета сопряжения
+        resp = self.client.get("/api/pair/ticket", headers={"X-Auth-Token": self.original_token})
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data.decode("utf-8"))
+        self.assertTrue(data.get("ok"))
+        ticket = data.get("ticket")
+        self.assertTrue(ticket and len(ticket) > 16)
+        self.assertEqual(data.get("expires_in"), 300)
+
+        # 2. Первое погашение билета клиентом (успешно)
+        exchange_resp = self.client.post("/api/pair/exchange", json={"ticket": ticket})
+        self.assertEqual(exchange_resp.status_code, 200)
+        ex_data = json.loads(exchange_resp.data.decode("utf-8"))
+        self.assertTrue(ex_data.get("ok"))
+        self.assertEqual(ex_data.get("token"), self.original_token)
+
+        # Проверяем установку защищённых cookies
+        cookies = exchange_resp.headers.getlist("Set-Cookie")
+        self.assertTrue(any("pc_token=" in c for c in cookies), "pc_token cookie must be set")
+        self.assertTrue(any("token=" in c for c in cookies), "token cookie must be set")
+
+        # 3. Повторная попытка использовать тот же билет (ОБЯЗАНА отклоняться — single-use protection)
+        second_resp = self.client.post("/api/pair/exchange", json={"ticket": ticket})
+        self.assertEqual(second_resp.status_code, 401, "Reusing single-use pairing ticket MUST be rejected with 401")
+
+        # 4. Попытка обмена фиктивного билета
+        invalid_resp = self.client.post("/api/pair/exchange", json={"ticket": "non_existent_fake_ticket_123"})
+        self.assertEqual(invalid_resp.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()

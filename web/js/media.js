@@ -583,61 +583,102 @@ async function refreshQueueExplicit(){
   }
 }
 
-setInterval(() => {
-  if (mediaState.playing && !mediaState.seeking && mediaState.duration > 0){
-    mediaState.position = Math.min(mediaState.duration, mediaState.position + 1);
-    updateSeekVisual(mediaState.position, mediaState.duration);
+let _mediaPollSeq = 0;
+let _mediaTickerId = null;
+
+function startMediaTimelineTicker(){
+  if (_mediaTickerId) return;
+  _mediaTickerId = setInterval(() => {
+    if (mediaState.playing && !mediaState.seeking && mediaState.duration > 0 && mediaState.anchorPerfTime){
+      const elapsed = (performance.now() - mediaState.anchorPerfTime) / 1000;
+      const livePos = Math.min(mediaState.duration, Math.max(0, mediaState.anchorPosition + elapsed));
+      mediaState.position = livePos;
+      updateSeekVisual(livePos, mediaState.duration);
+    }
+  }, 400);
+}
+
+function stopMediaTimelineTicker(){
+  if (_mediaTickerId){
+    clearInterval(_mediaTickerId);
+    _mediaTickerId = null;
   }
-}, 1000);
+}
+startMediaTimelineTicker();
 
 async function pollMedia(){
   const empty = document.getElementById('mediaEmpty');
   const body = document.getElementById('mediaBody');
+  const thisSeq = ++_mediaPollSeq;
   try {
     const res = await apiFetch('/media/now');
+    if (thisSeq !== _mediaPollSeq) return; // Игнорируем устаревший ответ, если пришел более новый
     const data = await res.json();
     if (!res.ok || !data.available){
-      empty.style.display = 'flex';
-      body.style.display = 'none';
+      if (empty) empty.style.display = 'flex';
+      if (body) body.style.display = 'none';
       mediaState.playing = false;
       return;
     }
-    empty.style.display = 'none';
-    body.style.display = 'block';
-    document.getElementById('mediaTitle').innerText = data.title || t('track_untitled');
+    if (empty) empty.style.display = 'none';
+    if (body) body.style.display = 'block';
+    const titleEl = document.getElementById('mediaTitle');
+    if (titleEl) titleEl.innerText = data.title || t('track_untitled');
     const subParts = [];
     if (data.artist) subParts.push(data.artist);
     if (data.album && data.album !== data.artist && data.album !== data.title) subParts.push(data.album);
-    document.getElementById('mediaArtist').innerText = subParts.join(' • ') || 'YouTube Music';
+    const artEl = document.getElementById('mediaArtist');
+    if (artEl) artEl.innerText = subParts.join(' • ') || 'YouTube Music';
 
     const thumb = document.getElementById('mediaThumb');
     const fallback = document.getElementById('mediaArtFallback');
     if (data.thumbnail){
-      if (thumb.getAttribute('src') !== data.thumbnail) thumb.src = data.thumbnail;
-      thumb.style.display = 'block';
-      fallback.style.display = 'none';
+      if (thumb && thumb.getAttribute('src') !== data.thumbnail) thumb.src = data.thumbnail;
+      if (thumb) thumb.style.display = 'block';
+      if (fallback) fallback.style.display = 'none';
     } else {
-      thumb.removeAttribute('src');
-      thumb.style.display = 'none';
-      fallback.style.display = 'flex';
+      if (thumb) {
+        thumb.removeAttribute('src');
+        thumb.style.display = 'none';
+      }
+      if (fallback) fallback.style.display = 'flex';
     }
 
+    const wasPlaying = mediaState.playing;
     mediaState.playing = (data.status === 'playing');
-    document.getElementById('mediaPlayIcon').innerHTML = mediaState.playing ? PAUSE_SVG : PLAY_SVG;
+    const playIcon = document.getElementById('mediaPlayIcon');
+    if (playIcon) playIcon.innerHTML = mediaState.playing ? PAUSE_SVG : PLAY_SVG;
+
+    const srvPos = parseFloat(data.position) || 0;
+    const srvDur = parseFloat(data.duration) || 0;
 
     if (!mediaState.seeking){
-      mediaState.position = data.position || 0;
-      mediaState.duration = data.duration || 0;
+      mediaState.duration = srvDur;
+      // Синхронизируем опорную временную метку монотонного таймера
+      const currentLivePos = (mediaState.anchorPerfTime && mediaState.playing)
+        ? (mediaState.anchorPosition + (performance.now() - mediaState.anchorPerfTime) / 1000)
+        : mediaState.position;
+
+      // Если расхождение больше 1.5 сек или трек изменился, корректируем точку отсчета
+      if (Math.abs(currentLivePos - srvPos) > 1.5 || !wasPlaying && mediaState.playing || data.title !== mediaState.lastTitle){
+        mediaState.anchorPosition = srvPos;
+        mediaState.anchorPerfTime = performance.now();
+        mediaState.position = srvPos;
+      }
       updateSeekVisual(mediaState.position, mediaState.duration);
     }
 
     if (!mediaState.playerVolDragging && data.volume !== undefined){
       const pSlider = document.getElementById('playerVolSlider');
-      pSlider.value = data.volume;
-      setSliderFill(pSlider, '#ffffff');
-      document.getElementById('playerVolVal').innerText = data.volume + '%';
+      if (pSlider){
+        pSlider.value = data.volume;
+        setSliderFill(pSlider, '#ffffff');
+      }
+      const valEl = document.getElementById('playerVolVal');
+      if (valEl) valEl.innerText = data.volume + '%';
       mediaState.playerMuted = !!data.muted;
-      document.getElementById('playerVolIcon').innerHTML = mediaState.playerMuted ? VOL_MUTE_SVG : VOL_ON_SVG;
+      const volIcon = document.getElementById('playerVolIcon');
+      if (volIcon) volIcon.innerHTML = mediaState.playerMuted ? VOL_MUTE_SVG : VOL_ON_SVG;
     }
 
     if (data.mode) renderModeUI(data.mode);
@@ -655,25 +696,40 @@ async function pollMedia(){
   } catch (e) {}
 }
 
+let _lastMediaCommandTime = 0;
+let _mediaCommandPending = false;
+
 async function mediaControl(action){
+  const now = Date.now();
+  // Защита от дребезга и двойного нажатия (минимум 300 мс между командами)
+  if (now - _lastMediaCommandTime < 300 || _mediaCommandPending){
+    return;
+  }
+  _lastMediaCommandTime = now;
+  _mediaCommandPending = true;
+
   if (action === 'playpause'){
     mediaState.playing = !mediaState.playing;
-    document.getElementById('mediaPlayIcon').innerHTML = mediaState.playing ? PAUSE_SVG : PLAY_SVG;
+    const playIcon = document.getElementById('mediaPlayIcon');
+    if (playIcon) playIcon.innerHTML = mediaState.playing ? PAUSE_SVG : PLAY_SVG;
+    mediaState.anchorPosition = mediaState.position;
+    mediaState.anchorPerfTime = performance.now();
   }
+
   try {
     const res = await apiFetch('/media/control', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({action})
     });
-    await res.json();
+    await res.json().catch(() => ({}));
     setTimeout(() => {
       pollMedia();
       loadQueue();
-    }, 250);
-    setTimeout(() => {
-      pollMedia();
-      loadQueue();
-    }, 800);
-  } catch (e) {}
+    }, 200);
+  } catch (e) {
+  } finally {
+    _mediaCommandPending = false;
+  }
 }
 

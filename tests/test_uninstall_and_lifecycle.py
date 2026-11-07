@@ -62,6 +62,7 @@ class TestUninstallAndLifecycle(unittest.TestCase):
         return json.loads(f.read_text(encoding="utf-8-sig"))
 
     def _write_journal(self, journal: dict):
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
         f = self.logs_dir / "system_state_journal.json"
         f.write_text(json.dumps(journal, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -390,6 +391,7 @@ class TestUninstallAndLifecycle(unittest.TestCase):
 
         # 4B: Повреждённый журнал
         self._write_mock_state(initial_mock)
+        journal_file.parent.mkdir(parents=True, exist_ok=True)
         journal_file.write_text("{CORRUPTED_SYNTAX_JSON", encoding="utf-8")
 
         res_corrupt = self._run_uninstall()
@@ -442,6 +444,10 @@ class TestUninstallAndLifecycle(unittest.TestCase):
 
         # Проверяем сборку APK через scripts/build_apk.py в кириллической папке
         apk_target = cyrillic_root / "PC_Control.apk"
+        env = dict(os.environ)
+        if (BASE_DIR / ".android_sdk").is_dir():
+            env["PC_CONTROL_SDK_DIR"] = str((BASE_DIR / ".android_sdk").resolve())
+
         cmd = [
             sys.executable,
             str(cyrillic_root / "scripts" / "build_apk.py"),
@@ -455,6 +461,7 @@ class TestUninstallAndLifecycle(unittest.TestCase):
         res = subprocess.run(
             cmd,
             cwd=str(cyrillic_root),
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",

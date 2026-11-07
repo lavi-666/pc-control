@@ -86,10 +86,28 @@ _webrtc_pcs_by_source: dict[str, set] = {"loopback": set(), "mic": set(), "scree
 
 _screen_cfg = {
     "monitor": 1,
-    "height": 1080,
-    "fps": 60,
+    "height": 1080,          # 0 (Original), 480, 720, 1080
+    "fps": 60,               # 30, 60, 90
+    "quality": "auto",        # Автоматическое максимальное визуальное качество
+    "bitrate": 0,            # 0 (Авто), 5, 15, 30, 50 (Мбит/с)
+    "codec": "auto",         # Автоматический выбор: NVENC/AMF/QSV -> libx264
+    "scaler": "bicubic",
 }
 _screen_cfg_lock = threading.Lock()
+
+_telemetry_lock = threading.Lock()
+_screen_telemetry = {
+    "encoder": "Auto",
+    "target_resolution": "1080p",
+    "target_fps": 60,
+    "actual_fps": 0.0,
+    "quality": "auto",
+    "bitrate_kbps": 18000,
+    "dropped_frames": 0,
+    "colorspace": "BT.709 (MPEG Range)",
+    "hardware_accelerated": True,
+    "latency_ms": 0.0,
+}
 
 _stream_vol_cfg = {
     "percent": 50,
@@ -103,12 +121,20 @@ def _restore_stream_settings():
     screen = config.get("screen", {})
     volume = config.get("stream_volume", {})
     if isinstance(screen, dict):
-        for key in ("monitor", "height", "fps"):
+        for key in ("monitor", "height", "fps", "quality", "bitrate", "codec"):
             value = screen.get(key)
-            if type(value) is int and ((key == "monitor" and value >= 0) or
-                                      (key == "height" and value in (720, 1080)) or
-                                      (key == "fps" and value in (30, 60))):
-                _screen_cfg[key] = value
+            if key == "monitor" and type(value) is int and value >= 0:
+                _screen_cfg["monitor"] = value
+            elif key == "height" and type(value) is int and value in (0, 480, 720, 1080):
+                _screen_cfg["height"] = value
+            elif key == "fps" and type(value) is int and value in (30, 60, 90):
+                _screen_cfg["fps"] = value
+            elif key == "quality":
+                _screen_cfg["quality"] = "auto"
+            elif key == "bitrate" and type(value) is int and 0 <= value <= 100_000_000:
+                _screen_cfg["bitrate"] = value
+            elif key == "codec":
+                _screen_cfg["codec"] = "auto"
     if isinstance(volume, dict):
         if type(volume.get("percent")) is int and 0 <= volume["percent"] <= 100:
             _stream_vol_cfg["percent"] = volume["percent"]
@@ -376,6 +402,126 @@ def _create_audio_track(source: str = "loopback"):
 
 
 _h264_patched = False
+_DETECTED_ENCODERS = None
+
+
+def get_detected_encoders() -> list[dict]:
+    """
+    Определяет реально функционирующие кодировщики на текущей машине.
+    В отличие от наивной проверки наличия av.CodecContext.create, производит
+    тестовое открытие контекста, отсекая видеоадаптеры других вендоров.
+    """
+    global _DETECTED_ENCODERS
+    if _DETECTED_ENCODERS is not None:
+        return _DETECTED_ENCODERS
+
+    import av
+    candidates = [
+        ("h264_nvenc", "NVIDIA NVENC H.264 (Hardware)", "h264", "nvidia"),
+        ("h264_amf", "AMD AMF H.264 (Hardware)", "h264", "amd"),
+        ("h264_qsv", "Intel QuickSync H.264 (Hardware)", "h264", "intel"),
+        ("hevc_nvenc", "NVIDIA NVENC HEVC (Hardware)", "hevc", "nvidia"),
+        ("hevc_amf", "AMD AMF HEVC (Hardware)", "hevc", "amd"),
+        ("hevc_qsv", "Intel QuickSync HEVC (Hardware)", "hevc", "intel"),
+        ("libx264", "Software x264 (CPU)", "h264", "software"),
+    ]
+    detected = []
+    for enc_name, label, codec_family, vendor in candidates:
+        try:
+            ctx = av.CodecContext.create(enc_name, "w")
+            ctx.width = 1280
+            ctx.height = 720
+            ctx.pix_fmt = "yuv420p"
+            ctx.open()
+            ctx.close()
+            detected.append({
+                "id": enc_name,
+                "label": label,
+                "codec": codec_family,
+                "vendor": vendor,
+                "hardware": vendor != "software"
+            })
+        except Exception:
+            pass
+
+    if not any(d["id"] == "libx264" for d in detected):
+        detected.append({
+            "id": "libx264",
+            "label": "Software x264 (CPU)",
+            "codec": "h264",
+            "vendor": "software",
+            "hardware": False
+        })
+
+    _DETECTED_ENCODERS = detected
+    return _DETECTED_ENCODERS
+
+
+def pick_best_encoder(preferred_codec: str = "auto") -> tuple[str, str, dict]:
+    """
+    Выбирает лучший гарантированно рабочий энкодер:
+    Приоритет 1: Аппаратный H.264 (NVENC / AMF / QSV) с нулевой задержкой и вставкой IDR.
+    Приоритет 2: Высокооптимизированный программный libx264 (ultrafast, zerolatency).
+    """
+    encoders = get_detected_encoders()
+    avail = {e["id"]: e for e in encoders}
+    pref = (preferred_codec or "auto").lower()
+
+    if pref in ("hevc", "h265"):
+        if "hevc_nvenc" in avail:
+            return "hevc_nvenc", "main", {
+                "preset": "p1", "tune": "ull", "rc": "cbr_ld_hq",
+                "zerolatency": "1", "delay": "0", "forced-idr": "1"
+            }
+        if "hevc_amf" in avail:
+            return "hevc_amf", "main", {"usage": "ultralowlatency"}
+        if "hevc_qsv" in avail:
+            return "hevc_qsv", "main", {"preset": "veryfast"}
+
+    if pref != "software":
+        if "h264_nvenc" in avail:
+            return "h264_nvenc", "high", {
+                "preset": "p1", "tune": "ull", "rc": "cbr_ld_hq",
+                "profile": "high", "zerolatency": "1", "delay": "0",
+                "forced-idr": "1"
+            }
+        if "h264_amf" in avail:
+            return "h264_amf", "high", {"usage": "ultralowlatency", "profile": "high"}
+        if "h264_qsv" in avail:
+            return "h264_qsv", "high", {"preset": "veryfast", "profile": "high"}
+
+    return "libx264", "high", {
+        "preset": "ultrafast", "tune": "zerolatency", "profile": "high",
+        "x264-params": "scenecut=0:rc-lookahead=0:sync-lookahead=0:repeat-headers=1"
+    }
+
+
+def compute_target_bitrate(height: int, fps: int, quality: str = "auto", manual_bps: int = 0) -> int:
+    """
+    Вычисляет целевой битрейт:
+    - Если пользователь выбрал битрейт (5M, 15M, 30M, 50M) — применяет точное значение.
+    - В автоматическом режиме подбирает битрейт максимального визуального качества для четкого текста и UI.
+    """
+    if manual_bps > 0:
+        if manual_bps <= 100:
+            return int(manual_bps) * 1_000_000
+        return max(1_000_000, min(100_000_000, int(manual_bps)))
+
+    # Автоматический битрейт максимального визуального качества
+    if height <= 0 or height >= 1440:
+        base = 28_000_000
+    elif height <= 480:
+        base = 4_500_000
+    elif height <= 720:
+        base = 9_000_000
+    elif height <= 1080:
+        base = 18_000_000
+    else:
+        base = 24_000_000
+
+    fps_factor = max(0.5, min(2.0, fps / 60.0))
+    calc = int(base * fps_factor)
+    return max(2_000_000, min(60_000_000, calc))
 
 
 def _patch_aiortc_h264():
@@ -386,18 +532,32 @@ def _patch_aiortc_h264():
     import av
     import aiortc.codecs.h264 as h264
 
-    h264.MAX_FRAME_RATE = 60
-    h264.DEFAULT_BITRATE = 4_500_000
+    h264.MAX_FRAME_RATE = 120
+    h264.DEFAULT_BITRATE = 18_000_000
     h264.MIN_BITRATE = 1_500_000
-    h264.MAX_BITRATE = 8_000_000
+    h264.MAX_BITRATE = 80_000_000
 
     def _fast_encode_frame(self, frame: av.VideoFrame, force_keyframe: bool):
+        with _screen_cfg_lock:
+            target_fps = int(_screen_cfg.get("fps", 60))
+            manual_bps = int(_screen_cfg.get("bitrate", 0))
+            user_codec = str(_screen_cfg.get("codec", "auto"))
+
+        enc_name, profile, opts = pick_best_encoder(user_codec)
+        target_bitrate = compute_target_bitrate(frame.height, target_fps, "auto", manual_bps)
+
         if self.codec and (
             frame.width != self.codec.width
             or frame.height != self.codec.height
+            or getattr(self, "_active_enc_name", None) != enc_name
+            or abs(target_bitrate - self.codec.bit_rate) / max(1, self.codec.bit_rate) > 0.25
         ):
             self.buffer_data = b""
             self.buffer_pts = None
+            try:
+                self.codec.close()
+            except Exception:
+                pass
             self.codec = None
 
         if force_keyframe:
@@ -406,20 +566,45 @@ def _patch_aiortc_h264():
             frame.pict_type = av.video.frame.PictureType.NONE
 
         if self.codec is None:
-            self.codec = av.CodecContext.create("libx264", "w")
-            self.codec.width = frame.width
-            self.codec.height = frame.height
-            self.codec.bit_rate = 4_500_000 if frame.height >= 1000 else 2_500_000
-            self.codec.pix_fmt = "yuv420p"
-            self.codec.framerate = fractions.Fraction(60, 1)
-            self.codec.time_base = fractions.Fraction(1, 60)
-            self.codec.gop_size = 30
-            self.codec.options = {
-                "preset": "ultrafast",
-                "tune": "zerolatency",
-                "level": "42",
-            }
-            self.codec.profile = "Baseline"
+            try:
+                c = av.CodecContext.create(enc_name, "w")
+                c.width = frame.width
+                c.height = frame.height
+                c.bit_rate = target_bitrate
+                c.pix_fmt = "yuv420p"
+                c.framerate = fractions.Fraction(target_fps, 1)
+                c.time_base = fractions.Fraction(1, target_fps)
+                c.gop_size = target_fps
+                c.options = dict(opts)
+                if profile and enc_name == "libx264":
+                    c.profile = profile
+                c.open()
+                self.codec = c
+                self._active_enc_name = enc_name
+            except Exception as e:
+                log_error("webrtc_h264_hw_fallback", e)
+                enc_name, profile, opts = "libx264", "high", {
+                    "preset": "ultrafast", "tune": "zerolatency", "profile": "high",
+                    "x264-params": "scenecut=0:rc-lookahead=0:sync-lookahead=0:repeat-headers=1"
+                }
+                c = av.CodecContext.create("libx264", "w")
+                c.width = frame.width
+                c.height = frame.height
+                c.bit_rate = target_bitrate
+                c.pix_fmt = "yuv420p"
+                c.framerate = fractions.Fraction(target_fps, 1)
+                c.time_base = fractions.Fraction(1, target_fps)
+                c.gop_size = target_fps
+                c.options = dict(opts)
+                c.profile = profile
+                c.open()
+                self.codec = c
+                self._active_enc_name = "libx264"
+
+            with _telemetry_lock:
+                _screen_telemetry["encoder"] = enc_name
+                _screen_telemetry["bitrate_kbps"] = target_bitrate // 1000
+                _screen_telemetry["hardware_accelerated"] = enc_name != "libx264"
 
         data_to_send = b""
         for package in self.codec.encode(frame):
@@ -437,6 +622,7 @@ def _create_screen_track():
     import av
     import mss
     import numpy as np
+    from av.video.reformatter import Colorspace, ColorRange, Interpolation
     from aiortc import MediaStreamTrack
 
     _patch_aiortc_h264()
@@ -446,12 +632,15 @@ def _create_screen_track():
 
         def __init__(self):
             super().__init__()
-            self.device_name = "Screen Capture (WebRTC 60 FPS)"
+            self.device_name = "Screen Capture (Hardware Accelerated H.264)"
             self._closed = False
             self._start_time: float | None = None
             self._next_frame_ts: float | None = None
             self._latest_frame = av.VideoFrame(1920, 1080, "yuv420p")
             self._lock = threading.Lock()
+            self._fps_history = []
+            self._last_fps_calc = time.perf_counter()
+            self._frames_count = 0
             self._thread = threading.Thread(target=self._capture_worker, name="screen-capture-worker", daemon=True)
             self._thread.start()
 
@@ -469,6 +658,7 @@ def _create_screen_track():
                     if mon_idx < 0 or mon_idx >= len(mons):
                         mon_idx = 1 if len(mons) > 1 else 0
                     mon = mons[mon_idx]
+
                     if target_h <= 0:
                         target_h = mon["height"]
                     target_w = max(2, (int(round(mon["width"] * (target_h / mon["height"]))) // 2) * 2)
@@ -477,15 +667,34 @@ def _create_screen_track():
                     try:
                         raw_shot = sct.grab(mon)
                         arr_bgra = np.frombuffer(raw_shot.raw, dtype=np.uint8).reshape((raw_shot.height, raw_shot.width, 4))
+                        # Sunshine & Moonlight standard: BT.709 ITU-R color matrix with MPEG TV range and Bicubic interpolation
                         vf = av.VideoFrame.from_ndarray(arr_bgra, format="bgra").reformat(
-                            width=target_w, height=target_h_even, format="yuv420p"
+                            width=target_w,
+                            height=target_h_even,
+                            format="yuv420p",
+                            dst_colorspace=Colorspace.ITU709,
+                            dst_color_range=ColorRange.MPEG,
+                            interpolation=Interpolation.BICUBIC
                         )
                         with self._lock:
                             self._latest_frame = vf
+                        self._frames_count += 1
+                        now = time.perf_counter()
+                        self._fps_history.append(now)
+                        if len(self._fps_history) > 60:
+                            self._fps_history.pop(0)
+                        if now - self._last_fps_calc >= 0.5 and len(self._fps_history) >= 2:
+                            span = self._fps_history[-1] - self._fps_history[0]
+                            meas_fps = round((len(self._fps_history) - 1) / max(0.001, span), 1)
+                            self._last_fps_calc = now
+                            with _telemetry_lock:
+                                _screen_telemetry["actual_fps"] = meas_fps
+                                _screen_telemetry["resolution"] = f"{target_w}x{target_h_even}"
+                                _screen_telemetry["latency_ms"] = round((now - t0) * 1000.0, 1)
                     except Exception:
                         pass
 
-                    interval = 1.0 / max(10, min(60, fps))
+                    interval = 1.0 / max(10, min(120, fps))
                     elapsed = time.perf_counter() - t0
                     if elapsed < interval:
                         time.sleep(interval - elapsed)
@@ -493,7 +702,7 @@ def _create_screen_track():
         async def recv(self):
             with _screen_cfg_lock:
                 fps = int(_screen_cfg.get("fps", 60))
-            interval = 1.0 / max(10, min(60, fps))
+            interval = 1.0 / max(10, min(120, fps))
 
             if self._start_time is None:
                 self._start_time = time.perf_counter()
@@ -505,7 +714,10 @@ def _create_screen_track():
                 if wait > 0:
                     await asyncio.sleep(wait)
                 elif wait < -0.1:
+                    # RustDesk QoS queue flush: if frame delivery falls behind, skip backlog
                     self._next_frame_ts = now
+                    with _telemetry_lock:
+                        _screen_telemetry["dropped_frames"] += 1
 
             with self._lock:
                 vf = self._latest_frame
@@ -789,20 +1001,256 @@ def screen_config():
         if "height" in data and data["height"] is not None and not isinstance(data["height"], bool):
             try:
                 h = int(data["height"])
-                _screen_cfg["height"] = 1080 if h >= 1080 else 720
+                # Допустимые пользовательские разрешения: 480, 720, 1080, 0 (Исходное)
+                if h in (0, 480, 720, 1080):
+                    _screen_cfg["height"] = h
+                elif h >= 900:
+                    _screen_cfg["height"] = 1080
+                elif h >= 600:
+                    _screen_cfg["height"] = 720
+                elif h > 0:
+                    _screen_cfg["height"] = 480
+                else:
+                    _screen_cfg["height"] = 0
             except (ValueError, TypeError, OverflowError):
                 pass
         if "fps" in data and data["fps"] is not None and not isinstance(data["fps"], bool):
             try:
                 f = int(data["fps"])
-                _screen_cfg["fps"] = 60 if f >= 60 else (30 if f >= 30 else 30)
+                # Допустимые значения FPS: 30, 60, 90
+                if f in (30, 60, 90):
+                    _screen_cfg["fps"] = f
+                elif f >= 75:
+                    _screen_cfg["fps"] = 90
+                elif f >= 45:
+                    _screen_cfg["fps"] = 60
+                else:
+                    _screen_cfg["fps"] = 30
             except (ValueError, TypeError, OverflowError):
                 pass
+        # Качество и кодек всегда выбираются автоматически для наилучшей стабильности и картинки
+        _screen_cfg["quality"] = "auto"
+        _screen_cfg["codec"] = "auto"
+        if "bitrate" in data and data["bitrate"] is not None and not isinstance(data["bitrate"], bool):
+            try:
+                b = int(data["bitrate"])
+                _screen_cfg["bitrate"] = max(0, min(100_000_000, b))
+            except (ValueError, TypeError, OverflowError):
+                pass
+
         cfg = dict(_screen_cfg)
         if not update_config_section("screen", cfg):
             _screen_cfg.update(previous)
             return jsonify({"message": "Could not save screen settings"}), 500
-    return jsonify({"config": cfg, "message": f"Экран {cfg['monitor']} · {cfg['height']}p · {cfg['fps']} FPS"})
+
+    enc_name, _, _ = pick_best_encoder(cfg.get("codec", "auto"))
+    with _telemetry_lock:
+        _screen_telemetry["target_resolution"] = f"{cfg['height']}p" if cfg['height'] > 0 else "Исходное"
+        _screen_telemetry["target_fps"] = cfg["fps"]
+        _screen_telemetry["quality"] = "auto"
+
+    res_lbl = f"{cfg['height']}p" if cfg['height'] > 0 else "Исходное"
+    return jsonify({
+        "config": cfg,
+        "encoder": enc_name,
+        "message": f"Экран {cfg['monitor']} · {res_lbl} · {cfg['fps']} FPS"
+    })
+
+
+@streaming_bp.route("/screen/telemetry")
+@streaming_bp.route("/screen/stats")
+def screen_stats():
+    if not check_token(allow_stream_query=True):
+        return jsonify({"message": "Неверный пароль"}), 401
+    with _screen_cfg_lock:
+        cfg = dict(_screen_cfg)
+    enc_name, _, _ = pick_best_encoder(cfg.get("codec", "auto"))
+    with _telemetry_lock:
+        stats = dict(_screen_telemetry)
+    stats["target_resolution"] = f"{cfg['height']}p" if cfg['height'] > 0 else "Исходное"
+    stats["target_fps"] = cfg["fps"]
+    stats["quality"] = "auto"
+    stats["active_codec"] = "h264"
+    if stats.get("encoder") in ("Auto", "Detecting..."):
+        stats["encoder"] = enc_name
+    stats["hardware_accelerated"] = "nvenc" in enc_name or "amf" in enc_name or "qsv" in enc_name
+    return jsonify(stats)
+
+
+@streaming_bp.route("/screen/encoders")
+def screen_encoders():
+    if not check_token():
+        return jsonify({"message": "Неверный пароль"}), 401
+    return jsonify({
+        "encoders": get_detected_encoders(),
+        "recommended": pick_best_encoder("auto")[0]
+    })
+
+
+@streaming_bp.route("/screen/h264_stream")
+def screen_h264_stream():
+    """
+    Прямой низколатентный H.264 видеопоток для нативного Android-плеера (MediaCodec + SurfaceView).
+    Поддерживает как фреймированный поток PC01 (быстрый разбор без аллокаций), так и сырой Annex-B поток.
+    """
+    if not check_token(allow_stream_query=True):
+        return jsonify({"message": "Неверный пароль"}), 401
+    if platform.system() != "Windows":
+        return jsonify({"message": "Демонстрация экрана доступна только на Windows"}), 400
+
+    log_action("screen_h264_stream")
+
+    import fractions
+    import struct
+    import av
+    import mss
+    import numpy as np
+    from av.video.reformatter import Colorspace, ColorRange, Interpolation
+
+    with _screen_cfg_lock:
+        cfg = dict(_screen_cfg)
+
+    # Запрос параметров с проверкой границ
+    req_mon = request.args.get("monitor", type=int, default=cfg["monitor"])
+    req_h = request.args.get("height", type=int, default=cfg["height"])
+    req_fps = request.args.get("fps", type=int, default=cfg["fps"])
+    req_bitrate = request.args.get("bitrate", type=int, default=cfg["bitrate"])
+    is_framed = (request.args.get("format") != "raw")
+
+    enc_name, profile, enc_opts = pick_best_encoder("auto")
+
+    def generate_h264_stream():
+        _attach_input_desktop()
+        codec_ctx = None
+        sct = None
+        try:
+            sct = mss.MSS()
+            mons = sct.monitors
+            mon_idx = req_mon if (0 <= req_mon < len(mons)) else (1 if len(mons) > 1 else 0)
+            mon = mons[mon_idx]
+
+            # Вычисление разрешения с сохранением пропорций монитора (без искусственного растягивания)
+            if req_h <= 0 or req_h >= mon["height"]:
+                target_h = mon["height"]
+                target_w = mon["width"]
+            else:
+                target_h = req_h
+                target_w = max(2, (int(round(mon["width"] * (target_h / mon["height"]))) // 2) * 2)
+
+            target_w = (target_w // 2) * 2
+            target_h_even = (target_h // 2) * 2
+
+            # FPS: 30, 60 или 90
+            target_fps = 90 if req_fps >= 75 else (60 if req_fps >= 45 else 30)
+            bitrate = compute_target_bitrate(target_h_even, target_fps, "auto", req_bitrate)
+
+            # Надежная инициализация кодека с защитой от сбоя драйвера GPU
+            opened_enc = enc_name
+            try:
+                codec_ctx = av.CodecContext.create(enc_name, "w")
+                codec_ctx.width = target_w
+                codec_ctx.height = target_h_even
+                codec_ctx.bit_rate = bitrate
+                codec_ctx.pix_fmt = "yuv420p"
+                codec_ctx.framerate = fractions.Fraction(target_fps, 1)
+                codec_ctx.time_base = fractions.Fraction(1, target_fps)
+                codec_ctx.gop_size = target_fps
+                codec_ctx.options = dict(enc_opts)
+                if profile and codec_ctx.name == "libx264":
+                    codec_ctx.profile = profile
+                codec_ctx.open()
+            except Exception as e:
+                log_error("hw_encoder_open_failed", e)
+                opened_enc = "libx264"
+                codec_ctx = av.CodecContext.create("libx264", "w")
+                codec_ctx.width = target_w
+                codec_ctx.height = target_h_even
+                codec_ctx.bit_rate = bitrate
+                codec_ctx.pix_fmt = "yuv420p"
+                codec_ctx.framerate = fractions.Fraction(target_fps, 1)
+                codec_ctx.time_base = fractions.Fraction(1, target_fps)
+                codec_ctx.gop_size = target_fps
+                codec_ctx.options = {
+                    "preset": "ultrafast", "tune": "zerolatency", "profile": "high",
+                    "x264-params": "scenecut=0:rc-lookahead=0:sync-lookahead=0:repeat-headers=1"
+                }
+                codec_ctx.profile = "high"
+                codec_ctx.open()
+
+            with _telemetry_lock:
+                _screen_telemetry["encoder"] = opened_enc
+                _screen_telemetry["bitrate_kbps"] = bitrate // 1000
+                _screen_telemetry["target_resolution"] = f"{target_w}x{target_h_even}"
+                _screen_telemetry["target_fps"] = target_fps
+
+            frame_interval = 1.0 / target_fps
+            frame_idx = 0
+
+            while True:
+                t0 = time.perf_counter()
+                try:
+                    raw_shot = sct.grab(mon)
+                except Exception:
+                    _attach_input_desktop()
+                    try:
+                        sct.close()
+                        sct = mss.MSS()
+                        raw_shot = sct.grab(mon)
+                    except Exception:
+                        time.sleep(0.04)
+                        continue
+
+                try:
+                    arr_bgra = np.frombuffer(raw_shot.raw, dtype=np.uint8).reshape((raw_shot.height, raw_shot.width, 4))
+                    vf = av.VideoFrame.from_ndarray(arr_bgra, format="bgra").reformat(
+                        width=target_w,
+                        height=target_h_even,
+                        format="yuv420p",
+                        dst_colorspace=Colorspace.ITU709,
+                        dst_color_range=ColorRange.MPEG,
+                        interpolation=Interpolation.BICUBIC
+                    )
+                    vf.pts = frame_idx
+
+                    # Гарантируем ключевой кадр IDR с SPS/PPS в начале и раз в секунду
+                    if frame_idx == 0 or (frame_idx % target_fps == 0):
+                        vf.pict_type = av.video.frame.PictureType.I
+                    else:
+                        vf.pict_type = av.video.frame.PictureType.NONE
+                    frame_idx += 1
+
+                    for pkt in codec_ctx.encode(vf):
+                        payload = bytes(pkt)
+                        if not payload:
+                            continue
+                        if is_framed:
+                            is_key = bool(pkt.is_keyframe) or (frame_idx <= 2)
+                            pts_us = int(time.time() * 1_000_000)
+                            header = struct.pack(">4sIBQ", b"PC01", len(payload), 1 if is_key else 0, pts_us)
+                            yield header + payload
+                        else:
+                            yield payload
+                except GeneratorExit:
+                    break
+                except Exception as e:
+                    log_error("h264_encode_loop", e)
+
+                elapsed = time.perf_counter() - t0
+                if elapsed < frame_interval:
+                    time.sleep(frame_interval - elapsed)
+        finally:
+            if codec_ctx is not None:
+                try:
+                    codec_ctx.close()
+                except Exception:
+                    pass
+            if sct is not None:
+                try:
+                    sct.close()
+                except Exception:
+                    pass
+
+    return Response(generate_h264_stream(), mimetype="video/x-h264")
 
 
 @streaming_bp.route("/screen/volume", methods=["GET", "POST"])

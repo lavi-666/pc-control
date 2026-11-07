@@ -51,6 +51,9 @@ try {
     $adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false }
     foreach ($nic in $adapters) {
         Write-Host "  -> Настройка адаптера: $($nic.Name) ($($nic.InterfaceDescription))" -ForegroundColor Gray
+        if (Test-Path -LiteralPath $PyExe) {
+            & $PyExe -E -s -m core.system_state capture-wol-adapter --name "$($nic.Name)" --desc "$($nic.InterfaceDescription)" 2>$null
+        }
         Set-NetAdapterAdvancedProperty -Name $nic.Name -RegistryKeyword "*WakeOnMagicPacket" -RegistryValue 1 -ErrorAction SilentlyContinue
         Set-NetAdapterAdvancedProperty -Name $nic.Name -RegistryKeyword "*WakeOnPattern" -RegistryValue 1 -ErrorAction SilentlyContinue
         powercfg /deviceenablewake "$($nic.InterfaceDescription)" 2>&1 | Out-Null

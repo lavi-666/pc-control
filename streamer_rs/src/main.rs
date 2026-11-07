@@ -333,7 +333,7 @@ fn capture_from_capturer(
         }
         (orig_w, orig_h, rgb)
     } else {
-        // Scaled resolution (e.g. 720p or 1080p)
+        // High-Quality Bilinear Resampling for crisp text and zero aliasing
         let out_h = target_height;
         let out_w = ((orig_w as f32 * (out_h as f32 / orig_h as f32)).round() as u32 / 2) * 2;
         let mut rgb = vec![0u8; (out_w * out_h * 3) as usize];
@@ -342,16 +342,53 @@ fn capture_from_capturer(
         let y_ratio = orig_h as f32 / out_h as f32;
 
         for y in 0..out_h {
-            let orig_y = ((y as f32 * y_ratio) as usize).min((orig_h as usize).saturating_sub(1));
-            let row_start = orig_y * row_stride;
+            let src_y = y as f32 * y_ratio;
+            let y0 = (src_y.floor() as usize).min((orig_h as usize).saturating_sub(1));
+            let y1 = (y0 + 1).min((orig_h as usize).saturating_sub(1));
+            let dy = src_y - y0 as f32;
+            let inv_dy = 1.0 - dy;
+
+            let row0_start = y0 * row_stride;
+            let row1_start = y1 * row_stride;
+            let dst_row = (y as usize) * (out_w as usize) * 3;
+
             for x in 0..out_w {
-                let orig_x = ((x as f32 * x_ratio) as usize).min((orig_w as usize).saturating_sub(1));
-                let src_idx = row_start + orig_x * 4;
-                let dst_idx = (y as usize * out_w as usize + x as usize) * 3;
-                if src_idx + 2 < frame_data.len() && dst_idx + 2 < rgb.len() {
-                    rgb[dst_idx] = frame_data[src_idx + 2]; // R
-                    rgb[dst_idx + 1] = frame_data[src_idx + 1]; // G
-                    rgb[dst_idx + 2] = frame_data[src_idx]; // B
+                let src_x = x as f32 * x_ratio;
+                let x0 = (src_x.floor() as usize).min((orig_w as usize).saturating_sub(1));
+                let x1 = (x0 + 1).min((orig_w as usize).saturating_sub(1));
+                let dx = src_x - x0 as f32;
+                let inv_dx = 1.0 - dx;
+
+                let idx00 = row0_start + x0 * 4;
+                let idx10 = row0_start + x1 * 4;
+                let idx01 = row1_start + x0 * 4;
+                let idx11 = row1_start + x1 * 4;
+
+                let dst_idx = dst_row + (x as usize) * 3;
+                if idx11 + 2 < frame_data.len() && dst_idx + 2 < rgb.len() {
+                    let w00 = inv_dx * inv_dy;
+                    let w10 = dx * inv_dy;
+                    let w01 = inv_dx * dy;
+                    let w11 = dx * dy;
+
+                    let r = frame_data[idx00 + 2] as f32 * w00
+                          + frame_data[idx10 + 2] as f32 * w10
+                          + frame_data[idx01 + 2] as f32 * w01
+                          + frame_data[idx11 + 2] as f32 * w11;
+
+                    let g = frame_data[idx00 + 1] as f32 * w00
+                          + frame_data[idx10 + 1] as f32 * w10
+                          + frame_data[idx01 + 1] as f32 * w01
+                          + frame_data[idx11 + 1] as f32 * w11;
+
+                    let b = frame_data[idx00] as f32 * w00
+                          + frame_data[idx10] as f32 * w10
+                          + frame_data[idx01] as f32 * w01
+                          + frame_data[idx11] as f32 * w11;
+
+                    rgb[dst_idx] = r.round().clamp(0.0, 255.0) as u8;
+                    rgb[dst_idx + 1] = g.round().clamp(0.0, 255.0) as u8;
+                    rgb[dst_idx + 2] = b.round().clamp(0.0, 255.0) as u8;
                 }
             }
         }
@@ -570,7 +607,7 @@ fn main() {
                         }
                     }
 
-                    fps = fps.max(10).min(60);
+                    fps = fps.max(10).min(120);
                     let frame_interval = Duration::from_micros(1_000_000 / fps as u64);
 
                     let mut writer = match request.into_writer() {
