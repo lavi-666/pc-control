@@ -2,7 +2,12 @@ param([string]$BaseDir = (Split-Path -Parent $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $env:PYTHONIOENCODING = 'utf-8'
-[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+$env:PYTHONUTF8 = '1'
+try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch {}
+
+if (-not $BaseDir) {
+    $BaseDir = Split-Path -Parent $PSScriptRoot
+}
 $BaseDir = [IO.Path]::GetFullPath($BaseDir)
 $pathHash = [Security.Cryptography.SHA256]::Create()
 $mutexSuffix = [BitConverter]::ToString($pathHash.ComputeHash([Text.Encoding]::UTF8.GetBytes($BaseDir.ToLowerInvariant()))).Replace('-', '')
@@ -13,23 +18,46 @@ $runtimeDir = Join-Path $BaseDir 'runtime'
 $logDir = Join-Path $BaseDir 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logFile = Join-Path $logDir 'bootstrap.log'
+
 function Write-SetupLog([string]$Message) {
-    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Message + [Environment]::NewLine)
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
         try {
-            $Message | Out-File -LiteralPath $logFile -Append -Encoding utf8
+            $fs = New-Object IO.FileStream($logFile, [IO.FileMode]::Append, [IO.FileAccess]::Write, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            try {
+                $fs.Write($bytes, 0, $bytes.Length)
+                $fs.Flush()
+            } finally {
+                $fs.Dispose()
+            }
             return
-        } catch [IO.IOException] {
-            if ($attempt -eq 19) { throw }
+        } catch {
+            if ($attempt -eq 29) { return }
             Start-Sleep -Milliseconds 50
         }
     }
 }
+
 function Get-SetupHash([string]$FilePath) {
     $algorithm = [Security.Cryptography.SHA256]::Create()
-    $stream = [IO.File]::OpenRead($FilePath)
+    $stream = [IO.File]::Open($FilePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
     try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
     finally { $stream.Dispose(); $algorithm.Dispose() }
 }
+
+function Remove-TreeWithRetry([string]$TargetPath) {
+    if (-not $TargetPath -or -not (Test-Path -LiteralPath $TargetPath)) { return }
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $TargetPath -Recurse -Force -ErrorAction Stop
+            if (-not (Test-Path -LiteralPath $TargetPath)) { return }
+        } catch {
+            if ($attempt -eq 19) { throw }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
 function Invoke-Runtime([string[]]$CommandArguments) {
     # Windows PowerShell 5 treats native stderr as ErrorRecord; pip warnings
     # must not abort a successful installation under ErrorActionPreference=Stop.
@@ -40,31 +68,58 @@ function Invoke-Runtime([string[]]$CommandArguments) {
     $ErrorActionPreference = $savedPreference
     if ($nativeExitCode -ne 0) { throw "Python command failed with exit code $nativeExitCode" }
 }
+
 $stage = $null
+$pushedLocation = $false
 try {
     try { $ownsMutex = $setupMutex.WaitOne(600000) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
     if (-not $ownsMutex) { throw 'Another installation is still running. Try again later.' }
-    'Preparing private PC Control runtime...' | Out-File -LiteralPath $logFile -Encoding utf8
+    try { Remove-Item -LiteralPath $logFile -Force -ErrorAction SilentlyContinue } catch {}
+    Write-SetupLog 'Preparing private PC Control runtime...'
     if (Test-Path -LiteralPath $runtimeDir) {
-        if ((Test-Path -LiteralPath (Join-Path $runtimeDir 'pythonw.exe')) -and (Test-Path -LiteralPath (Join-Path $runtimeDir 'pccontrol-runtime.json'))) { exit 0 }
-        throw 'Runtime directory already exists. Use the complete release ZIP to restore damaged runtime files.'
+        if ((Test-Path -LiteralPath (Join-Path $runtimeDir 'pythonw.exe')) -and (Test-Path -LiteralPath (Join-Path $runtimeDir 'pccontrol-runtime.json'))) {
+            exit 0
+        }
+        Write-SetupLog 'Cleaning incomplete previous runtime directory...'
+        Remove-TreeWithRetry $runtimeDir
     }
-    $source = Get-Content -LiteralPath (Join-Path $BaseDir 'runtime-source.json') -Raw | ConvertFrom-Json
+    $sourcePath = Join-Path $BaseDir 'runtime-source.json'
+    $lockPath = Join-Path $BaseDir 'requirements-runtime.lock'
+    $source = [IO.File]::ReadAllText($sourcePath, [Text.Encoding]::UTF8) | ConvertFrom-Json
     if ($source.url -notlike 'https://github.com/astral-sh/python-build-standalone/releases/download/*') {
         throw 'Unexpected runtime download source'
     }
-    $stage = Join-Path $BaseDir ('.runtime-setup-' + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $stage | Out-Null
+
+    # Stage in system TEMP outside OneDrive / synced folders, and use relative ASCII paths
+    # so native tools (tar.exe, pip) never fail on non-ACP Unicode or bracket paths.
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $stage = Join-Path $tempRoot ('pccontrol-setup-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    [IO.File]::Copy($lockPath, (Join-Path $stage 'requirements-runtime.lock'), $true)
+
+    Push-Location -LiteralPath $stage
+    $pushedLocation = $true
+
     $archive = Join-Path $stage 'python.tar.gz'
     Write-SetupLog 'Downloading Python (no system installation or administrator rights required)...'
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -UseBasicParsing -Uri $source.url -OutFile $archive -TimeoutSec 180
+    $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+    $downloaded = $false
+    if (Test-Path -LiteralPath $curl) {
+        & $curl -fLsS --retry 3 --retry-delay 2 --connect-timeout 30 -o 'python.tar.gz' $source.url
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $archive)) {
+            $downloaded = $true
+        }
+    }
+    if (-not $downloaded) {
+        Invoke-WebRequest -UseBasicParsing -Uri $source.url -OutFile 'python.tar.gz' -TimeoutSec 300
+    }
     if ((Get-SetupHash $archive) -ne $source.sha256) {
         throw 'Python archive SHA-256 verification failed'
     }
     Write-SetupLog 'Verified Python archive. Extracting...'
     $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
-    & $tar -xzf $archive -C $stage
+    & $tar -xzf 'python.tar.gz'
     if ($LASTEXITCODE -ne 0) { throw 'Cannot extract Python archive' }
     $pythonDir = Join-Path $stage 'python'
     $python = Join-Path $pythonDir 'python.exe'
@@ -72,22 +127,49 @@ try {
     Remove-Item Env:PYTHONHOME, Env:PYTHONPATH, Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
     $env:PYTHONNOUSERSITE = '1'
     Write-SetupLog 'Installing application libraries into the private runtime...'
-    Invoke-Runtime @('-I', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-warn-script-location', '--no-cache-dir', '--only-binary=:all:', '-r', (Join-Path $BaseDir 'requirements-runtime.lock'))
-    Invoke-Runtime @('-I', '-m', 'pip', 'check')
-    Invoke-Runtime @('-I', '-c', 'import flask, PIL, pycaw, comtypes, winsdk, aiortc, pyaudiowpatch, mss, qrcode, psutil, numpy; from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager')
-    @{ python = $source.python; source = $source.url; source_sha256 = $source.sha256; requirements_sha256 = (Get-SetupHash (Join-Path $BaseDir 'requirements-runtime.lock')) } | ConvertTo-Json | Out-File -LiteralPath (Join-Path $pythonDir 'pccontrol-runtime.json') -Encoding utf8
-    Move-Item -LiteralPath $pythonDir -Destination $runtimeDir
-    # Only this invocation's verified staging directory may be removed.
-    if ((Split-Path -Parent ([IO.Path]::GetFullPath($stage))) -ne $BaseDir) { throw 'Invalid staging path' }
-    Remove-Item -LiteralPath $stage -Recurse -Force
+    Invoke-Runtime @('-I', '-X', 'utf8', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-warn-script-location', '--no-cache-dir', '--only-binary=:all:', '--retries', '5', '--timeout', '60', '-r', 'requirements-runtime.lock')
+    Invoke-Runtime @('-I', '-X', 'utf8', '-m', 'pip', 'check')
+    Invoke-Runtime @('-I', '-X', 'utf8', '-c', 'import flask, PIL, pycaw, comtypes, winsdk, aiortc, pyaudiowpatch, mss, qrcode, psutil, numpy; from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager')
+
+    Pop-Location
+    $pushedLocation = $false
+
+    Write-SetupLog 'Finalizing runtime directory...'
+    $moved = $false
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        try {
+            if (Test-Path -LiteralPath $runtimeDir) { Remove-TreeWithRetry $runtimeDir }
+            Move-Item -LiteralPath $pythonDir -Destination $runtimeDir -ErrorAction Stop
+            $moved = $true
+            break
+        } catch {
+            Start-Sleep -Milliseconds 300
+        }
+    }
+    if (-not $moved) {
+        if (Test-Path -LiteralPath $runtimeDir) { Remove-TreeWithRetry $runtimeDir }
+        Copy-Item -LiteralPath $pythonDir -Destination $runtimeDir -Recurse -Force -ErrorAction Stop
+    }
+
+    $manifestJson = @{
+        python = $source.python
+        source = $source.url
+        source_sha256 = $source.sha256
+        requirements_sha256 = (Get-SetupHash $lockPath)
+    } | ConvertTo-Json
+    [IO.File]::WriteAllText((Join-Path $runtimeDir 'pccontrol-runtime.json'), $manifestJson, (New-Object Text.UTF8Encoding($false)))
+
     Write-SetupLog 'Runtime ready. Starting PC Control...'
     exit 0
 } catch {
     Write-SetupLog ('ERROR: ' + $_.Exception.Message)
     exit 1
 } finally {
-    if ($stage -and (Test-Path -LiteralPath $stage) -and ((Split-Path -Parent ([IO.Path]::GetFullPath($stage))) -eq $BaseDir)) {
-        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    if ($pushedLocation) {
+        try { Pop-Location } catch {}
+    }
+    if ($stage -and (Test-Path -LiteralPath $stage)) {
+        try { Remove-TreeWithRetry $stage } catch {}
     }
     if ($ownsMutex) { $setupMutex.ReleaseMutex() }
     $setupMutex.Dispose()

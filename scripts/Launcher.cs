@@ -51,23 +51,24 @@ static class Program
             form.Controls.Add(output);
             ProcessStartInfo info = new ProcessStartInfo();
             info.FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
-            info.Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + script + "\" -BaseDir \"" + baseDir.TrimEnd('\\') + "\"";
+            info.Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"scripts\\bootstrap_runtime.ps1\"";
             info.UseShellExecute = false;
             info.CreateNoWindow = true;
             info.WorkingDirectory = baseDir;
+            info.EnvironmentVariables.Remove("PSModulePath");
             try
             {
                 using (Process process = Process.Start(info))
                 {
                     if (process == null) return false;
                     bool success = false;
+                    string log = Path.Combine(baseDir, "logs", "bootstrap.log");
                     timer.Interval = 500;
                     timer.Tick += delegate {
                         try {
-                            string log = Path.Combine(baseDir, "logs", "bootstrap.log");
                             if (File.Exists(log)) {
                                 using (FileStream stream = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                                using (StreamReader reader = new StreamReader(stream)) { output.Text = reader.ReadToEnd(); }
+                                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8)) { output.Text = reader.ReadToEnd(); }
                                 output.SelectionStart = output.TextLength; output.ScrollToCaret();
                             }
                             if (process.HasExited) { success = process.ExitCode == 0; timer.Stop(); form.Close(); }
@@ -82,7 +83,19 @@ static class Program
                     };
                     timer.Start();
                     form.ShowDialog();
-                    if (!success) MessageBox.Show("Подготовка не завершена. Проверьте подключение и запустите лаунчер снова. Подробности: logs\\bootstrap.log", "PC Control", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    if (!success)
+                    {
+                        string detail = "";
+                        try {
+                            if (File.Exists(log)) {
+                                string[] lines = File.ReadAllLines(log, Encoding.UTF8);
+                                for (int i = lines.Length - 1; i >= 0; i--) {
+                                    if (!string.IsNullOrWhiteSpace(lines[i])) { detail = "\n\nПричина: " + lines[i].Trim(); break; }
+                                }
+                            }
+                        } catch { }
+                        MessageBox.Show("Подготовка не завершена. Проверьте подключение и запустите лаунчер снова. Подробности: logs\\bootstrap.log" + detail, "PC Control", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
                     return success;
                 }
             }
@@ -135,11 +148,16 @@ static class Program
 
         // 2. Ищем pythonw.exe для полностью бесшумного запуска без окна консоли
         string pythonwExe = Path.Combine(baseDir, "runtime", "pythonw.exe");
-        if (!File.Exists(pythonwExe) && !BootstrapRuntime(baseDir)) return;
+        string runtimeMarker = Path.Combine(baseDir, "runtime", "pccontrol-runtime.json");
+        if ((!File.Exists(pythonwExe) || !File.Exists(runtimeMarker)) && !BootstrapRuntime(baseDir)) return;
         if (!IsValidPython(pythonwExe))
         {
-            MessageBox.Show("Встроенный Python повреждён или не запускается. Распакуйте полный ZIP заново в доступную для записи папку.", "PC Control", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            try { Directory.Delete(Path.Combine(baseDir, "runtime"), true); } catch { }
+            if (!BootstrapRuntime(baseDir) || !IsValidPython(pythonwExe))
+            {
+                MessageBox.Show("Встроенный Python повреждён или не запускается. Распакуйте полный ZIP заново в доступную для записи папку.", "PC Control", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
         }
 
         ProcessStartInfo psi = new ProcessStartInfo();
