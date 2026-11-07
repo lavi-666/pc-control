@@ -70,17 +70,23 @@ Most remote desktop utilities (TeamViewer, AnyDesk) require internet connectivit
 
 ## 🚀 Quick Start (Up & Running in 60 Seconds)
 
-### Step 1: Download & Install
-Download [`PC-Control-Setup.exe`](https://github.com/lavi-666/pc-control/releases/latest/download/PC-Control-Setup.exe) from GitHub Releases and run it.  
-*(Alternatively, extract the portable [`PC_Control_Windows.zip`](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control_Windows.zip) to any folder).*
+### 📦 Choose Your Download Format
 
-### Step 2: Open Desktop Console
-The installer automatically creates a desktop shortcut and launches `Launcher.exe`.  
-The control panel detects your local Wi-Fi network, starts the server, and displays a secure connection QR code.
+PC Control is available in **two official distribution formats**:
 
-### Step 3: Connect with Your Phone
-- **Option A (Web App)**: Scan the QR code with your phone camera to instantly open the web remote control in Safari, Chrome, or Firefox.
-- **Option B (Android APK)**: Install [`PC_Control.apk`](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control.apk) on your Android device (Android 8.0+) and scan the QR code to pair.
+| Format | File | Recommended For | How to Launch |
+| :--- | :--- | :--- | :--- |
+| **1. Windows Setup Wizard** *(Recommended)* | [`PC-Control-Setup.exe`](https://github.com/lavi-666/pc-control/releases/latest/download/PC-Control-Setup.exe) | Most desktop users | Download, run setup wizard, pick directory, click Install. Creates desktop & start menu shortcuts, registers in Windows Add/Remove Programs. |
+| **2. Portable ZIP Folder** *(No installation)* | [`PC_Control_Windows.zip`](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control_Windows.zip) | Portable use / USB drive | Download ZIP, extract to **any directory** on your PC and run `Launcher.exe`. Leaves no system changes; to remove, simply delete the folder. |
+
+---
+
+### Connect with Your Phone
+
+1. **Launch Console**: Open `Launcher.exe` (or the desktop shortcut). The panel detects your active Wi-Fi IP, starts the local server, and displays a secure QR pairing code.
+2. **Connect Phone**:
+   - **Option A (Web App)**: Scan the QR code with your phone camera to instantly open the remote in Safari, Chrome, or Firefox.
+   - **Option B (Android APK)**: Install [`PC_Control.apk`](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control.apk) on Android (8.0+) and scan the QR code to pair.
 
 🎉 **You are now in full control of your PC!**
 
@@ -159,6 +165,23 @@ PC Control is built from the ground up for zero-trust local network operation:
 
 ---
 
+## 📦 Standalone Installer (PC-Control-Setup.exe)
+
+For maximum deployment convenience, PC Control is distributed as a single standalone executable [`PC-Control-Setup.exe`](PC-Control-Setup.exe) (1.40 MB):
+
+- **Architecture**: Written in C# ([`scripts/Installer.cs`](scripts/Installer.cs)) using Windows Forms, compiled via the standard Windows `csc.exe` compiler without third-party dependencies using [`scripts/build_installer.py`](scripts/build_installer.py).
+- **Embedded Payload**: All application distribution files (server, web UI, Rust streamer, runtime, and `Uninstall.exe`) are compressed and embedded directly into the installer as a `DeflateStream` resource.
+- **GUI Wizard**: Dark-themed modern setup wizard, customizable destination folder (`%LocalAppData%\Programs\PC Control` by default), desktop & start menu shortcut checkboxes, real progress bar.
+- **Silent CLI Mode**:
+  ```powershell
+  # Fully unattended background installation:
+  .\PC-Control-Setup.exe /SILENT /DIR="C:\Games\PC Control" /NORUN
+  ```
+- **Windows Integration**: Creates a standard uninstall entry in `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\PC Control` for easy removal via Windows Settings $\rightarrow$ Installed Apps.
+- **Inno Setup Script**: Includes an official Inno Setup 6.x configuration [`scripts/installer.iss`](scripts/installer.iss) for building alternate setups on CI/CD runners.
+
+---
+
 ## 🧹 Clean Uninstaller (Uninstall.exe)
 
 PC Control includes an autonomous uninstaller (`Uninstall.exe`) that ensures your system remains as clean as before installation:
@@ -183,6 +206,9 @@ PC Control includes an autonomous uninstaller (`Uninstall.exe`) that ensures you
 
 Every release undergoes exhaustive regression and acceptance testing:
 
+- **Installer & Lifecycle Tests**:
+  - [`tests/test_installer.py`](tests/test_installer.py): Automated end-to-end testing of `PC-Control-Setup.exe`, file extraction, registry registration in Cyrillic paths with spaces, and subsequent clean uninstallation.
+  - [`tests/test_uninstall_and_lifecycle.py`](tests/test_uninstall_and_lifecycle.py): 7 sandbox acceptance scenarios validating unmodified settings, rollbacks, conflict policies, corrupted journals, idempotency, and process safety.
 - **650-Cycle Automated Matrix**: Covers 26 specialized test batches:
   ```powershell
   python tests/run_all_650_tests.py
@@ -193,7 +219,6 @@ Every release undergoes exhaustive regression and acceptance testing:
   python -m unittest discover -s tests -p "test_*.py"
   # Result: Ran 98 tests in 52.5s OK
   ```
-- **Lifecycle & Uninstaller Acceptance**: 7 end-to-end sandbox scenarios validating Cyrillic paths, space-containing directories, journal corruption recovery, and process termination safety.
 
 ---
 
