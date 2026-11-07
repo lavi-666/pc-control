@@ -570,6 +570,8 @@ async function stopScreenStream(notifyServer = true){
       screenAudio.srcObject = null;
     }
     screenAudio.pause();
+    screenAudio.removeAttribute('src');
+    try { screenAudio.load(); } catch (e) {}
   }
   if (img){
     img.onerror = null;
@@ -596,6 +598,17 @@ window.onNativeScreenClosed = function(){
   const txt = document.getElementById('screenStartText');
   if (btn) btn.className = 'btn-ytm-red';
   if (txt) txt.innerText = t('btn_start_screen');
+};
+
+window.onNativeScreenParamsUpdated = function(monitor, height, fps, bitrate){
+  if (typeof monitor === 'number') screenCfg.monitor = monitor;
+  if (typeof height === 'number') screenCfg.height = height;
+  if (typeof fps === 'number') screenCfg.fps = fps;
+  if (typeof bitrate === 'number') screenCfg.bitrate = bitrate;
+  try {
+    saveScreenCfg();
+  } catch (e) {}
+  updateScreenUI();
 };
 
 async function toggleScreenStream(){
@@ -751,6 +764,12 @@ async function toggleScreenStream(){
         stopScreenStream(false);
       };
       img.src = resolveApiUrl('/screen/stream?t=' + Date.now() + '&token=' + encodeURIComponent(getToken()));
+    }
+    if (screenAudio && !streamMuted){
+      try {
+        screenAudio.src = resolveApiUrl('/audio?t=' + Date.now() + '&token=' + encodeURIComponent(getToken()));
+        screenAudio.play().catch(() => {});
+      } catch (errAudio) {}
     }
     txt.innerText = t('btn_stop_screen');
     statusEl.innerText = t('btn_screen_share') + ' (' + screenCfg.height + 'p · ' + screenCfg.fps + ' FPS)';

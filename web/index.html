@@ -219,59 +219,66 @@ const PC_MAC_ADDRESS = '';
 
     <!-- Панель настроек и просмотра демонстрации экрана -->
     <div class="screen-panel" id="screenPanel">
-      <div class="seg-row">
-        <span class="seg-lbl" data-i18n="screen_lbl_monitor">Экран</span>
-        <div class="seg-group" id="screenMonGroup">
-          <button class="seg-btn active" onclick="setScreenOpt('monitor', 1)" data-i18n="screen_mon_1">Экран 1</button>
-          <button class="seg-btn" onclick="setScreenOpt('monitor', 2)" data-i18n="screen_mon_2">Экран 2</button>
-          <button class="seg-btn" onclick="setScreenOpt('monitor', 0)" data-i18n="screen_mon_all">Все экраны</button>
-        </div>
-      </div>
-      <div class="seg-row">
-        <span class="seg-lbl" data-i18n="screen_lbl_resolution">Разрешение</span>
-        <div class="seg-group" id="screenResGroup">
-          <button class="seg-btn" data-val="480" onclick="setScreenOpt('height', 480)">480p</button>
-          <button class="seg-btn" data-val="720" onclick="setScreenOpt('height', 720)">720p</button>
-          <button class="seg-btn active" data-val="1080" onclick="setScreenOpt('height', 1080)">1080p</button>
-          <button class="seg-btn" data-val="0" onclick="setScreenOpt('height', 0)" data-i18n="screen_res_source">Исходное</button>
-        </div>
-      </div>
-      <div class="seg-row">
-        <span class="seg-lbl" data-i18n="screen_lbl_fps">Частота</span>
-        <div class="seg-group" id="screenFpsGroup">
-          <button class="seg-btn" data-val="30" onclick="setScreenOpt('fps', 30)">30</button>
-          <button class="seg-btn active" data-val="60" onclick="setScreenOpt('fps', 60)">60</button>
-          <button class="seg-btn" data-val="90" onclick="setScreenOpt('fps', 90)">90</button>
-        </div>
-      </div>
-      <div class="seg-row">
-        <span class="seg-lbl" data-i18n="screen_lbl_bitrate">Битрейт</span>
-        <div class="seg-group" id="screenBitrateGroup">
-          <button class="seg-btn active" data-val="0" onclick="setScreenOpt('bitrate', 0)" data-i18n="screen_qual_auto">Авто</button>
-          <button class="seg-btn" data-val="5" onclick="setScreenOpt('bitrate', 5)">5M</button>
-          <button class="seg-btn" data-val="15" onclick="setScreenOpt('bitrate', 15)">15M</button>
-          <button class="seg-btn" data-val="30" onclick="setScreenOpt('bitrate', 30)">30M</button>
-          <button class="seg-btn" data-val="50" onclick="setScreenOpt('bitrate', 50)">50M</button>
-        </div>
-      </div>
-
-      <!-- Локальная громкость потока демонстрации на телефоне -->
-      <div class="sys-vol-row" style="margin-top:10px;">
-        <button class="ytm-vol-btn" id="screenMuteBtn" onclick="toggleStreamMute()" title="Громкость потока на телефоне" data-i18n-title="screen_stream_vol_tip">
-          <svg id="screenVolIcon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
-        </button>
-        <div class="slider-zone" id="screenVolZone">
-          <input type="range" id="screenVolSlider" class="safe-range" min="0" max="100" step="1" value="50">
-        </div>
-        <div class="ytm-vol-val" id="screenVolVal">50%</div>
-      </div>
-
-      <div class="screen-actions">
+      <div class="screen-actions" style="margin-bottom:12px;">
         <button id="screenStartBtn" class="btn-ytm-red" onclick="toggleScreenStream()">
           <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           <span id="screenStartText" data-i18n="btn_start_screen">Запустить трансляцию</span>
         </button>
       </div>
+
+      <details class="screen-prelaunch-details" style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px; padding:8px 12px; margin-bottom:12px;">
+        <summary style="cursor:pointer; color:var(--subtext); font-size:12.5px; font-weight:600; outline:none; user-select:none; padding:4px 0;">
+          ⚙ Предварительные параметры (экран, FPS, битрейт)
+        </summary>
+        <div style="margin-top:10px;">
+          <div class="seg-row">
+            <span class="seg-lbl" data-i18n="screen_lbl_monitor">Экран</span>
+            <div class="seg-group" id="screenMonGroup">
+              <button class="seg-btn active" onclick="setScreenOpt('monitor', 1)" data-i18n="screen_mon_1">Экран 1</button>
+              <button class="seg-btn" onclick="setScreenOpt('monitor', 2)" data-i18n="screen_mon_2">Экран 2</button>
+              <button class="seg-btn" onclick="setScreenOpt('monitor', 0)" data-i18n="screen_mon_all">Все экраны</button>
+            </div>
+          </div>
+          <div class="seg-row">
+            <span class="seg-lbl" data-i18n="screen_lbl_resolution">Разрешение</span>
+            <div class="seg-group" id="screenResGroup">
+              <button class="seg-btn" data-val="480" onclick="setScreenOpt('height', 480)">480p</button>
+              <button class="seg-btn" data-val="720" onclick="setScreenOpt('height', 720)">720p</button>
+              <button class="seg-btn active" data-val="1080" onclick="setScreenOpt('height', 1080)">1080p</button>
+              <button class="seg-btn" data-val="0" onclick="setScreenOpt('height', 0)" data-i18n="screen_res_source">Исходное</button>
+            </div>
+          </div>
+          <div class="seg-row">
+            <span class="seg-lbl" data-i18n="screen_lbl_fps">Частота</span>
+            <div class="seg-group" id="screenFpsGroup">
+              <button class="seg-btn" data-val="30" onclick="setScreenOpt('fps', 30)">30</button>
+              <button class="seg-btn active" data-val="60" onclick="setScreenOpt('fps', 60)">60</button>
+              <button class="seg-btn" data-val="90" onclick="setScreenOpt('fps', 90)">90</button>
+            </div>
+          </div>
+          <div class="seg-row">
+            <span class="seg-lbl" data-i18n="screen_lbl_bitrate">Битрейт</span>
+            <div class="seg-group" id="screenBitrateGroup">
+              <button class="seg-btn active" data-val="0" onclick="setScreenOpt('bitrate', 0)" data-i18n="screen_qual_auto">Авто</button>
+              <button class="seg-btn" data-val="5" onclick="setScreenOpt('bitrate', 5)">5M</button>
+              <button class="seg-btn" data-val="15" onclick="setScreenOpt('bitrate', 15)">15M</button>
+              <button class="seg-btn" data-val="30" onclick="setScreenOpt('bitrate', 30)">30M</button>
+              <button class="seg-btn" data-val="50" onclick="setScreenOpt('bitrate', 50)">50M</button>
+            </div>
+          </div>
+
+          <!-- Локальная громкость потока демонстрации на телефоне -->
+          <div class="sys-vol-row" style="margin-top:10px;">
+            <button class="ytm-vol-btn" id="screenMuteBtn" onclick="toggleStreamMute()" title="Громкость потока на телефоне" data-i18n-title="screen_stream_vol_tip">
+              <svg id="screenVolIcon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+            </button>
+            <div class="slider-zone" id="screenVolZone">
+              <input type="range" id="screenVolSlider" class="safe-range" min="0" max="100" step="1" value="50">
+            </div>
+            <div class="ytm-vol-val" id="screenVolVal">50%</div>
+          </div>
+        </div>
+      </details>
 
       <div class="screen-stage" id="screenStage" ondblclick="fullscreenScreen()">
         <div class="screen-badge">

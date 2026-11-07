@@ -1,11 +1,15 @@
 package com.pccontrol.remote;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.text.TextUtils;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
@@ -27,6 +31,7 @@ import android.view.animation.AlphaAnimation;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 
 import java.io.BufferedInputStream;
@@ -35,8 +40,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -44,18 +54,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Полная переработка:
  * 1. Чистый дизайн в стилистике PC Control (убран постоянный технический HUD).
  * 2. Автоматически скрываемая верхняя панель управления по касанию (5 сек).
- * 3. Отдельная скрытая диагностическая панель (с реальными метриками FPS, битрейта, задержки).
- * 4. Настоящее масштабирование без растягивания (Fit Center / Letterbox с сохранением 16:9).
- * 5. Поддержка переключения Fit / Fill.
- * 6. Полноценный Fullscreen (Immersive Sticky Mode) без пересоздания декодера.
- * 7. Прецизионный расчёт FPS (Received, Decoded, Rendered, Min) через скользящее окно без скачков.
- * 8. Сенсорный контроллер мыши Moonlight с точным позиционированием внутри области видео.
+ * 3. Полноценная модальная панель настроек стрима и звука прямо во время демонстрации (кнопка ⚙).
+ * 4. Нативный встроенный аудиодвижок WASAPI Loopback (AudioTrack PCM 48 кГц стерео).
+ * 5. Настоящее масштабирование без растягивания (Fit Center / Letterbox с сохранением 16:9).
+ * 6. Поддержка переключения Fit / Fill.
+ * 7. Полноценный Fullscreen (Immersive Sticky Mode) без пересоздания декодера.
+ * 8. Прецизионный расчёт FPS (Received, Decoded, Rendered, Min) через скользящее окно без скачков.
+ * 9. Сенсорный контроллер мыши Moonlight с точным позиционированием внутри области видео.
  */
 public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callback {
 
     public interface PlayerCallback {
         void onCloseRequested();
         void onFullscreenToggled(boolean isFullscreen);
+        void onSettingsChanged(int monitor, int height, int fps, int bitrate);
     }
 
     public static final int SCALE_MODE_FIT = 0;
@@ -69,8 +81,30 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private TextView subtitleView;
     private TextView scaleModeBtn;
     private TextView fullscreenBtn;
-    private TextView diagBtn;
+    private TextView settingsBtn;
     private TextView closeBtn;
+
+    // Панель настроек стрима и звука
+    private FrameLayout settingsOverlay;
+    private LinearLayout settingsCard;
+    private boolean isSettingsVisible = false;
+    private final List<TextView> monitorChips = new ArrayList<>();
+    private final Map<Integer, TextView> resChips = new HashMap<>();
+    private final Map<Integer, TextView> fpsChips = new HashMap<>();
+    private final Map<Integer, TextView> bitrateChips = new HashMap<>();
+    private TextView soundStatusView;
+    private TextView soundToggleBtn;
+    private TextView soundVolumeLabel;
+    private SeekBar soundVolumeBar;
+
+    // Встроенный аудиодвижок WASAPI Loopback (PCM 48 кГц стерео AudioTrack)
+    private boolean isAudioEnabled = true;
+    private int audioVolume = 80;
+    private boolean isAudioMuted = false;
+    private volatile String audioStatus = "Выключен";
+    private volatile int audioStatusColor = Color.parseColor("#94A3B8");
+    private AudioPlayerThread audioThread = null;
+    private final Object audioLock = new Object();
 
     // Панель диагностики
     private FrameLayout diagOverlay;
@@ -182,6 +216,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void init(Context context) {
         setBackgroundColor(Color.parseColor("#030303"));
 
+        loadPreferences();
+
         // 1. Создание SurfaceView для аппаратного рендеринга MediaCodec
         surfaceView = new SurfaceView(context);
         surfaceHolder = surfaceView.getHolder();
@@ -191,13 +227,16 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         // 2. Верхняя полупрозрачная панель управления в стиле PC Control
         buildTopToolbar(context);
 
-        // 3. Отдельная скрытая панель диагностики
+        // 3. Модальная диалоговая панель настроек стрима и звука
+        buildSettingsDialog(context);
+
+        // 4. Отдельная скрытая панель диагностики
         buildDiagnosticsDialog(context);
 
-        // 4. Оверлей сообщений об ошибках
+        // 5. Оверлей сообщений об ошибках
         buildErrorDialog(context);
 
-        // 5. Настройка сенсорного ввода
+        // 6. Настройка сенсорного ввода
         surfaceView.setOnTouchListener(new OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
@@ -301,16 +340,16 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         addToolbarSpacer(context, topToolbar, 8);
 
-        // Кнопка диагностики (⚙)
-        diagBtn = createToolbarButton(context, "⚙", "#242A35", Color.WHITE, 17f);
-        diagBtn.setOnClickListener(new OnClickListener() {
+        // Кнопка настроек демонстрации и звука (⚙)
+        settingsBtn = createToolbarButton(context, "⚙", "#242A35", Color.WHITE, 17f);
+        settingsBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
-                toggleDiagnosticsDialog();
+                toggleSettingsDialog();
                 scheduleControlsAutoHide();
             }
         });
-        topToolbar.addView(diagBtn);
+        topToolbar.addView(settingsBtn);
 
         addToolbarSpacer(context, topToolbar, 8);
 
@@ -359,6 +398,781 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dpToPx(dp), 1);
         sp.setLayoutParams(lp);
         parent.addView(sp);
+    }
+
+    private TextView createChipButton(Context context, String text, final Runnable onClick) {
+        TextView chip = new TextView(context);
+        chip.setText(text);
+        chip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        chip.setTypeface(Typeface.DEFAULT_BOLD);
+        chip.setGravity(Gravity.CENTER);
+        chip.setTextColor(Color.parseColor("#CBD5E1"));
+        chip.setMinWidth(dpToPx(48));
+        chip.setMinHeight(dpToPx(48));
+        int padX = dpToPx(8);
+        int padY = dpToPx(6);
+        chip.setPadding(padX, padY, padX, padY);
+
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(Color.parseColor("#1E2530"));
+        gd.setCornerRadius(dpToPx(12));
+        gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
+        chip.setBackground(gd);
+
+        chip.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (onClick != null) onClick.run();
+            }
+        });
+        return chip;
+    }
+
+    private void setChipActive(TextView chip, boolean active) {
+        if (chip == null) return;
+        GradientDrawable gd = new GradientDrawable();
+        gd.setCornerRadius(dpToPx(12));
+        if (active) {
+            gd.setColor(Color.parseColor("#2563EB")); // Vibrant Blue
+            gd.setStroke(dpToPx(1), Color.parseColor("#60A5FA"));
+            chip.setTextColor(Color.WHITE);
+        } else {
+            gd.setColor(Color.parseColor("#1E2530"));
+            gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
+            chip.setTextColor(Color.parseColor("#CBD5E1"));
+        }
+        chip.setBackground(gd);
+    }
+
+    private void addSectionHeader(Context context, LinearLayout parent, String text) {
+        TextView label = new TextView(context);
+        label.setText(text);
+        label.setTextColor(Color.parseColor("#94A3B8"));
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        label.setTypeface(Typeface.DEFAULT_BOLD);
+        label.setPadding(0, dpToPx(4), 0, dpToPx(4));
+        parent.addView(label);
+    }
+
+    /**
+     * Построение модальной панели настроек стрима и звука прямо внутри запущенного плеера.
+     */
+    private void buildSettingsDialog(Context context) {
+        settingsOverlay = new FrameLayout(context);
+        settingsOverlay.setBackgroundColor(Color.parseColor("#99000000")); // Полупрозрачный бэкдроп
+        settingsOverlay.setVisibility(View.GONE);
+        settingsOverlay.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setSettingsVisible(false);
+            }
+        });
+
+        ScrollView scroll = new ScrollView(context);
+        scroll.setVerticalScrollBarEnabled(false);
+
+        settingsCard = new LinearLayout(context);
+        settingsCard.setOrientation(LinearLayout.VERTICAL);
+
+        GradientDrawable cardBg = new GradientDrawable();
+        cardBg.setColor(Color.parseColor("#EB121622"));
+        cardBg.setCornerRadius(dpToPx(20));
+        cardBg.setStroke(dpToPx(1), Color.parseColor("#334155"));
+        settingsCard.setBackground(cardBg);
+
+        int pad = dpToPx(18);
+        settingsCard.setPadding(pad, pad, pad, pad);
+
+        FrameLayout.LayoutParams cardParams = new FrameLayout.LayoutParams(
+                dpToPx(380),
+                LayoutParams.WRAP_CONTENT
+        );
+        cardParams.gravity = Gravity.CENTER;
+        cardParams.topMargin = dpToPx(24);
+        cardParams.bottomMargin = dpToPx(24);
+        settingsCard.setLayoutParams(cardParams);
+        settingsCard.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // Блокируем клик на карточке от закрытия бэкдропа
+            }
+        });
+
+        // 1. Заголовок диалога
+        LinearLayout head = new LinearLayout(context);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView title = new TextView(context);
+        title.setText("НАСТРОЙКИ ДЕМОНСТРАЦИИ");
+        title.setTextColor(Color.parseColor("#38BDF8")); // Sky blue
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
+        head.addView(title, titleLp);
+
+        TextView closeBtn = new TextView(context);
+        closeBtn.setText("✕");
+        closeBtn.setTextColor(Color.parseColor("#94A3B8"));
+        closeBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
+        closeBtn.setGravity(Gravity.CENTER);
+        closeBtn.setMinWidth(dpToPx(48));
+        closeBtn.setMinHeight(dpToPx(48));
+        closeBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setSettingsVisible(false);
+            }
+        });
+        head.addView(closeBtn);
+        settingsCard.addView(head);
+
+        addDivider(context, settingsCard);
+
+        // 2. Раздел: ЭКРАН (МОНИТОР)
+        addSectionHeader(context, settingsCard, "ЭКРАН (МОНИТОР)");
+        LinearLayout monRow = new LinearLayout(context);
+        monRow.setOrientation(LinearLayout.HORIZONTAL);
+        monRow.setGravity(Gravity.CENTER_VERTICAL);
+        monRow.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+
+        monitorChips.clear();
+        final int[] monIds = {1, 2, 0};
+        final String[] monNames = {"Экран 1", "Экран 2", "Все экраны"};
+        for (int i = 0; i < monIds.length; i++) {
+            final int mId = monIds[i];
+            TextView chip = createChipButton(context, monNames[i], new Runnable() {
+                @Override
+                public void run() {
+                    applyVideoSettings(mId, targetHeight, targetFps, targetBitrate);
+                }
+            });
+            chip.setTag(mId);
+            monitorChips.add(chip);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
+            lp.setMargins(dpToPx(3), dpToPx(3), dpToPx(3), dpToPx(3));
+            chip.setLayoutParams(lp);
+            monRow.addView(chip);
+        }
+        settingsCard.addView(monRow);
+
+        addDivider(context, settingsCard);
+
+        // 3. Раздел: РАЗРЕШЕНИЕ
+        addSectionHeader(context, settingsCard, "РАЗРЕШЕНИЕ");
+        LinearLayout resRow = new LinearLayout(context);
+        resRow.setOrientation(LinearLayout.HORIZONTAL);
+        resRow.setGravity(Gravity.CENTER_VERTICAL);
+        resRow.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+
+        resChips.clear();
+        final int[] heights = {480, 720, 1080, 0};
+        final String[] resNames = {"480p", "720p", "1080p", "Исходное"};
+        for (int i = 0; i < heights.length; i++) {
+            final int h = heights[i];
+            TextView chip = createChipButton(context, resNames[i], new Runnable() {
+                @Override
+                public void run() {
+                    applyVideoSettings(targetMonitor, h, targetFps, targetBitrate);
+                }
+            });
+            chip.setTag(h);
+            resChips.put(h, chip);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
+            lp.setMargins(dpToPx(3), dpToPx(3), dpToPx(3), dpToPx(3));
+            chip.setLayoutParams(lp);
+            resRow.addView(chip);
+        }
+        settingsCard.addView(resRow);
+
+        addDivider(context, settingsCard);
+
+        // 4. Раздел: ЧАСТОТА КАДРОВ
+        addSectionHeader(context, settingsCard, "ЧАСТОТА КАДРОВ");
+        LinearLayout fpsRow = new LinearLayout(context);
+        fpsRow.setOrientation(LinearLayout.HORIZONTAL);
+        fpsRow.setGravity(Gravity.CENTER_VERTICAL);
+        fpsRow.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+
+        fpsChips.clear();
+        final int[] fpsVals = {30, 60, 90};
+        final String[] fpsNames = {"30 FPS", "60 FPS", "90 FPS"};
+        for (int i = 0; i < fpsVals.length; i++) {
+            final int f = fpsVals[i];
+            TextView chip = createChipButton(context, fpsNames[i], new Runnable() {
+                @Override
+                public void run() {
+                    applyVideoSettings(targetMonitor, targetHeight, f, targetBitrate);
+                }
+            });
+            chip.setTag(f);
+            fpsChips.put(f, chip);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
+            lp.setMargins(dpToPx(3), dpToPx(3), dpToPx(3), dpToPx(3));
+            chip.setLayoutParams(lp);
+            fpsRow.addView(chip);
+        }
+        settingsCard.addView(fpsRow);
+
+        addDivider(context, settingsCard);
+
+        // 5. Раздел: БИТРЕЙТ
+        addSectionHeader(context, settingsCard, "БИТРЕЙТ");
+        LinearLayout brRow = new LinearLayout(context);
+        brRow.setOrientation(LinearLayout.HORIZONTAL);
+        brRow.setGravity(Gravity.CENTER_VERTICAL);
+        brRow.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+
+        bitrateChips.clear();
+        final int[] brVals = {0, 5000000, 15000000, 30000000, 50000000};
+        final String[] brNames = {"Авто", "5M", "15M", "30M", "50M"};
+        for (int i = 0; i < brVals.length; i++) {
+            final int b = brVals[i];
+            TextView chip = createChipButton(context, brNames[i], new Runnable() {
+                @Override
+                public void run() {
+                    applyVideoSettings(targetMonitor, targetHeight, targetFps, b);
+                }
+            });
+            chip.setTag(b);
+            bitrateChips.put(b, chip);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
+            lp.setMargins(dpToPx(2), dpToPx(3), dpToPx(2), dpToPx(3));
+            chip.setLayoutParams(lp);
+            brRow.addView(chip);
+        }
+        settingsCard.addView(brRow);
+
+        addDivider(context, settingsCard);
+
+        // 6. Раздел: ЗВУК КОМПЬЮТЕРА (WASAPI LOOPBACK)
+        addSectionHeader(context, settingsCard, "ЗВУК КОМПЬЮТЕРА (WASAPI LOOPBACK)");
+
+        soundStatusView = new TextView(context);
+        soundStatusView.setText("● " + audioStatus);
+        soundStatusView.setTextColor(audioStatusColor);
+        soundStatusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        soundStatusView.setTypeface(Typeface.DEFAULT_BOLD);
+        soundStatusView.setPadding(0, dpToPx(2), 0, dpToPx(8));
+        settingsCard.addView(soundStatusView);
+
+        soundToggleBtn = createToolbarButton(context, "Звук ПК: ВКЛЮЧЕН", "#16A34A", Color.WHITE, 13f);
+        LinearLayout.LayoutParams toggleLp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+        toggleLp.bottomMargin = dpToPx(10);
+        soundToggleBtn.setLayoutParams(toggleLp);
+        soundToggleBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setAudioEnabled(!isAudioEnabled);
+            }
+        });
+        settingsCard.addView(soundToggleBtn);
+
+        // Громкость воспроизведения на телефоне
+        soundVolumeLabel = new TextView(context);
+        soundVolumeLabel.setText("Громкость на телефоне: " + audioVolume + "%");
+        soundVolumeLabel.setTextColor(Color.parseColor("#E2E8F0"));
+        soundVolumeLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        settingsCard.addView(soundVolumeLabel);
+
+        soundVolumeBar = new SeekBar(context);
+        soundVolumeBar.setMax(100);
+        soundVolumeBar.setProgress(audioVolume);
+        soundVolumeBar.setPadding(dpToPx(8), dpToPx(10), dpToPx(8), dpToPx(10));
+        soundVolumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) {
+                    setAudioVolume(progress);
+                }
+            }
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        settingsCard.addView(soundVolumeBar);
+
+        addDivider(context, settingsCard);
+
+        // 7. Раздел: ДИАГНОСТИКА ПОТОКА
+        addSectionHeader(context, settingsCard, "ДИАГНОСТИКА И ТЕЛЕМЕТРИЯ");
+
+        TextView openDiagBtn = createToolbarButton(context, "📊 Показать диагностику и FPS", "#1E293B", Color.parseColor("#38BDF8"), 13f);
+        openDiagBtn.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+        openDiagBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setSettingsVisible(false);
+                setDiagnosticsVisible(true);
+            }
+        });
+        settingsCard.addView(openDiagBtn);
+
+        scroll.addView(settingsCard);
+        settingsOverlay.addView(scroll, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        addView(settingsOverlay, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+    }
+
+    private void highlightSettingsChips() {
+        for (TextView chip : monitorChips) {
+            Object tag = chip.getTag();
+            if (tag instanceof Integer) {
+                setChipActive(chip, ((Integer) tag) == targetMonitor);
+            }
+        }
+        for (Map.Entry<Integer, TextView> e : resChips.entrySet()) {
+            setChipActive(e.getValue(), e.getKey() == targetHeight);
+        }
+        for (Map.Entry<Integer, TextView> e : fpsChips.entrySet()) {
+            setChipActive(e.getValue(), e.getKey() == targetFps);
+        }
+        for (Map.Entry<Integer, TextView> e : bitrateChips.entrySet()) {
+            setChipActive(e.getValue(), e.getKey() == targetBitrate);
+        }
+    }
+
+    private void updateSettingsDialogUI() {
+        if (soundStatusView != null) {
+            soundStatusView.setText("● " + audioStatus);
+            soundStatusView.setTextColor(audioStatusColor);
+        }
+        if (soundToggleBtn != null) {
+            if (isAudioEnabled) {
+                soundToggleBtn.setText("Звук ПК: ВКЛЮЧЕН");
+                GradientDrawable gd = new GradientDrawable();
+                gd.setColor(Color.parseColor("#16A34A"));
+                gd.setCornerRadius(dpToPx(14));
+                soundToggleBtn.setBackground(gd);
+                soundToggleBtn.setTextColor(Color.WHITE);
+            } else {
+                soundToggleBtn.setText("Звук ПК: ВЫКЛЮЧЕН");
+                GradientDrawable gd = new GradientDrawable();
+                gd.setColor(Color.parseColor("#242A35"));
+                gd.setCornerRadius(dpToPx(14));
+                soundToggleBtn.setBackground(gd);
+                soundToggleBtn.setTextColor(Color.parseColor("#94A3B8"));
+            }
+        }
+        if (soundVolumeLabel != null) {
+            soundVolumeLabel.setText("Громкость на телефоне: " + audioVolume + "%");
+        }
+        if (soundVolumeBar != null && soundVolumeBar.getProgress() != audioVolume) {
+            soundVolumeBar.setProgress(audioVolume);
+        }
+    }
+
+    public void toggleSettingsDialog() {
+        setSettingsVisible(!isSettingsVisible);
+    }
+
+    public void setSettingsVisible(boolean visible) {
+        isSettingsVisible = visible;
+        if (settingsOverlay != null) {
+            settingsOverlay.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+        if (visible) {
+            mainHandler.removeCallbacks(hideControlsRunnable);
+            if (isDiagVisible) {
+                setDiagnosticsVisible(false);
+            }
+            highlightSettingsChips();
+            updateSettingsDialogUI();
+            loadServerMonitors();
+        } else {
+            scheduleControlsAutoHide();
+        }
+    }
+
+    private void applyVideoSettings(final int newMonitor, final int newHeight, final int newFps, final int newBitrate) {
+        if (this.targetMonitor == newMonitor && this.targetHeight == newHeight && this.targetFps == newFps && this.targetBitrate == newBitrate) {
+            return;
+        }
+        final int prevMon = this.targetMonitor;
+        final int prevH = this.targetHeight;
+        final int prevFps = this.targetFps;
+        final int prevBr = this.targetBitrate;
+
+        this.targetMonitor = newMonitor;
+        this.targetHeight = newHeight;
+        this.targetFps = newFps;
+        this.targetBitrate = newBitrate;
+        savePreferences();
+        updateSubtitle();
+        highlightSettingsChips();
+
+        if (playerCallback != null) {
+            playerCallback.onSettingsChanged(newMonitor, newHeight, newFps, newBitrate);
+        }
+
+        if (isStreaming.get()) {
+            restartVideoStreamOnly(prevMon, prevH, prevFps, prevBr);
+        }
+    }
+
+    private void restartVideoStreamOnly(final int prevMon, final int prevH, final int prevFps, final int prevBr) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                // Уведомляем сервер по HTTP о новых параметрах экрана
+                try {
+                    String cfgUrl = serverUrl + "/screen/config";
+                    URL u = new URL(cfgUrl);
+                    HttpURLConnection cfgConn = (HttpURLConnection) u.openConnection();
+                    cfgConn.setRequestMethod("POST");
+                    cfgConn.setConnectTimeout(2500);
+                    cfgConn.setReadTimeout(2500);
+                    cfgConn.setRequestProperty("Content-Type", "application/json");
+                    if (!authToken.isEmpty()) {
+                        cfgConn.setRequestProperty("X-Auth-Token", authToken);
+                    }
+                    cfgConn.setDoOutput(true);
+                    String json = "{\"monitor\":" + targetMonitor + ",\"height\":" + targetHeight + ",\"fps\":" + targetFps + ",\"bitrate\":" + targetBitrate + "}";
+                    OutputStream out = cfgConn.getOutputStream();
+                    out.write(json.getBytes(StandardCharsets.UTF_8));
+                    out.flush();
+                    out.close();
+                    cfgConn.getResponseCode();
+                    cfgConn.disconnect();
+                } catch (Exception ignored) {}
+
+                // Прерываем предыдущее видео-соединение (звуковой поток НЕ трогаем!)
+                HttpURLConnection conn = activeConn;
+                if (conn != null) {
+                    try { conn.disconnect(); } catch (Exception ignored) {}
+                    activeConn = null;
+                }
+
+                Thread wt = workerThread;
+                if (wt != null) {
+                    wt.interrupt();
+                    try { wt.join(400); } catch (Exception ignored) {}
+                }
+
+                releaseDecoder();
+
+                // Запускаем новый поток видео-декодера
+                workerThread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        runStreamWorker();
+                    }
+                }, "pc-native-stream-worker");
+                workerThread.start();
+            }
+        }).start();
+    }
+
+    private void loadServerMonitors() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (serverUrl == null || serverUrl.isEmpty()) return;
+                    String mUrl = serverUrl + "/screen/monitors";
+                    URL u = new URL(mUrl);
+                    HttpURLConnection c = (HttpURLConnection) u.openConnection();
+                    c.setConnectTimeout(3000);
+                    c.setReadTimeout(3000);
+                    if (!authToken.isEmpty()) {
+                        c.setRequestProperty("X-Auth-Token", authToken);
+                    }
+                    c.connect();
+                    if (c.getResponseCode() == 200) {
+                        InputStream in = c.getInputStream();
+                        byte[] buf = new byte[8192];
+                        int r = in.read(buf);
+                        in.close();
+                        if (r > 0) {
+                            final String body = new String(buf, 0, r, StandardCharsets.UTF_8);
+                            mainHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    parseAndUpdateMonitors(body);
+                                }
+                            });
+                        }
+                    }
+                    c.disconnect();
+                } catch (Exception ignored) {}
+            }
+        }).start();
+    }
+
+    private void parseAndUpdateMonitors(String json) {
+        try {
+            if (json.contains("\"monitors\"") && monitorChips.size() >= 3) {
+                if (json.contains("\"id\":1")) {
+                    monitorChips.get(0).setVisibility(View.VISIBLE);
+                }
+                if (json.contains("\"id\":2")) {
+                    monitorChips.get(1).setVisibility(View.VISIBLE);
+                } else {
+                    monitorChips.get(1).setVisibility(View.GONE);
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    // =========================================================================
+    // Native WASAPI Loopback Audio Engine (48 kHz Stereo 16-bit PCM AudioTrack)
+    // =========================================================================
+    private class AudioPlayerThread extends Thread {
+        private final AtomicBoolean running = new AtomicBoolean(true);
+        private AudioTrack audioTrack;
+        private volatile HttpURLConnection audioConn;
+
+        public AudioPlayerThread() {
+            super("pc-native-audio-player");
+        }
+
+        public void stopAudio() {
+            running.set(false);
+            final HttpURLConnection c = audioConn;
+            if (c != null) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try { c.disconnect(); } catch (Exception ignored) {}
+                    }
+                }).start();
+            }
+            interrupt();
+        }
+
+        @Override
+        public void run() {
+            int sampleRate = 48000;
+            int channelConfig = AudioFormat.CHANNEL_OUT_STEREO;
+            int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
+            int minBuf = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat);
+            if (minBuf <= 0) minBuf = 4096;
+            int trackBufSize = Math.max(minBuf, 8192);
+
+            updateAudioStatusOnMain("Подключение...", Color.parseColor("#F59E0B"));
+
+            try {
+                audioTrack = new AudioTrack(
+                        AudioManager.STREAM_MUSIC,
+                        sampleRate,
+                        channelConfig,
+                        audioFormat,
+                        trackBufSize,
+                        AudioTrack.MODE_STREAM
+                );
+                float vol = (isAudioMuted || !isAudioEnabled) ? 0f : (audioVolume / 100.0f);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    audioTrack.setVolume(vol);
+                } else {
+                    audioTrack.setStereoVolume(vol, vol);
+                }
+                audioTrack.play();
+            } catch (Exception ex) {
+                updateAudioStatusOnMain("Ошибка AudioTrack: " + ex.getMessage(), Color.parseColor("#EF4444"));
+                return;
+            }
+
+            HttpURLConnection conn = null;
+            InputStream in = null;
+            try {
+                String audioEndpoint = serverUrl + "/audio";
+                if (!authToken.isEmpty()) {
+                    audioEndpoint += "?token=" + URLEncoder.encode(authToken, "UTF-8");
+                }
+
+                URL url = new URL(audioEndpoint);
+                conn = (HttpURLConnection) url.openConnection();
+                audioConn = conn;
+                conn.setRequestMethod("GET");
+                conn.setConnectTimeout(6000);
+                conn.setReadTimeout(12000);
+                conn.setUseCaches(false);
+                conn.setRequestProperty("User-Agent", "PCControl-NativeAudio/2.4");
+                if (!authToken.isEmpty()) {
+                    conn.setRequestProperty("X-Auth-Token", authToken);
+                    conn.setRequestProperty("Cookie", "token=" + authToken);
+                }
+
+                conn.connect();
+                int respCode = conn.getResponseCode();
+                if (respCode == 401) {
+                    updateAudioStatusOnMain("Ошибка авторизации (401)", Color.parseColor("#EF4444"));
+                    return;
+                } else if (respCode != 200) {
+                    updateAudioStatusOnMain("Ошибка сервера (HTTP " + respCode + ")", Color.parseColor("#EF4444"));
+                    return;
+                }
+
+                in = new BufferedInputStream(conn.getInputStream(), 16384);
+
+                // Читаем 44-байтный стандартный WAV RIFF заголовок
+                byte[] wavHeader = new byte[44];
+                int totalHdr = 0;
+                while (totalHdr < 44 && running.get()) {
+                    int r = in.read(wavHeader, totalHdr, 44 - totalHdr);
+                    if (r < 0) break;
+                    totalHdr += r;
+                }
+
+                if (totalHdr == 44 && wavHeader[0] == 'R' && wavHeader[1] == 'I' && wavHeader[2] == 'F' && wavHeader[3] == 'F') {
+                    int channels = (wavHeader[22] & 0xFF) | ((wavHeader[23] & 0xFF) << 8);
+                    int sRate = (wavHeader[24] & 0xFF) | ((wavHeader[25] & 0xFF) << 8) | ((wavHeader[26] & 0xFF) << 16) | ((wavHeader[27] & 0xFF) << 24);
+                    if (sRate >= 8000 && sRate <= 96000 && (sRate != sampleRate || (channels == 1 && channelConfig != AudioFormat.CHANNEL_OUT_MONO))) {
+                        sampleRate = sRate;
+                        channelConfig = (channels == 1) ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO;
+                        try {
+                            audioTrack.stop();
+                            audioTrack.release();
+                        } catch (Exception ignored) {}
+                        minBuf = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat);
+                        trackBufSize = Math.max(minBuf, 8192);
+                        audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, channelConfig, audioFormat, trackBufSize, AudioTrack.MODE_STREAM);
+                        float vol = (isAudioMuted || !isAudioEnabled) ? 0f : (audioVolume / 100.0f);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                            audioTrack.setVolume(vol);
+                        } else {
+                            audioTrack.setStereoVolume(vol, vol);
+                        }
+                        audioTrack.play();
+                    }
+                }
+
+                updateAudioStatusOnMain("Включен (" + (sampleRate / 1000) + " кГц Стерео)", Color.parseColor("#22C55E"));
+
+                byte[] pcmBuffer = new byte[2048];
+                long framesWritten = 0;
+
+                while (running.get() && isStreaming.get()) {
+                    int readBytes = in.read(pcmBuffer, 0, pcmBuffer.length);
+                    if (readBytes < 0) break;
+
+                    if (readBytes > 0 && audioTrack != null) {
+                        if (!isAudioMuted && isAudioEnabled) {
+                            int headPos = audioTrack.getPlaybackHeadPosition();
+                            long lagFrames = framesWritten - headPos;
+                            // Компенсация задержки (drift compensation): если накопленный буфер превышает 100 мс, пропускаем старый чанк
+                            if (lagFrames > (sampleRate * 100 / 1000)) {
+                                continue;
+                            }
+                            int written = audioTrack.write(pcmBuffer, 0, readBytes);
+                            if (written > 0) {
+                                framesWritten += (written / (2 * (channelConfig == AudioFormat.CHANNEL_OUT_MONO ? 1 : 2)));
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ex) {
+                if (running.get() && isStreaming.get()) {
+                    updateAudioStatusOnMain("Сбой звука: " + ex.getClass().getSimpleName(), Color.parseColor("#EF4444"));
+                }
+            } finally {
+                if (audioTrack != null) {
+                    try {
+                        audioTrack.stop();
+                        audioTrack.flush();
+                        audioTrack.release();
+                    } catch (Exception ignored) {}
+                    audioTrack = null;
+                }
+                if (in != null) {
+                    try { in.close(); } catch (Exception ignored) {}
+                }
+                if (conn != null) {
+                    try { conn.disconnect(); } catch (Exception ignored) {}
+                }
+                audioConn = null;
+            }
+        }
+    }
+
+    private void updateAudioStatusOnMain(final String status, final int color) {
+        audioStatus = status;
+        audioStatusColor = color;
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                updateSettingsDialogUI();
+            }
+        });
+    }
+
+    public void startAudioStream() {
+        if (!isAudioEnabled) {
+            updateAudioStatusOnMain("Выключен", Color.parseColor("#94A3B8"));
+            return;
+        }
+        synchronized (audioLock) {
+            if (audioThread != null) {
+                audioThread.stopAudio();
+                audioThread = null;
+            }
+            audioThread = new AudioPlayerThread();
+            audioThread.start();
+        }
+    }
+
+    public void stopAudioStream() {
+        synchronized (audioLock) {
+            if (audioThread != null) {
+                audioThread.stopAudio();
+                audioThread = null;
+            }
+        }
+        updateAudioStatusOnMain("Выключен", Color.parseColor("#94A3B8"));
+    }
+
+    public void setAudioEnabled(boolean enabled) {
+        this.isAudioEnabled = enabled;
+        savePreferences();
+        if (enabled) {
+            startAudioStream();
+        } else {
+            stopAudioStream();
+        }
+        updateSettingsDialogUI();
+    }
+
+    public void setAudioVolume(int volume) {
+        this.audioVolume = Math.max(0, Math.min(100, volume));
+        this.isAudioMuted = (this.audioVolume == 0);
+        savePreferences();
+        synchronized (audioLock) {
+            if (audioThread != null && audioThread.audioTrack != null) {
+                float vol = (isAudioMuted || !isAudioEnabled) ? 0f : (this.audioVolume / 100.0f);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    audioThread.audioTrack.setVolume(vol);
+                } else {
+                    audioThread.audioTrack.setStereoVolume(vol, vol);
+                }
+            }
+        }
+        updateSettingsDialogUI();
+    }
+
+    private void loadPreferences() {
+        try {
+            SharedPreferences sp = getContext().getSharedPreferences("pc_control_screen_player", Context.MODE_PRIVATE);
+            isAudioEnabled = sp.getBoolean("audio_enabled", true);
+            audioVolume = sp.getInt("audio_volume", 80);
+            targetMonitor = sp.getInt("screen_monitor", targetMonitor);
+            targetHeight = sp.getInt("screen_height", targetHeight);
+            targetFps = sp.getInt("screen_fps", targetFps);
+            targetBitrate = sp.getInt("screen_bitrate", targetBitrate);
+        } catch (Exception ignored) {}
+    }
+
+    private void savePreferences() {
+        try {
+            SharedPreferences sp = getContext().getSharedPreferences("pc_control_screen_player", Context.MODE_PRIVATE);
+            sp.edit()
+                    .putBoolean("audio_enabled", isAudioEnabled)
+                    .putInt("audio_volume", audioVolume)
+                    .putInt("screen_monitor", targetMonitor)
+                    .putInt("screen_height", targetHeight)
+                    .putInt("screen_fps", targetFps)
+                    .putInt("screen_bitrate", targetBitrate)
+                    .apply();
+        } catch (Exception ignored) {}
     }
 
     /**
@@ -631,6 +1445,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
             @Override
             public void onFullscreenToggled(boolean isFullscreen) {}
+            @Override
+            public void onSettingsChanged(int monitor, int height, int fps, int bitrate) {}
         };
     }
 
@@ -669,6 +1485,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         setControlsVisible(true, false);
         scheduleControlsAutoHide();
 
+        if (isAudioEnabled) {
+            startAudioStream();
+        } else {
+            updateAudioStatusOnMain("Выключен", Color.parseColor("#94A3B8"));
+        }
+
         workerThread = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -682,6 +1504,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         isStreaming.set(false);
         mainHandler.removeCallbacks(hideControlsRunnable);
         mainHandler.removeCallbacks(diagUpdateRunnable);
+
+        stopAudioStream();
 
         synchronized (surfaceLock) {
             surfaceLock.notifyAll();
@@ -710,6 +1534,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             @Override
             public void run() {
                 setDiagnosticsVisible(false);
+                setSettingsVisible(false);
                 hidePlaybackError();
                 setVisibility(View.GONE);
             }
@@ -724,13 +1549,17 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
 
     /**
-     * Обработка кнопки "Назад": закрывает сначала ошибки, затем диагностику, затем Fullscreen, затем стрим.
+     * Обработка кнопки "Назад": закрывает сначала ошибки, затем настройки, затем диагностику, затем Fullscreen, затем стрим.
      * @return true, если событие обработано внутренне.
      */
     public boolean handleBackPressed() {
         if (isErrorVisible) {
             hidePlaybackError();
             closeStreamAndExit();
+            return true;
+        }
+        if (isSettingsVisible) {
+            setSettingsVisible(false);
             return true;
         }
         if (isDiagVisible) {
@@ -885,6 +1714,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY)
             );
         }
+        if (settingsOverlay != null && settingsOverlay.getVisibility() != View.GONE) {
+            settingsOverlay.measure(
+                    MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY)
+            );
+        }
         if (errorOverlay != null && errorOverlay.getVisibility() != View.GONE) {
             errorOverlay.measure(
                     MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY),
@@ -922,6 +1757,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         if (diagOverlay != null && diagOverlay.getVisibility() != View.GONE) {
             diagOverlay.layout(0, 0, parentW, parentH);
+        }
+        if (settingsOverlay != null && settingsOverlay.getVisibility() != View.GONE) {
+            settingsOverlay.layout(0, 0, parentW, parentH);
         }
         if (errorOverlay != null && errorOverlay.getVisibility() != View.GONE) {
             errorOverlay.layout(0, 0, parentW, parentH);

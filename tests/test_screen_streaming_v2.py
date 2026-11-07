@@ -99,6 +99,33 @@ class ScreenStreamingV2Tests(unittest.TestCase):
             self.assertIn("target_fps", data)
             self.assertIn("encoder", data)
 
+    def test_screen_monitors_and_config(self):
+        from modules.streaming import screen_monitors, screen_config
+        with self.app.test_request_context(
+            "/screen/monitors",
+            headers={"X-Auth-Token": self.token}
+        ):
+            res = screen_monitors()
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertIn("monitors", data)
+            self.assertIn("config", data)
+
+        with self.app.test_request_context(
+            "/screen/config",
+            method="POST",
+            headers={"X-Auth-Token": self.token},
+            json={"monitor": 1, "height": 720, "fps": 60, "bitrate": 15}
+        ):
+            res = screen_config()
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertIn("config", data)
+            cfg = data["config"]
+            self.assertEqual(cfg["height"], 720)
+            self.assertEqual(cfg["fps"], 60)
+            self.assertEqual(cfg["bitrate"], 15)
+
 
 if __name__ == "__main__":
     unittest.main()

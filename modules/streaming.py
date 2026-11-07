@@ -844,7 +844,7 @@ def audio():
         def proxy_rust_audio():
             try:
                 req = urllib.request.Request(rust_url)
-                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                with urllib.request.urlopen(req, timeout=10.0) as resp:
                     while True:
                         chunk = resp.read(8192)
                         if not chunk:

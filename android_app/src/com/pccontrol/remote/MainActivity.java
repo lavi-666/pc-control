@@ -497,6 +497,13 @@ public class MainActivity extends Activity {
             public void onFullscreenToggled(boolean isFullscreen) {
                 setNativeFullscreen(isFullscreen);
             }
+
+            @Override
+            public void onSettingsChanged(final int monitor, final int height, final int fps, final int bitrate) {
+                if (webView != null) {
+                    webView.evaluateJavascript("if (typeof onNativeScreenParamsUpdated === 'function') { onNativeScreenParamsUpdated(" + monitor + "," + height + "," + fps + "," + bitrate + "); }", null);
+                }
+            }
         });
         rootLayout.addView(nativeScreenView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
