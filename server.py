@@ -174,17 +174,20 @@ def _ensure_interactive_desktop():
     if platform.system() == "Windows":
         _attach_input_desktop()
 
-    # Дедупликация повторных POST/PUT запросов с тем же X-Request-Id (для любых мутирующих операций)
+    # Дедупликация повторных POST/PUT запросов с тем же X-Request-Id (только для мутирующих команд)
+    # ИСКЛЮЧЕНЫ: WebRTC, видео/аудио стримы, высокочастотные события мыши и клавиатуры
     req_id = request.headers.get("X-Request-Id")
     if req_id and request.method in ("POST", "PUT", "DELETE", "PATCH"):
-        cached = check_idempotency_request(req_id)
-        if cached is not None:
-            if cached.get("error"):
-                return jsonify({"ok": False, "message": cached["message"]}), cached["status"]
-            c_resp = make_response(cached["body"], cached["status"])
-            c_resp.headers["Content-Type"] = cached.get("content_type", "application/json")
-            c_resp.headers["X-Idempotent-Replay"] = "1"
-            return _apply_cors_and_security_headers(c_resp)
+        p = request.path
+        if not p.startswith(("/webrtc/", "/screen/", "/audio", "/api/mouse", "/keyboard/")):
+            cached = check_idempotency_request(req_id)
+            if cached is not None:
+                if cached.get("error"):
+                    return jsonify({"ok": False, "message": cached["message"]}), cached["status"]
+                c_resp = make_response(cached["body"], cached["status"])
+                c_resp.headers["Content-Type"] = cached.get("content_type", "application/json")
+                c_resp.headers["X-Idempotent-Replay"] = "1"
+                return _apply_cors_and_security_headers(c_resp)
 
     if request.method == "OPTIONS":
         origin = request.headers.get("Origin")

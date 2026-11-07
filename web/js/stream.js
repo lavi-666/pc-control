@@ -119,8 +119,25 @@ async function togglePcAudio(){
     txt.innerText = t('btn_pc_audio_on');
     statusEl.innerText = t('msg_audio_connected') + ' (' + (data.device || 'WebRTC') + ')';
   } catch (e) {
-    await stopPcAudio(false);
-    if (e.message !== 'unauthorized') statusEl.innerText = 'WebRTC: ' + e.message;
+    // Фоллбэк на HTTP MP3 поток /audio, если WebRTC недоступен на телефоне
+    try {
+      if (rtcPc){ rtcPc.close(); rtcPc = null; }
+      audio.srcObject = null;
+      audio.onerror = () => {
+        statusEl.innerText = t('msg_server_err');
+        btn.classList.remove('active-pill');
+        txt.innerText = t('btn_pc_audio');
+        pcAudioOn = false;
+      };
+      audio.src = resolveApiUrl('/audio?t=' + Date.now() + '&token=' + encodeURIComponent(getToken()));
+      audio.play().catch(() => {});
+      btn.classList.add('active-pill');
+      txt.innerText = t('btn_pc_audio_on');
+      statusEl.innerText = t('msg_audio_connected');
+    } catch (err) {
+      await stopPcAudio(false);
+      statusEl.innerText = 'Audio: ' + err.message;
+    }
   }
 }
 

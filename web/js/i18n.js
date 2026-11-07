@@ -13,6 +13,7 @@ const TRANSLATIONS = {
 
     offline_title: "ПК не отвечает (выключен или в режиме ожидания)",
     offline_sub: "Если телефон подключён к домашней сети Wi‑Fi, нажмите для включения",
+    offline_retry: "Повторить",
     offline_btn: "Включить",
 
     apk_title: "Приложение PC Control для Android",
@@ -285,6 +286,7 @@ const TRANSLATIONS = {
 
     offline_title: "ПК не відповідає (вимкнений або в режимі сну)",
     offline_sub: "Якщо телефон підключено до домашньої мережі Wi‑Fi, натисніть для ввімкнення",
+    offline_retry: "Повторити",
     offline_btn: "Увімкнути",
 
     apk_title: "Додаток PC Control для Android",
@@ -557,6 +559,7 @@ const TRANSLATIONS = {
 
     offline_title: "PC is unreachable (powered off or sleeping)",
     offline_sub: "If your phone is on the home Wi‑Fi network, tap to wake",
+    offline_retry: "Retry",
     offline_btn: "Wake Up",
 
     apk_title: "PC Control App for Android",

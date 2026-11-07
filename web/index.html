@@ -37,7 +37,7 @@ const PC_MAC_ADDRESS = '';
         <span class="brand-sub" data-i18n="brand_sub">Настройки</span>
       </div>
     </div>
-    <div class="status-pill" id="statusPill">
+    <div class="status-pill" id="statusPill" onclick="manualReconnect()" role="button" tabindex="0" title="Нажмите для проверки связи">
       <span class="dot" id="dot"></span>
       <span id="pctext" data-i18n="status_checking">Проверка...</span>
     </div>
@@ -49,7 +49,10 @@ const PC_MAC_ADDRESS = '';
       <div style="font-weight:600; font-size:12.5px; color:#fca5a5;" data-i18n="offline_title">ПК не отвечает (выключен или в режиме ожидания)</div>
       <div style="font-size:11px; color:rgba(255,255,255,0.6);" data-i18n="offline_sub">Если телефон подключён к домашней сети Wi‑Fi, нажмите для включения</div>
     </div>
-    <button class="offline-wol-quick" onclick="triggerWakeOnLan()" data-i18n="offline_btn">Включить</button>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button class="offline-wol-quick" style="background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.25); color:#fff;" onclick="manualReconnect()" data-i18n="offline_retry">Повторить</button>
+      <button class="offline-wol-quick" onclick="triggerWakeOnLan()" data-i18n="offline_btn">Включить</button>
+    </div>
   </div>
 
   <!-- Баннер скачивания независимого Android-приложения (.apk) — виден только в браузере -->
