@@ -1123,7 +1123,16 @@ def screen_h264_stream():
         _attach_input_desktop()
         codec_ctx = None
         sct = None
+        has_winmm = False
         try:
+            try:
+                import ctypes
+                if hasattr(ctypes, "windll") and hasattr(ctypes.windll, "winmm"):
+                    ctypes.windll.winmm.timeBeginPeriod(1)
+                    has_winmm = True
+            except Exception:
+                has_winmm = False
+
             sct = mss.MSS()
             mons = sct.monitors
             mon_idx = req_mon if (0 <= req_mon < len(mons)) else (1 if len(mons) > 1 else 0)
@@ -1185,9 +1194,9 @@ def screen_h264_stream():
 
             frame_interval = 1.0 / target_fps
             frame_idx = 0
+            next_frame_time = time.perf_counter()
 
             while True:
-                t0 = time.perf_counter()
                 try:
                     raw_shot = sct.grab(mon)
                 except Exception:
@@ -1208,7 +1217,7 @@ def screen_h264_stream():
                         format="yuv420p",
                         dst_colorspace=Colorspace.ITU709,
                         dst_color_range=ColorRange.MPEG,
-                        interpolation=Interpolation.BICUBIC
+                        interpolation=Interpolation.FAST_BILINEAR
                     )
                     vf.pts = frame_idx
 
@@ -1225,7 +1234,7 @@ def screen_h264_stream():
                             continue
                         if is_framed:
                             is_key = bool(pkt.is_keyframe) or (frame_idx <= 2)
-                            pts_us = int(time.time() * 1_000_000)
+                            pts_us = int(frame_idx * (1_000_000 / target_fps))
                             header = struct.pack(">4sIBQ", b"PC01", len(payload), 1 if is_key else 0, pts_us)
                             yield header + payload
                         else:
@@ -1235,10 +1244,21 @@ def screen_h264_stream():
                 except Exception as e:
                     log_error("h264_encode_loop", e)
 
-                elapsed = time.perf_counter() - t0
-                if elapsed < frame_interval:
-                    time.sleep(frame_interval - elapsed)
+                # Прецизионный drift-компенсирующий тайминг кадра
+                next_frame_time += frame_interval
+                now = time.perf_counter()
+                sleep_sec = next_frame_time - now
+                if sleep_sec > 0:
+                    time.sleep(sleep_sec)
+                elif sleep_sec < -frame_interval:
+                    # Защита от накопления задержки и пакетного взрыва
+                    next_frame_time = now
         finally:
+            if has_winmm:
+                try:
+                    ctypes.windll.winmm.timeEndPeriod(1)
+                except Exception:
+                    pass
             if codec_ctx is not None:
                 try:
                     codec_ctx.close()

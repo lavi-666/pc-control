@@ -267,6 +267,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     if (nativeScreenView != null) {
                         nativeScreenView.stopStream();
+                        setNativeFullscreen(false);
                     }
                 }
             });
@@ -441,12 +442,18 @@ public class MainActivity extends Activity {
 
         nativeScreenView = new NativeScreenView(this);
         nativeScreenView.setVisibility(View.GONE);
-        nativeScreenView.setOnCloseListener(new NativeScreenView.OnCloseListener() {
+        nativeScreenView.setPlayerCallback(new NativeScreenView.PlayerCallback() {
             @Override
             public void onCloseRequested() {
+                setNativeFullscreen(false);
                 if (webView != null) {
                     webView.evaluateJavascript("if (typeof onNativeScreenClosed === 'function') { onNativeScreenClosed(); }", null);
                 }
+            }
+
+            @Override
+            public void onFullscreenToggled(boolean isFullscreen) {
+                setNativeFullscreen(isFullscreen);
             }
         });
         rootLayout.addView(nativeScreenView, new FrameLayout.LayoutParams(
@@ -495,10 +502,66 @@ public class MainActivity extends Activity {
         }
     }
 
+    public void setNativeFullscreen(final boolean fullscreen) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                Window win = getWindow();
+                if (fullscreen) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        android.view.WindowInsetsController controller = win.getInsetsController();
+                        if (controller != null) {
+                            controller.hide(android.view.WindowInsets.Type.statusBars() | android.view.WindowInsets.Type.navigationBars());
+                            controller.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                        }
+                    } else {
+                        win.getDecorView().setSystemUiVisibility(
+                                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        );
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        WindowManager.LayoutParams lp = win.getAttributes();
+                        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                        win.setAttributes(lp);
+                    }
+                    try {
+                        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+                    } catch (Exception ignored) {}
+                } else {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        android.view.WindowInsetsController controller = win.getInsetsController();
+                        if (controller != null) {
+                            controller.show(android.view.WindowInsets.Type.statusBars() | android.view.WindowInsets.Type.navigationBars());
+                        }
+                    } else {
+                        win.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        WindowManager.LayoutParams lp = win.getAttributes();
+                        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+                        win.setAttributes(lp);
+                    }
+                    try {
+                        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                    } catch (Exception ignored) {}
+                }
+            }
+        });
+    }
+
     @Override
     public void onBackPressed() {
         if (nativeScreenView != null && nativeScreenView.getVisibility() == View.VISIBLE) {
+            if (nativeScreenView.handleBackPressed()) {
+                return;
+            }
             nativeScreenView.stopStream();
+            setNativeFullscreen(false);
             if (webView != null) {
                 webView.evaluateJavascript("if (typeof onNativeScreenClosed === 'function') { onNativeScreenClosed(); }", null);
             }
@@ -572,6 +635,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         if (nativeScreenView != null) {
             nativeScreenView.stopStream();
+            setNativeFullscreen(false);
         }
         instance = null;
         super.onDestroy();
