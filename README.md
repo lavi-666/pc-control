@@ -13,6 +13,8 @@ Works directly in your Wi-Fi network (or over Tailscale) — no accounts, no clo
 
 [Русский](README.ru.md) · **English**
 
+**[⬇ Download for Windows](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control_Windows.zip)** · **[⬇ Android app](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control.apk)** · [All releases](https://github.com/lavi-666/pc-control/releases)
+
 </div>
 
 ---
@@ -55,7 +57,7 @@ You don't need to install Python or libraries — the app uses its own isolated 
 
 | Option | Download | How to start |
 | :--- | :--- | :--- |
-| **Release build** (recommended) | [`PC_Control_Windows.zip`](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control_Windows.zip) from the latest release | Extract to any folder and run `Launcher.exe`. |
+| **Release build** (recommended) | [`PC_Control_Windows.zip`](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control_Windows.zip) from the [latest release](https://github.com/lavi-666/pc-control/releases/latest) | Extract to any folder and run `Launcher.exe`. Python and all libraries are already included — no internet needed to start. |
 | **Latest code from GitHub** | **Code → Download ZIP** on this page | Extract to any folder and run `Launcher.exe`. On first start it downloads Python (≈ 30 MB, checksum verified) and the libraries — internet required, usually 1–3 minutes. |
 
 - The folder path may contain spaces and non-Latin characters. No administrator rights are needed to install.
@@ -96,7 +98,7 @@ The panel opens from `Launcher.exe` in its own window and is only reachable from
 - **Network settings** — IP addresses, MAC address for Wake-on-LAN, ports; detected automatically by default.
 - **Auto-setup** — start with Windows, Wake-on-LAN, automatic sign-in.
 - **System diagnostics** — checks the server, firewall, libraries and network and saves a report to `logs\diagnostic_report.json`.
-- **Update** — checks GitHub for a new release and keeps your settings. Never rolls a newer installation back to an older release.
+- **Update** — checks GitHub for a new release and installs it in one click, keeping your settings, password and presets. Never rolls a newer installation back to an older release.
 - **Console** — log of every action; errors are shown with a code and details.
 
 When the program files are updated, the panel restarts itself with the new code.
