@@ -2652,12 +2652,14 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                         interfaces = list_network_interfaces()
                     except Exception:
                         pass
-                    journal_data = {}
+                    journal_data, journal_status = {}, "unavailable"
                     try:
                         from core.system_state import load_journal
-                        journal_data = load_journal()
-                    except Exception:
-                        pass
+                        # load_journal() возвращает (журнал, статус) — раньше здесь брался кортеж целиком,
+                        # и кнопка «Диагностика системы» всегда завершалась ошибкой.
+                        journal_data, journal_status = load_journal()
+                    except Exception as e:
+                        journal_status = f"error: {e}"
                     diag = {
                         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                         "platform": platform.platform(),
@@ -2679,15 +2681,30 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                         "tailscale": get_tailscale_info(),
                         "apk_exists": (BASE_DIR / "PC_Control.apk").is_file(),
                         "uninstaller_exists": (BASE_DIR / "unstaller.exe").is_file() or (BASE_DIR / "Uninstall.exe").is_file(),
-                        "system_state_journal_entries": list((journal_data.get("entries") or {}).keys()),
+                        "system_state_journal_status": journal_status,
+                        "system_state_journal_entries": list((journal_data.get("entries") or {}).keys())
+                        if isinstance(journal_data, dict) else [],
                         "recent_logs": get_logs()[-50:],
                     }
                     diag_path = LOGS_DIR / "diagnostic_report.json"
                     diag_path.write_text(json.dumps(diag, indent=2, ensure_ascii=False), encoding="utf-8")
+                    checks = {
+                        "server": bool(diag["server_running"]),
+                        "firewall": bool(diag["firewall_configured"]),
+                        "deps": bool((diag["python_deps"] or {}).get("installed")),
+                        "lan_ip": bool(cfg.get("lan_ip")) and cfg.get("lan_ip") != "127.0.0.1",
+                    }
+                    for name, passed in checks.items():
+                        append_log(f"[DIAGNOSTICS] {name}: {'OK' if passed else 'FAIL'}")
                     append_log(f"[DIAGNOSTICS] Saved diagnostic report to {diag_path}")
-                    self.send_json({"ok": True, "path": str(diag_path), "report": diag})
+                    self.send_json({"ok": True, "path": str(diag_path), "checks": checks, "report": diag})
                 except Exception as e:
-                    self.send_json({"ok": False, "message": str(e)}, 500)
+                    import traceback
+                    append_log(f"[ERROR] Diagnostics failed: {e}")
+                    self.send_json({"ok": False, "error_code": "ERR_DIAGNOSTICS",
+                                    "error_title": "Сбой диагностики",
+                                    "message": f"Не удалось собрать отчёт диагностики: {e}",
+                                    "details": traceback.format_exc()[-1500:]}, 500)
                 return
 
             if action == "launch_uninstaller":

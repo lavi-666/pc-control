@@ -4486,8 +4486,18 @@
   async function handleExportDiagnostics(callerEl) {
     const res = await runAction('export_diagnostics', {}, callerEl);
     if (res && res.ok) {
-      showToast(currentLang === 'ru' ? 'Диагностический отчёт сохранён' : 'Diagnostic report saved', res.path || 'logs/diagnostic_report.json', 'ok', 4500);
+      const L = {
+        ru: {t: 'Диагностика завершена', server: 'Сервер', firewall: 'Брандмауэр', deps: 'Библиотеки', lan_ip: 'Сеть', saved: 'Отчёт'},
+        uk: {t: 'Діагностику завершено', server: 'Сервер', firewall: 'Брандмауер', deps: 'Бібліотеки', lan_ip: 'Мережа', saved: 'Звіт'},
+        en: {t: 'Diagnostics complete', server: 'Server', firewall: 'Firewall', deps: 'Libraries', lan_ip: 'Network', saved: 'Report'}
+      }[currentLang] || null;
+      const l = L || {t: 'Diagnostics complete', server: 'Server', firewall: 'Firewall', deps: 'Libraries', lan_ip: 'Network', saved: 'Report'};
+      const checks = res.checks || {};
+      const parts = Object.keys(checks).map(k => `${l[k] || k}: ${checks[k] ? '✓' : '✕'}`);
+      const allOk = parts.length && Object.values(checks).every(Boolean);
+      showToast(l.t, parts.join(' · ') + `\n${l.saved}: ${res.path || 'logs/diagnostic_report.json'}`, allOk ? 'success' : 'error', 7000);
       if (consoleCollapsed) toggleConsole();
+      fetchStatus();
     }
   }
 

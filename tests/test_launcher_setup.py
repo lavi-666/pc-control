@@ -165,6 +165,40 @@ class ConfigRobustnessTests(unittest.TestCase):
                 self.assertEqual(cc.load_app_config().get("token"), "srv")
 
 
+class DiagnosticsTests(unittest.TestCase):
+    def test_export_diagnostics_succeeds(self):
+        """Кнопка «Диагностика системы» падала: load_journal() возвращает (журнал, статус)."""
+        import io
+        import scripts.control_panel as cp
+
+        class FakeHandler(cp.ControlPanelHandler):
+            def __init__(self):
+                self.sent = None
+
+            def send_json(self, data, status=200):
+                self.sent = (status, data)
+
+        with tempfile.TemporaryDirectory() as d:
+            h = FakeHandler()
+            body = json.dumps({"action": "export_diagnostics"}).encode()
+            h.headers = {"Content-Length": str(len(body))}
+            h.rfile = io.BytesIO(body)
+            h.connection = mock.Mock()
+            h.path = "/api/action"
+            with mock.patch.object(cp, "LOGS_DIR", Path(d)), \
+                    mock.patch.object(cp, "load_config_data", return_value={"port": 5000, "lan_ip": "192.168.1.10"}), \
+                    mock.patch.object(cp, "is_server_running", return_value=True), \
+                    mock.patch.object(cp, "is_firewall_configured", return_value=False), \
+                    mock.patch.object(cp, "get_tailscale_info", return_value={"running": False}):
+                h._handle_post()
+            status, data = h.sent
+            self.assertEqual(status, 200, data)
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["checks"], {"server": True, "firewall": False,
+                                              "deps": data["checks"]["deps"], "lan_ip": True})
+            self.assertTrue((Path(d) / "diagnostic_report.json").is_file())
+
+
 class BatchLineEndingTests(unittest.TestCase):
     def test_batch_files_use_crlf(self):
         """cmd.exe неверно разбирает .bat с переводами строк LF: строки «рвутся» на куски
