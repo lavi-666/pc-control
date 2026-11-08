@@ -48,6 +48,17 @@ def _ensure_rust_streamer() -> bool:
         except Exception:
             pass
 
+        # Стример жив, но отвечает медленно (занят): порт уже слушается — второй экземпляр
+        # не запускаем (раньше запускался новый процесс, а дескриптор прежнего терялся).
+        if _RUST_STREAMER_PROC is not None and _RUST_STREAMER_PROC.poll() is None:
+            return True
+        try:
+            import socket as _socket
+            with _socket.create_connection(("127.0.0.1", 5051), timeout=0.2):
+                return True
+        except OSError:
+            pass
+
         try:
             _RUST_STREAMER_PROC = subprocess.Popen(
                 [str(streamer_exe), "--port", "5051"],
@@ -284,14 +295,18 @@ def _create_audio_track(source: str = "loopback"):
 
         def __init__(self):
             super().__init__()
-            self._pa = pyaudio.PyAudio()
+            # Общий экземпляр PortAudio сервера (см. _shared_pyaudio); не завершается в stop()
+            self._pa = _shared_pyaudio(refresh=True)
+            _audio_stream_enter()
+            self._pa_entered = True
             try:
                 if source == "mic":
                     dev = _find_default_mic_device(self._pa)
                 else:
                     dev = self._pa.get_default_wasapi_loopback()
             except Exception as e:
-                self._pa.terminate()
+                self._pa_entered = False
+                _audio_stream_exit()
                 label = "микрофон" if source == "mic" else "WASAPI Loopback"
                 raise RuntimeError(f"Не найдено аудиоустройство ({label}): {e}") from e
 
@@ -430,11 +445,9 @@ def _create_audio_track(source: str = "loopback"):
                     self._stream.close()
             except Exception:
                 pass
-            try:
-                if getattr(self, "_pa", None) is not None:
-                    self._pa.terminate()
-            except Exception:
-                pass
+            if getattr(self, "_pa_entered", False):
+                self._pa_entered = False
+                _audio_stream_exit()
 
     return WasapiAudioTrack()
 
@@ -898,6 +911,46 @@ async def _close_all_webrtc(source: str | None = None):
         pc_set.clear()
 
 
+_PA_SHARED = None
+_PA_LOCK = threading.Lock()
+_PA_ACTIVE_STREAMS = 0
+_PA_CREATED_AT = 0.0
+
+
+def _shared_pyaudio(refresh: bool = False):
+    """Один экземпляр PortAudio на процесс. Раньше на КАЖДЫЙ запрос /audio создавались и
+    уничтожались два экземпляра; при обрывах клиента это оставляло потоки ОС (~3 на запрос) —
+    телефон, переподключающийся каждые несколько секунд, разгонял сервер до сотен потоков.
+    refresh=True пересоздаёт экземпляр, только если сейчас нет активных потоков и он старше
+    30 с — чтобы увидеть смену устройства вывода по умолчанию."""
+    global _PA_SHARED, _PA_CREATED_AT
+    import pyaudiowpatch as pyaudio
+    with _PA_LOCK:
+        if (_PA_SHARED is not None and refresh and _PA_ACTIVE_STREAMS == 0
+                and time.monotonic() - _PA_CREATED_AT > 30):
+            try:
+                _PA_SHARED.terminate()
+            except Exception:
+                pass
+            _PA_SHARED = None
+        if _PA_SHARED is None:
+            _PA_SHARED = pyaudio.PyAudio()
+            _PA_CREATED_AT = time.monotonic()
+        return _PA_SHARED
+
+
+def _audio_stream_enter():
+    global _PA_ACTIVE_STREAMS
+    with _PA_LOCK:
+        _PA_ACTIVE_STREAMS += 1
+
+
+def _audio_stream_exit():
+    global _PA_ACTIVE_STREAMS
+    with _PA_LOCK:
+        _PA_ACTIVE_STREAMS = max(0, _PA_ACTIVE_STREAMS - 1)
+
+
 @streaming_bp.route("/audio")
 def audio():
     if not check_token(allow_stream_query=True):
@@ -908,7 +961,11 @@ def audio():
 
     log_action("listen_mic")
 
-    if _ensure_rust_streamer():
+    # Звук ПК по умолчанию захватывается здесь же (WASAPI loopback, pyaudiowpatch): первые
+    # данные через ~0,1 с, ровно реальное время. Внешний tools/streamer.exe отвечал на
+    # /audio/loopback с задержкой 6–10+ с и копил зависшие соединения: прокси обрывался по
+    # таймауту, и звук ПК в приложении не играл вовсе. Rust-путь — только по явному флагу.
+    if os.environ.get("PC_CONTROL_RUST_AUDIO") == "1" and _ensure_rust_streamer():
         use_mic = bool(request.args.get("mic") == "1")
         target_path = "/audio/mic" if use_mic else "/audio/loopback"
         rust_url = f"{_RUST_STREAMER_URL}{target_path}"
@@ -938,14 +995,11 @@ def audio():
         try:
             import struct
             import pyaudiowpatch as pyaudio
-            pa = pyaudio.PyAudio()
-            try:
-                dev = _find_default_mic_device(pa) if use_mic else pa.get_default_wasapi_loopback()
-                rate = int(dev.get("defaultSampleRate", 48000))
-                channels = max(1, min(2, int(dev.get("maxInputChannels", 2))))
-                dev_idx = dev["index"]
-            finally:
-                pa.terminate()
+            pa = _shared_pyaudio(refresh=True)
+            dev = _find_default_mic_device(pa) if use_mic else pa.get_default_wasapi_loopback()
+            rate = int(dev.get("defaultSampleRate", 48000))
+            channels = max(1, min(2, int(dev.get("maxInputChannels", 2))))
+            dev_idx = dev["index"]
         except Exception as e:
             return jsonify({"message": f"Не удалось открыть аудиоустройство: {e}"}), 500
 
@@ -971,11 +1025,10 @@ def audio():
             )
 
         def generate_wasapi_wav():
-            pa_gen = None
             stream = None
+            _audio_stream_enter()
             try:
-                pa_gen = pyaudio.PyAudio()
-                stream = pa_gen.open(
+                stream = _shared_pyaudio().open(
                     format=pyaudio.paInt16,
                     channels=channels,
                     rate=rate,
@@ -1000,11 +1053,7 @@ def audio():
                         stream.close()
                     except Exception:
                         pass
-                if pa_gen is not None:
-                    try:
-                        pa_gen.terminate()
-                    except Exception:
-                        pass
+                _audio_stream_exit()
 
         return Response(
             generate_wasapi_wav(),

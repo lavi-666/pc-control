@@ -775,6 +775,14 @@ def _update_latest_media_info(info: dict):
 def _media_monitor_worker():
     """Фоновый поток, непрерывно синхронизирующий медиа-сессию и живую очередь YouTube Music 24/7."""
     global _last_auto_action, _repeat_locked_title
+    # Поток живёт всё время работы сервера и не обрабатывает оконные сообщения, поэтому COM
+    # здесь — MTA (так Microsoft рекомендует для клиентов UI Automation): вызовы UIA и
+    # аудиосессий не ждут прокачки очереди сообщений однопоточного апартамента.
+    try:
+        import comtypes
+        comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+    except Exception:
+        pass
     while True:
         try:
             info = asyncio.run(_read_media_info())

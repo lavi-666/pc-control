@@ -24,6 +24,11 @@ INSTALLER_CS = BASE_DIR / "scripts" / "Installer.cs"
 class TestUninstallForeignFilesSafety(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Собираем во временную папку: раньше тест перезаписывал Uninstall.exe в корне проекта
+        # (файл под git), и после каждого прогона тестов он числился изменённым.
+        global UNINSTALL_EXE
+        cls._build_dir = tempfile.TemporaryDirectory(prefix="pc_uninst_build_")
+        UNINSTALL_EXE = Path(cls._build_dir.name) / "Uninstall.exe"
         csc = Path(r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe")
         if not csc.is_file():
             csc = Path(r"C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe")
@@ -39,6 +44,13 @@ class TestUninstallForeignFilesSafety(unittest.TestCase):
             str(BASE_DIR / "scripts" / "Uninstall.cs"),
         ]
         subprocess.run(cmd, check=True, cwd=BASE_DIR)
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls._build_dir.cleanup()
+        except Exception:
+            pass
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory(prefix="pc_safe_uninstall_")
@@ -99,6 +111,10 @@ class TestUninstallForeignFilesSafety(unittest.TestCase):
             str(app_uninst),
             "--silent",
             "--no-self-delete",
+            # Песочница: без неё деинсталлятор запрашивал права администратора (UAC) и мог
+            # откатить НАСТОЯЩИЕ системные настройки PC Control на этом ПК.
+            "--sandbox-dir",
+            str(app_dir),
         ]
         res = subprocess.run(cmd, cwd=str(app_dir), capture_output=True, text=True, timeout=30)
         self.assertEqual(res.returncode, 0)
@@ -155,6 +171,10 @@ class TestUninstallForeignFilesSafety(unittest.TestCase):
             str(app_uninst),
             "--silent",
             "--no-self-delete",
+            # Песочница: без неё деинсталлятор запрашивал права администратора (UAC) и мог
+            # откатить НАСТОЯЩИЕ системные настройки PC Control на этом ПК.
+            "--sandbox-dir",
+            str(app_dir),
         ]
         res = subprocess.run(cmd, cwd=str(app_dir), capture_output=True, text=True, timeout=30)
         self.assertEqual(res.returncode, 0)
@@ -211,6 +231,8 @@ class TestUninstallForeignFilesSafety(unittest.TestCase):
             "--silent",
             "--no-self-delete",
             "--keep-user-data",
+            "--sandbox-dir",
+            str(app_dir),
         ]
         res = subprocess.run(cmd, cwd=str(app_dir), capture_output=True, text=True, timeout=30)
         self.assertEqual(res.returncode, 0)

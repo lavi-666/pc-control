@@ -5,6 +5,7 @@ PC Control — Сервер дистанционного управления П
 
 import json
 import hashlib
+import logging
 import os
 import platform
 import secrets
@@ -74,6 +75,26 @@ Request.get_json = _safe_get_json
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
+
+
+class _RedactSecretsFilter(logging.Filter):
+    """Маскирует пароль в журнале запросов: видео/звук передают ?token=… в URL, и werkzeug
+    записывал пароль открытым текстом в logs/server_stderr.log."""
+    _re = re.compile(r"((?:token|ticket)=)[^&\s\"']+", re.IGNORECASE)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+            red = self._re.sub(r"\1***", msg)
+            if red != msg:
+                record.msg = red
+                record.args = ()
+        except Exception:
+            pass
+        return True
+
+
+logging.getLogger("werkzeug").addFilter(_RedactSecretsFilter())
 
 # Регистрация функциональных модулей через Blueprints
 app.register_blueprint(volume_bp)
@@ -406,8 +427,10 @@ def api_auth_rotate():
 @app.route("/api/pair/ticket", methods=["GET", "POST"])
 def api_pair_ticket():
     """Выпуск одноразового билета сопряжения для QR-кодов и ссылок (срок жизни 5 минут)."""
-    # Доступен из локальной сети или при наличии аутентифицированной сессии
-    if not is_safe_test_mode() and not is_private_ip(request.remote_addr) and not check_token():
+    # Только для авторизованных клиентов. Раньше билет выдавался ЛЮБОМУ адресу из локальной
+    # сети/Tailscale без пароля, а /api/pair/exchange меняет билет на сам пароль — любое
+    # устройство в той же Wi-Fi сети получало полный доступ к ПК двумя запросами.
+    if not is_safe_test_mode() and not check_token():
         return jsonify({"ok": False, "message": get_msg("auth_required")}), 401
 
     ticket = create_pairing_ticket(ttl=300)
@@ -863,10 +886,45 @@ def api_server_stop():
     return jsonify({"message": get_msg("server_stopping")})
 
 
+_GUARD_WARN_THREADS = 400
+_GUARD_RESTART_THREADS = 1500
+
+
+def _resource_guard(port: int):
+    """Сторож ресурсов процесса: раз в минуту проверяет число потоков ОС.
+
+    Нативные библиотеки Windows (UI Automation/COM при чтении вкладки YouTube Music) в отдельных
+    состояниях Chrome оставляли висящие рабочие потоки — сервер дорастал до сотен потоков.
+    Причины по COM исправлены, но для гарантии стабильности при аномальном росте сторож пишет
+    предупреждение в журнал, а при аварийном уровне перезапускает сервер через watchdog —
+    только когда к серверу никто не подключён (трансляция не обрывается)."""
+    import psutil
+    proc = psutil.Process()
+    warned = False
+    while True:
+        time.sleep(60)
+        try:
+            n = proc.num_threads()
+            if n >= _GUARD_WARN_THREADS and not warned:
+                warned = True
+                log_action("resource_guard_warning", {"threads": n, "handles": proc.num_handles(),
+                                                      "rss_mb": round(proc.memory_info().rss / 2**20)})
+            if n >= _GUARD_RESTART_THREADS:
+                remote = [c for c in proc.net_connections(kind="tcp")
+                          if c.status == psutil.CONN_ESTABLISHED and c.laddr and c.laddr.port == port
+                          and c.raddr and c.raddr.ip not in ("127.0.0.1", "::1")]
+                if not remote:
+                    log_action("resource_guard_restart", {"threads": n})
+                    os._exit(3)  # watchdog перезапустит сервер (флага ручной остановки нет)
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     _ensure_watchdog()
     _cfg = load_app_config() or {}
     _port = int(_cfg.get("port", 5000))
+    threading.Thread(target=_resource_guard, args=(_port,), name="resource-guard", daemon=True).start()
     print("=" * 65)
     print("                    PC CONTROL SERVER                    ")
     print("=" * 65)

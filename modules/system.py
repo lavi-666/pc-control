@@ -11,6 +11,8 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+
+import psutil  # список процессов и безопасное завершение (раньше импорта не было: NameError → 500)
 from flask import Blueprint, jsonify, request, send_file
 from core.auth import check_token
 from core.config import CHROME, NO_WINDOW, SCREENSHOTS_DIR, is_safe_test_mode

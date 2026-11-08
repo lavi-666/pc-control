@@ -2,6 +2,7 @@
 PC Control — Модуль управления громкостью медиаплееров через WASAPI (pycaw).
 """
 import platform
+import threading
 import time
 from core.config import is_safe_test_mode
 from modules.volume import _with_volume_retry
@@ -20,15 +21,26 @@ def set_active_media_process(pid: int, pname: str):
         _active_media_pname = str(pname)
 
 
+_com_init_tls = threading.local()
+
+
 def _co_init_safe() -> bool:
+    """Инициализирует COM на текущем потоке ОДИН раз и оставляет его инициализированным.
+
+    Всегда возвращает False, чтобы вызывающий код не делал CoUninitialize: раньше COM
+    деинициализировался в конце каждого вызова, пока COM-объекты (сессии pycaw, элементы UIA)
+    ещё были живы и освобождались уже после этого. Рабочие потоки COM/UIA оставались висеть —
+    сервер терял ~40 потоков ОС в минуту, сотни за час."""
+    if getattr(_com_init_tls, "done", False):
+        return False
     import comtypes
     try:
         comtypes.CoInitialize()
-        return True
     except OSError as e:
-        if getattr(e, "winerror", None) == -2147417850:  # RPC_E_CHANGED_MODE
-            return False
-        raise
+        if getattr(e, "winerror", None) != -2147417850:  # RPC_E_CHANGED_MODE: поток уже в MTA
+            raise
+    _com_init_tls.done = True
+    return False
 
 
 def _match_player_process(proc_name: str, app_hint: str) -> bool:

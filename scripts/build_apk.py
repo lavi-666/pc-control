@@ -922,8 +922,8 @@ public class MainActivity extends Activity {
 ANDROID_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.pccontrol.remote"
-    android:versionCode="12"
-    android:versionName="2.3.5">
+    android:versionCode="13"
+    android:versionName="2.3.6">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 

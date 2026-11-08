@@ -10,6 +10,31 @@ from core.config import is_safe_test_mode
 from modules.media_keys import _attach_input_desktop
 from modules.media_volume import _co_init_safe
 
+
+_uia_tls = threading.local()
+_dom_backoff_until = 0.0
+
+
+def _get_uia():
+    """Один объект IUIAutomation на поток (так рекомендует Microsoft для клиентов UIA).
+    Раньше на КАЖДОЕ чтение DOM (≈ раз в 0,85 с) создавался новый CUIAutomation, а
+    CoUninitialize вызывался ещё до освобождения его объектов: рабочие потоки UIA оставались
+    висеть — сервер терял ~40 потоков ОС в минуту (сотни за час, рост памяти и дескрипторов).
+    COM на потоке инициализируется один раз и больше не деинициализируется."""
+    pair = getattr(_uia_tls, "pair", None)
+    if pair is None:
+        import comtypes
+        import comtypes.client
+        _co_init_safe()
+        UIA = comtypes.client.GetModule("UIAutomationCore.dll")
+        uia = comtypes.client.CreateObject(
+            "{ff48dba4-60ef-4201-aa87-54103eef594e}",
+            interface=UIA.IUIAutomation,
+        )
+        pair = (UIA, uia)
+        _uia_tls.pair = pair
+    return pair
+
 _cached_ytm_hwnd: int = 0
 _cached_ytm_url_time: float = 0.0
 _cached_ytm_vid_pid: tuple[str, str] = ("", "")
@@ -99,8 +124,11 @@ def _wake_chrome_a11y(hwnd: int, force: bool = False):
         child = user32.FindWindowExW(hwnd, 0, "Chrome_RenderWidgetHostHWND", None)
         if child:
             IID_IAccessible = comtypes.GUID("{618736E0-3C3D-11CF-810C-00AA00389B71}")
-            ptr = ctypes.c_void_p()
-            oleacc.AccessibleObjectFromWindow(child, 0xFFFFFFFC, ctypes.byref(IID_IAccessible), ctypes.byref(ptr))
+            # Указатель comtypes освобождается сам (Release). Раньше сырой c_void_p никогда
+            # не освобождался — каждый «будильник» оставлял COM-объект доступности Chrome.
+            acc = ctypes.POINTER(comtypes.IUnknown)()
+            oleacc.AccessibleObjectFromWindow(child, 0xFFFFFFFC, ctypes.byref(IID_IAccessible), ctypes.byref(acc))
+            del acc
             _last_a11y_wake_time = now
     except Exception:
         pass
@@ -127,8 +155,14 @@ def _parse_url_vid_pid(raw_url: str) -> tuple[str, str]:
 def _read_ytm_live_dom(force: bool = False, current_idx: int = 0) -> dict:
     """Читает реальную живую очередь и состояние плеера напрямую из DOM активной вкладки YouTube Music через UIA."""
     global _cached_dom_state, _cached_dom_time, _cached_ytm_hwnd, _cached_ytm_vid_pid, _cached_ytm_url_time
+    global _dom_backoff_until
     now = time.time()
     if not force and (now - _cached_dom_time) < 0.85 and _cached_dom_state:
+        return _cached_dom_state
+    # Документ YouTube Music не найден: полный обход дерева доступности Chrome (FindAll по всем
+    # потомкам + «будильник» MSAA) повторялся каждые 0,85 с — ~10 % CPU в простое и рост
+    # рабочих потоков. После неудачи следующая попытка — через 5 с (force — сразу).
+    if not force and now < _dom_backoff_until and _cached_dom_state:
         return _cached_dom_state
 
     if not _uia_dom_lock.acquire(blocking=force):
@@ -148,13 +182,8 @@ def _read_ytm_live_dom(force: bool = False, current_idx: int = 0) -> dict:
 
         import comtypes
         import comtypes.client
-        did_init = _co_init_safe()
+        UIA, uia = _get_uia()
         try:
-            UIA = comtypes.client.GetModule("UIAutomationCore.dll")
-            uia = comtypes.client.CreateObject(
-                "{ff48dba4-60ef-4201-aa87-54103eef594e}",
-                interface=UIA.IUIAutomation,
-            )
 
             target_doc = None
             target_hwnd = 0
@@ -202,11 +231,13 @@ def _read_ytm_live_dom(force: bool = False, current_idx: int = 0) -> dict:
                                     "hwnd": hwnd,
                                 }
                                 _cached_dom_time = now
+                                _dom_backoff_until = now + 5.0
                                 return _cached_dom_state
                     except Exception:
                         pass
                 _cached_dom_state = {"found": False}
                 _cached_dom_time = now
+                _dom_backoff_until = now + 5.0
                 return _cached_dom_state
 
             _cached_ytm_hwnd = target_hwnd
@@ -405,11 +436,7 @@ def _read_ytm_live_dom(force: bool = False, current_idx: int = 0) -> dict:
             _cached_dom_time = now
             return _cached_dom_state
         finally:
-            if did_init:
-                try:
-                    comtypes.CoUninitialize()
-                except Exception:
-                    pass
+            pass  # COM и объект UIA живут весь срок потока (см. _get_uia)
     except Exception:
         return _cached_dom_state or {"found": False}
     finally:
@@ -456,13 +483,8 @@ def _uia_invoke_ytm_player_bar_button(action: str) -> bool:
             return False
         import comtypes
         import comtypes.client
-        did_init = _co_init_safe()
+        UIA, uia = _get_uia()
         try:
-            UIA = comtypes.client.GetModule("UIAutomationCore.dll")
-            uia = comtypes.client.CreateObject(
-                "{ff48dba4-60ef-4201-aa87-54103eef594e}",
-                interface=UIA.IUIAutomation,
-            )
             for hwnd in hwnds[:2]:
                 root = uia.ElementFromHandle(hwnd)
                 el = root.FindFirst(4, uia.CreatePropertyCondition(30012, target_cls))
@@ -476,11 +498,7 @@ def _uia_invoke_ytm_player_bar_button(action: str) -> bool:
                     btn.GetCurrentPattern(10000).QueryInterface(UIA.IUIAutomationInvokePattern).Invoke()
                     return True
         finally:
-            if did_init:
-                try:
-                    comtypes.CoUninitialize()
-                except Exception:
-                    pass
+            pass  # COM и объект UIA живут весь срок потока (см. _get_uia)
     except Exception:
         pass
     return False
@@ -501,13 +519,8 @@ def _uia_invoke_ytm_queue_play(target_idx: int | None, target_title: str = "") -
 
         import comtypes
         import comtypes.client
-        did_init = _co_init_safe()
+        UIA, uia = _get_uia()
         try:
-            UIA = comtypes.client.GetModule("UIAutomationCore.dll")
-            uia = comtypes.client.CreateObject(
-                "{ff48dba4-60ef-4201-aa87-54103eef594e}",
-                interface=UIA.IUIAutomation,
-            )
             norm_target = _norm_title(target_title)
 
             for hwnd in hwnds[:2]:
@@ -563,11 +576,7 @@ def _uia_invoke_ytm_queue_play(target_idx: int | None, target_title: str = "") -
                         _cached_dom_time = 0.0
                         return True
         finally:
-            if did_init:
-                try:
-                    comtypes.CoUninitialize()
-                except Exception:
-                    pass
+            pass  # COM и объект UIA живут весь срок потока (см. _get_uia)
     except Exception:
         pass
     return False
@@ -588,13 +597,8 @@ def _uia_invoke_ytm_queue_menu(target_idx: int, target_title: str, action_names:
 
         import comtypes
         import comtypes.client
-        did_init = _co_init_safe()
+        UIA, uia = _get_uia()
         try:
-            UIA = comtypes.client.GetModule("UIAutomationCore.dll")
-            uia = comtypes.client.CreateObject(
-                "{ff48dba4-60ef-4201-aa87-54103eef594e}",
-                interface=UIA.IUIAutomation,
-            )
             for hwnd in hwnds[:2]:
                 root = uia.ElementFromHandle(hwnd)
                 docs = root.FindAll(4, uia.CreatePropertyCondition(30003, 50030))
@@ -634,11 +638,7 @@ def _uia_invoke_ytm_queue_menu(target_idx: int, target_title: str, action_names:
                             pass
                     return False
         finally:
-            if did_init:
-                try:
-                    comtypes.CoUninitialize()
-                except Exception:
-                    pass
+            pass  # COM и объект UIA живут весь срок потока (см. _get_uia)
     except Exception:
         pass
     return False

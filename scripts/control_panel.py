@@ -2311,12 +2311,21 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
 
                 lang = req_data.get("lang") or cfg.get("language", "ru")
                 token = cfg.get("token", "")
-                from core.auth import create_pairing_ticket
+                # Билет должен выпустить сам сервер: билеты хранятся в памяти процесса сервера,
+                # а созданный здесь (в процессе панели) сервер не мог погасить — веб-пульт
+                # открывался с недействительным билетом и снова просил пароль.
+                auth_param = f"token={urllib.parse.quote(token)}&" if token else ""
                 try:
-                    ticket = create_pairing_ticket(ttl=300)
-                    auth_param = f"ticket={urllib.parse.quote(ticket)}&"
-                except Exception:
-                    auth_param = f"token={urllib.parse.quote(token)}&" if token else ""
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/api/pair/ticket",
+                        headers={"X-Auth-Token": token},
+                    )
+                    with urllib.request.urlopen(req, timeout=3) as r:
+                        ticket = json.loads(r.read().decode("utf-8")).get("ticket") or ""
+                    if ticket:
+                        auth_param = f"ticket={urllib.parse.quote(ticket)}&"
+                except Exception as ex:
+                    append_log(f"Pairing ticket request failed, falling back to token: {ex}")
                 remote_url = f"http://127.0.0.1:{port}/?{auth_param}lang={urllib.parse.quote(lang)}"
 
                 layout = get_desktop_window_layout()["remote"]

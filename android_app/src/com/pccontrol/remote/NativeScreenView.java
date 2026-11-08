@@ -2224,26 +2224,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         @Override
         public void run() {
-            int sampleRate = 48000;
-            int channelConfig = AudioFormat.CHANNEL_OUT_STEREO;
             int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
-            int minBufSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat);
-            int bufSize = Math.max(minBufSize * 2, 8192);
-            final int frameBytes = 4; // 16 бит × 2 канала
+            int frameBytes = 4; // 16 бит × каналы (по заголовку WAV)
+            int trackRate = 0, trackChannels = 0;
 
             try {
-                audioTrack = new AudioTrack(
-                        AudioManager.STREAM_MUSIC,
-                        sampleRate,
-                        channelConfig,
-                        audioFormat,
-                        bufSize,
-                        AudioTrack.MODE_STREAM
-                );
-                // Громкость задаёт ползунок «Громкость демонстрации» (0–200 %) — программное
-                // усиление PcAudioGain; сам AudioTrack играет на полной громкости.
-                audioTrack.setVolume(1.0f);
-                audioTrack.play();
 
                 int attempt = 0;
                 // Переподключение при обрыве сети: раньше звук ПК пропадал до конца сеанса
@@ -2273,18 +2258,47 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                             updateAudioStatusOnMain("Ошибка (" + code + ")", PcUi.DANGER);
                             continue;
                         }
-                        updateAudioStatusOnMain("Подключен (48 kHz)", Color.parseColor("#22C55E"));
-
                         try (InputStream raw = c.getInputStream();
                              BufferedInputStream bis = new BufferedInputStream(raw, 16384)) {
 
-                            // Пропуск 44-байтного заголовка WAV при наличии
-                            bis.mark(44);
+                            // Заголовок WAV: частота и число каналов берутся из него (звуковая карта
+                            // ПК может работать на 44,1 кГц — раньше всё играло как 48 кГц стерео).
+                            bis.mark(64);
                             byte[] hdr = new byte[44];
-                            int rHdr = bis.read(hdr, 0, 44);
-                            if (!(rHdr == 44 && hdr[0] == 'R' && hdr[1] == 'I' && hdr[2] == 'F' && hdr[3] == 'F')) {
+                            int rHdr = 0;
+                            while (rHdr < 44) {
+                                int n = bis.read(hdr, rHdr, 44 - rHdr);
+                                if (n <= 0) break;
+                                rHdr += n;
+                            }
+                            int rate = 48000, channels = 2;
+                            if (rHdr == 44 && hdr[0] == 'R' && hdr[1] == 'I' && hdr[2] == 'F' && hdr[3] == 'F'
+                                    && hdr[8] == 'W' && hdr[9] == 'A' && hdr[10] == 'V' && hdr[11] == 'E') {
+                                int ch = (hdr[22] & 0xFF) | ((hdr[23] & 0xFF) << 8);
+                                int sr = (hdr[24] & 0xFF) | ((hdr[25] & 0xFF) << 8)
+                                        | ((hdr[26] & 0xFF) << 16) | ((hdr[27] & 0xFF) << 24);
+                                if (ch >= 1 && ch <= 2) channels = ch;
+                                if (sr >= 8000 && sr <= 192000) rate = sr;
+                            } else {
                                 bis.reset();
                             }
+                            if (audioTrack == null || rate != trackRate || channels != trackChannels) {
+                                if (audioTrack != null) {
+                                    try { audioTrack.stop(); audioTrack.release(); } catch (Exception ignored) {}
+                                }
+                                int cfgOut = channels == 1 ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO;
+                                int minBuf = AudioTrack.getMinBufferSize(rate, cfgOut, audioFormat);
+                                audioTrack = new AudioTrack(AudioManager.STREAM_MUSIC, rate, cfgOut, audioFormat,
+                                        Math.max(minBuf * 2, 8192), AudioTrack.MODE_STREAM);
+                                // Громкость задаёт ползунок «Громкость демонстрации» (0–200 %) —
+                                // программное усиление PcAudioGain; сам AudioTrack на полной громкости.
+                                audioTrack.setVolume(1.0f);
+                                audioTrack.play();
+                                trackRate = rate;
+                                trackChannels = channels;
+                            }
+                            frameBytes = 2 * channels;
+                            updateAudioStatusOnMain("Подключен (" + (rate / 1000) + " kHz)", Color.parseColor("#22C55E"));
 
                             byte[] chunk = new byte[1920 + frameBytes];
                             int carry = 0;
@@ -2306,7 +2320,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                                     // Компенсация дрифта (порог 100 мс)
                                     long playHead = audioTrack.getPlaybackHeadPosition() - startHead;
                                     long latencyFrames = totalBytesWritten / frameBytes - playHead;
-                                    if (latencyFrames > 48000 * 0.10) {
+                                    if (latencyFrames > trackRate / 10) {
                                         audioTrack.flush();
                                         startHead = audioTrack.getPlaybackHeadPosition();
                                         totalBytesWritten = 0;

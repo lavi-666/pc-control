@@ -679,11 +679,9 @@ def _get_target_mic_playback_device() -> tuple[Any, int, str, bool]:
     чтобы звук микрофона телефона был доступен в приложениях Windows (игры, Discord, Zoom)
     и не воспроизводился через динамики ПК (предотвращение эха)."""
     try:
-        try:
-            import pyaudiowpatch as pa
-        except ImportError:
-            import pyaudio as pa
-        p = pa.PyAudio()
+        # Общий экземпляр PortAudio сервера (создание/уничтожение на каждый вызов оставляло потоки ОС)
+        from modules.streaming import _shared_pyaudio
+        p = _shared_pyaudio(refresh=True)
         dev_count = p.get_device_count()
 
         for i in range(dev_count):
@@ -717,14 +715,9 @@ def _ensure_mic_playback_open(sample_rate: int = 16000, channels: int = 1):
 
             if not is_virt or dev_idx < 0 or p is None:
                 log_action("mic_playback_no_virtual_cable", {"device": dev_name})
-                if p:
-                    try:
-                        p.terminate()
-                    except Exception:
-                        pass
                 return None
 
-            _mic_playback_pa = p
+            _mic_playback_pa = None  # общий экземпляр не принадлежит микрофону — не завершаем его
 
             try:
                 import pyaudiowpatch as pa
@@ -740,7 +733,9 @@ def _ensure_mic_playback_open(sample_rate: int = 16000, channels: int = 1):
                 "frames_per_buffer": 1024,
             }
 
+            from modules.streaming import _audio_stream_enter
             _mic_playback_stream = p.open(**kwargs)
+            _audio_stream_enter()  # пока поток открыт, общий PortAudio не пересоздаётся
             _mic_active = True
             log_action("mic_playback_started", {"device": dev_name, "rate": sample_rate})
             return _mic_playback_stream
@@ -761,6 +756,8 @@ def _close_mic_playback():
             except Exception:
                 pass
             _mic_playback_stream = None
+            from modules.streaming import _audio_stream_exit
+            _audio_stream_exit()
         if _mic_playback_pa:
             try:
                 _mic_playback_pa.terminate()
@@ -979,11 +976,7 @@ def api_mic_status():
             p, _, name, is_virt = _get_target_mic_playback_device()
             _mic_virtual_detected = is_virt
             _mic_active_device_name = name
-            if p:
-                try:
-                    p.terminate()
-                except Exception:
-                    pass
+            # p — общий экземпляр PortAudio сервера: не завершаем
 
     return jsonify({
         "active": _mic_active,
