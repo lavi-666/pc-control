@@ -684,6 +684,42 @@ def _create_screen_track():
 
         def _capture_worker(self):
             _attach_input_desktop()
+            # Захват с курсором мыши (GDI DIB + DrawIconEx), как в нативном потоке;
+            # mss остаётся запасным вариантом (в нём курсора нет).
+            self._dib = None
+            self._dib_key = None
+            self._dib_vf = None
+            try:
+                self._capture_loop()
+            finally:
+                if self._dib is not None:
+                    self._dib.close()
+                    self._dib = None
+
+        def _grab_bgra_frame(self, sct, mon):
+            """Кадр монитора с курсором (DIB); при сбое — mss без курсора."""
+            key = (mon["left"], mon["top"], mon["width"], mon["height"])
+            if key != self._dib_key:
+                if self._dib is not None:
+                    self._dib.close()
+                self._dib, self._dib_key, self._dib_vf = None, key, None
+                try:
+                    self._dib = _FastDIBSection(*key)
+                    self._dib_vf = av.VideoFrame(mon["width"], mon["height"], "bgra")
+                except Exception as ex:
+                    log_error("webrtc_dib_init_failed", ex)
+                    self._dib = None
+            if self._dib is not None:
+                try:
+                    if self._dib.grab_into(self._dib_vf):
+                        return self._dib_vf
+                except Exception:
+                    pass
+            raw_shot = sct.grab(mon)
+            arr_bgra = np.frombuffer(raw_shot.raw, dtype=np.uint8).reshape((raw_shot.height, raw_shot.width, 4))
+            return av.VideoFrame.from_ndarray(arr_bgra, format="bgra")
+
+        def _capture_loop(self):
             with mss.MSS() as sct:
                 while not self._closed:
                     t0 = time.perf_counter()
@@ -703,10 +739,8 @@ def _create_screen_track():
                     target_h_even = max(2, (target_h // 2) * 2)
 
                     try:
-                        raw_shot = sct.grab(mon)
-                        arr_bgra = np.frombuffer(raw_shot.raw, dtype=np.uint8).reshape((raw_shot.height, raw_shot.width, 4))
                         # Sunshine & Moonlight standard: BT.709 ITU-R color matrix with MPEG TV range and Bicubic interpolation
-                        vf = av.VideoFrame.from_ndarray(arr_bgra, format="bgra").reformat(
+                        vf = self._grab_bgra_frame(sct, mon).reformat(
                             width=target_w,
                             height=target_h_even,
                             format="yuv420p",
@@ -1156,7 +1190,8 @@ class _CursorPainter:
         self.user32.DrawIconEx.restype = wintypes.BOOL
         self.gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
         self.ci = CURSORINFO()
-        self.ci.cbSize = ctypes.sizeof(CURSORINFO)
+        self._ci_size = ctypes.sizeof(CURSORINFO)
+        self.ci.cbSize = self._ci_size
         self._ICONINFO = ICONINFO
         self._hotspots: dict[int, tuple[int, int]] = {}
 
@@ -1179,6 +1214,10 @@ class _CursorPainter:
         """Draws the pointer at its screen position relative to (origin_x, origin_y).
         Returns True if something was drawn."""
         try:
+            # cbSize задаём перед КАЖДЫМ вызовом: Windows обнуляет его в структуре после
+            # GetCursorInfo, и все следующие вызовы падали с ERROR_INVALID_PARAMETER (87) —
+            # курсор рисовался только в самом первом кадре, а на телефоне его не было видно.
+            self.ci.cbSize = self._ci_size
             if not self.user32.GetCursorInfo(self._ctypes.byref(self.ci)):
                 return False
             if not (self.ci.flags & self.CURSOR_SHOWING) or not self.ci.hCursor:

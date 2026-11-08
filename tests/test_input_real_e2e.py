@@ -310,6 +310,9 @@ class RealWindowsInputE2E(unittest.TestCase):
                 return arr.reshape(h, w, 4)[:, :, :3].astype(int)
 
             plain = grab(False)
+            # несколько кадров подряд: раньше курсор был только в первом (cbSize обнулялся)
+            for _ in range(3):
+                grab(True)
             with_cursor = grab(True)
             # without the pointer the 96x96 region is the flat canvas colour
             self.assertLess(int(abs(plain - plain[2, 2]).sum()), 3 * w * h // 50)
