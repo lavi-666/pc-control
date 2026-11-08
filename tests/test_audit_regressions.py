@@ -83,6 +83,34 @@ class AuditRegressionTests(unittest.TestCase):
                 for line in p.read_text(encoding="utf-8").splitlines():
                     json.loads(line)
 
+    def test_worker_threads_never_become_unpumped_main_sta(self):
+        """Корень утечки потоков: первый импорт comtypes в рабочем потоке делал его ГЛАВНЫМ STA
+        процесса без цикла сообщений — межпоточные вызовы COM/UIA/WinRT навсегда занимали потоки
+        пула Windows. server.py обязан включать MTA до любого импорта comtypes."""
+        import subprocess
+        import sys as _sys
+        from pathlib import Path
+        base = Path(__file__).resolve().parent.parent
+        code = (
+            "import sys, threading, ctypes\n"
+            f"sys.path.insert(0, {str(base)!r})\n"
+            "import os; os.environ['PC_CONTROL_TEST_MODE'] = '1'\n"
+            "import server\n"
+            "ole32 = ctypes.WinDLL('ole32'); r = {}\n"
+            "def w():\n"
+            "    import comtypes, comtypes.client\n"
+            "    t, q = ctypes.c_int(), ctypes.c_int()\n"
+            "    ole32.CoGetApartmentType(ctypes.byref(t), ctypes.byref(q)); r['apt'] = t.value\n"
+            "th = threading.Thread(target=w); th.start(); th.join()\n"
+            "print('APT', sys.coinit_flags, r['apt'])\n"
+        )
+        out = subprocess.run([_sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+        line = next((ln for ln in out.stdout.splitlines() if ln.startswith("APT")), "")
+        self.assertTrue(line, out.stdout + out.stderr)
+        _, flags, apt = line.split()
+        self.assertEqual(flags, "0", "sys.coinit_flags must be COINIT_MULTITHREADED")
+        self.assertEqual(apt, "1", "worker thread must be MTA (1), not STA (0) / MAINSTA (3)")
+
     def _run_guard_once(self, threads, remote_conns):
         import psutil
 

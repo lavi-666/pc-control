@@ -24,7 +24,9 @@ def _ensure_com():
 
     if not getattr(_com_tls, "initialized", False):
         try:
-            comtypes.CoInitialize()
+            # Режим из sys.coinit_flags (в сервере — MTA): потоки запросов не должны становиться
+            # STA без цикла сообщений (см. server.py)
+            comtypes.CoInitializeEx()
         except OSError as e:
             if getattr(e, "winerror", None) != -2147417850:  # RPC_E_CHANGED_MODE
                 raise

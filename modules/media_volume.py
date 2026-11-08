@@ -35,9 +35,10 @@ def _co_init_safe() -> bool:
         return False
     import comtypes
     try:
-        comtypes.CoInitialize()
+        # Режим берётся из sys.coinit_flags (в сервере — MTA, см. server.py)
+        comtypes.CoInitializeEx()
     except OSError as e:
-        if getattr(e, "winerror", None) != -2147417850:  # RPC_E_CHANGED_MODE: поток уже в MTA
+        if getattr(e, "winerror", None) != -2147417850:  # RPC_E_CHANGED_MODE: поток уже инициализирован
             raise
     _com_init_tls.done = True
     return False
