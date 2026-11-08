@@ -11,14 +11,14 @@ const PRESET_ICONS = {
 };
 
 const ICON_PICKER_OPTIONS = [
-  { key: 'bolt', name: 'Молния' },
-  { key: 'game', name: 'Игра' },
-  { key: 'rocket', name: 'Ракета' },
-  { key: 'web', name: 'Интернет' },
-  { key: 'terminal', name: 'Терминал' },
-  { key: 'music', name: 'Музыка' },
-  { key: 'app', name: 'Программа' },
-  { key: 'delay', name: 'Таймер' }
+  { key: 'bolt', nameKey: 'preset_icon_bolt' },
+  { key: 'game', nameKey: 'preset_icon_game' },
+  { key: 'rocket', nameKey: 'preset_icon_rocket' },
+  { key: 'web', nameKey: 'preset_icon_web' },
+  { key: 'terminal', nameKey: 'preset_icon_terminal' },
+  { key: 'music', nameKey: 'preset_icon_music' },
+  { key: 'app', nameKey: 'preset_icon_app' },
+  { key: 'delay', nameKey: 'preset_icon_delay' }
 ];
 
 function getPresetIconSvg(key, sizeClass){
@@ -69,7 +69,7 @@ function renderPresetsMainButtons(){
       btn.classList.add('running');
       btn.innerHTML = '<span class="preset-btn-icon spinning">' +
         '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>' +
-        '</span><span>' + escapeHtml(p.name || 'Сценарий') + ' (' + t('preset_status_running') + ')</span>';
+        '</span><span>' + escapeHtml(p.name || t('preset_default_name')) + ' (' + t('preset_status_running') + ')</span>';
       btn.onclick = () => cancelPresetExecution(p.id, p.name);
     } else if (st.status === 'cancelling'){
       btn.classList.add('cancelling');
@@ -79,7 +79,7 @@ function renderPresetsMainButtons(){
       btn.onclick = () => {};
     } else {
       const stepIndicator = hasSteps ? '' : ' <span style="font-size:10px; color:#ef4444; opacity:0.85;">(0)</span>';
-      btn.innerHTML = '<span class="preset-btn-icon">' + iconSvg + '</span><span>' + escapeHtml(p.name || 'Сценарий') + stepIndicator + '</span>';
+      btn.innerHTML = '<span class="preset-btn-icon">' + iconSvg + '</span><span>' + escapeHtml(p.name || t('preset_default_name')) + stepIndicator + '</span>';
       if (!hasSteps) btn.title = t('preset_empty_steps_tip');
       btn.onclick = () => runPresetExecution(p.id, p.name);
     }
@@ -114,7 +114,7 @@ async function runPresetExecution(presetId, presetName){
     if (!res.ok){
       delete activePresetsStatus[presetId];
       renderPresetsMainButtons();
-      const errMsg = data.message || 'Ошибка запуска сценария';
+      const errMsg = data.message || t('preset_err_launch');
       if (statusEl) statusEl.innerText = errMsg;
       alert(errMsg);
       return;
@@ -156,7 +156,7 @@ async function pollPresetsStatus(){
 
     Object.keys(activePresetsStatus).forEach(pid => {
       if (activePresetsStatus[pid].status === 'error'){
-        const err = activePresetsStatus[pid].error || 'Ошибка выполнения сценария';
+        const err = activePresetsStatus[pid].error || t('preset_err_run');
         const statusEl = document.getElementById('statusMsg');
         if (statusEl) statusEl.innerText = err;
       }
@@ -319,11 +319,11 @@ function renderPresetsModalList(){
     card.className = 'preset-item-card';
 
     const stepsText = (p.steps || []).map(s => {
-      if (s.type === 'app') return (s.name || 'Приложение');
-      if (s.type === 'url') return (s.name || s.target || 'Ссылка');
+      if (s.type === 'app') return (s.name || t('preset_step_app'));
+      if (s.type === 'url') return (s.name || s.target || t('preset_step_url'));
       if (s.type === 'delay') return (s.seconds || 1) + ' ' + t('preset_delay_lbl');
       return s.name || '';
-    }).join('  →  ') || 'Нет действий';
+    }).join('  →  ') || t('preset_no_steps');
 
     const iconSvg = getPresetIconSvg(p.icon || 'bolt');
 
@@ -332,7 +332,7 @@ function renderPresetsModalList(){
       '<div class="preset-item-head">' +
         '<div class="preset-item-title">' +
           '<div class="preset-badge-icon-box">' + iconSvg + '</div>' +
-          '<span>' + escapeHtml(p.name || 'Сценарий') + '</span>' +
+          '<span>' + escapeHtml(p.name || t('preset_default_name')) + '</span>' +
         '</div>' +
         '<div style="font-size:11px; color:var(--muted); font-family:var(--font-mono);">' + (p.steps ? p.steps.length : 0) + ' ' + t('preset_steps_cnt') + '</div>' +
       '</div>' +
@@ -360,7 +360,7 @@ function renderPresetIconPicker(){
     btn.type = 'button';
     btn.className = 'preset-icon-btn' + (opt.key === current ? ' active' : '');
     btn.innerHTML = PRESET_ICONS[opt.key] || PRESET_ICONS['bolt'];
-    btn.title = opt.name;
+    btn.title = t(opt.nameKey);
     btn.onclick = () => {
       editingPreset.icon = opt.key;
       renderPresetIconPicker();
@@ -688,7 +688,7 @@ function onProgramSearchInput(val){
       if (!res.ok) return;
       const items = await res.json();
       if (!items.length){
-        box.innerHTML = '<div style="padding:8px 10px; font-size:11.5px; color:var(--muted);">Ничего не найдено. Вы можете указать прямой путь ниже.</div>';
+        box.innerHTML = '<div style="padding:8px 10px; font-size:11.5px; color:var(--muted);">' + t('preset_search_none') + '</div>';
         box.style.display = 'block';
         return;
       }
@@ -927,9 +927,9 @@ function renderPresetStepsEditor(){
         '<button type="button" class="step-btn ' + (isEditingThis ? 'step-btn-active' : '') + '" onclick="requestStartEditingStep(' + i + ')" title="' + t('preset_btn_edit') + '">' +
           '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>' +
         '</button>' +
-        (i > 0 ? '<button type="button" class="step-btn" onclick="movePresetStep(' + i + ', -1)" title="Вверх"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>' : '') +
-        (i < editingPreset.steps.length - 1 ? '<button type="button" class="step-btn" onclick="movePresetStep(' + i + ', 1)" title="Вниз"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>' : '') +
-        '<button type="button" class="step-btn" onclick="removePresetStep(' + i + ')" title="Удалить" style="color:#ef4444 !important;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>' +
+        (i > 0 ? '<button type="button" class="step-btn" onclick="movePresetStep(' + i + ', -1)" title="' + t('tip_move_up') + '"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>' : '') +
+        (i < editingPreset.steps.length - 1 ? '<button type="button" class="step-btn" onclick="movePresetStep(' + i + ', 1)" title="' + t('tip_move_down') + '"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>' : '') +
+        '<button type="button" class="step-btn" onclick="removePresetStep(' + i + ')" title="' + t('tip_delete') + '" style="color:#ef4444 !important;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>' +
       '</div>';
 
     container.appendChild(row);
@@ -980,11 +980,11 @@ async function saveCurrentEditingPreset(andClose = true){
       }
       return true;
     } else {
-      alert(data.message || 'Ошибка сохранения');
+      alert(data.message || t('preset_err_save'));
       return false;
     }
   } catch(e) {
-    alert('Не удалось связаться с сервером');
+    alert(t('msg_server_unreachable'));
     return false;
   }
 }
@@ -1026,12 +1026,12 @@ async function confirmAndDeletePreset(presetId, presetName){
 
 function deleteCurrentEditingPreset(){
   if (!editingPreset || !editingPreset.id) return;
-  confirmAndDeletePreset(editingPreset.id, editingPreset.name || 'сценарий');
+  confirmAndDeletePreset(editingPreset.id, editingPreset.name || t('preset_default_name'));
 }
 
 function deletePresetDirect(presetId){
   const found = presetsData.find(x => x.id === presetId);
-  const name = found ? found.name : 'сценарий';
+  const name = found ? found.name : t('preset_default_name');
   confirmAndDeletePreset(presetId, name);
 }
 
@@ -1040,7 +1040,7 @@ attachSafeSlider(
   document.getElementById('mediaSeekZone'),
   document.getElementById('mediaSeek'),
   '#ff0033',
-  (v) => { mediaState.seeking = true; updateSeekVisual(v, mediaState.duration); },
+  (v) => { mediaState.seeking = true; mediaState.seekDragging = true; updateSeekVisual(v, mediaState.duration); },
   (v) => { commitSeek(v); }
 );
 attachSafeSlider(

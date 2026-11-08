@@ -690,6 +690,95 @@ public final class PcInputJvmTests {
         check(threw, "invalid arc flag rejected");
     }
 
+    // ---- Громкость демонстрации 0–200 % (PcAudioGain) --------------------------------
+    static byte[] pcm(short... s) {
+        byte[] b = new byte[s.length * 2];
+        for (int i = 0; i < s.length; i++) { b[2 * i] = (byte) s[i]; b[2 * i + 1] = (byte) (s[i] >> 8); }
+        return b;
+    }
+
+    static short sampleAt(byte[] b, int i) {
+        return (short) (((b[2 * i + 1]) << 8) | (b[2 * i] & 0xFF));
+    }
+
+    static void testAudioGainAmplifiesUpTo200Percent() {
+        check(PcAudioGain.percentToGain(200, false) == 2f, "200% -> gain 2.0");
+        check(PcAudioGain.percentToGain(500, false) == 2f, "gain clamped to 200%");
+        check(PcAudioGain.percentToGain(150, true) == 0f, "muted -> 0");
+
+        // Тихий сигнал при 200 % — реально вдвое громче (а не просто цифра на ползунке)
+        PcAudioGain g = new PcAudioGain();
+        byte[] b = pcm((short) 1000, (short) -1000, (short) 4000, (short) -4000);
+        g.apply(b, b.length, 2f);
+        check(Math.abs(sampleAt(b, 0) - 2000) <= 1 && Math.abs(sampleAt(b, 1) + 2000) <= 1, "quiet signal doubled at 200%");
+        check(Math.abs(sampleAt(b, 2) - 8000) <= 1, "4000 -> 8000 at 200%");
+
+        // До 100 % — только линейное ослабление, без искажений
+        PcAudioGain h = new PcAudioGain();
+        byte[] c = pcm((short) 30000, (short) -30000, (short) 12000);
+        h.apply(c, c.length, 0.5f);
+        check(Math.abs(sampleAt(c, 0) - 15000) <= 1 && Math.abs(sampleAt(c, 2) - 6000) <= 1, "50% is linear");
+        PcAudioGain u = new PcAudioGain();
+        byte[] d = pcm((short) 32767, (short) -32768, (short) 123);
+        u.apply(d, d.length, 1f);
+        check(sampleAt(d, 0) == 32767 && sampleAt(d, 1) == -32768 && sampleAt(d, 2) == 123, "100% leaves samples untouched");
+    }
+
+    static void testAudioGainSoftLimitNoHardClipping() {
+        // Громкий синус при 200 %: без жёсткого обрезания (плато на 32767) и без переполнения
+        int n = 4800;
+        short[] s = new short[n];
+        for (int i = 0; i < n; i++) s[i] = (short) Math.round(Math.sin(2 * Math.PI * 440 * i / 48000.0) * 30000);
+        byte[] b = pcm(s);
+        PcAudioGain g = new PcAudioGain();
+        g.apply(b, b.length, 2f);
+        int atRail = 0, maxAbs = 0;
+        for (int i = 0; i < n; i++) {
+            int v = sampleAt(b, i);
+            maxAbs = Math.max(maxAbs, Math.abs(v));
+            if (Math.abs(v) >= 32700) atRail++;
+        }
+        check(atRail == 0, "no samples hard-clipped at the rail (got " + atRail + ")");
+        check(maxAbs > 30000 && maxAbs <= Math.round(PcAudioGain.CEIL * 32767) + 1, "loud signal stays loud, under ceiling (" + maxAbs + ")");
+
+        // Форма волны сохраняется (лимитер меняет усиление, а не форму): после атаки
+        // соседние полупериоды одинаковы по форме — корреляция с исходным синусом ≈ 1
+        double dot = 0, ea = 0, eb = 0;
+        for (int i = n / 2; i < n; i++) {
+            double x = s[i], y = sampleAt(b, i);
+            dot += x * y; ea += x * x; eb += y * y;
+        }
+        double corr = dot / Math.sqrt(ea * eb);
+        check(corr > 0.999, "waveform preserved, no distortion (corr " + corr + ")");
+
+        // Тихий фрагмент после громкого: лимитер отпускает, усиление снова ×2
+        short[] q = new short[96000]; // 1 с стерео при 48 кГц
+        java.util.Arrays.fill(q, (short) 1000);
+        byte[] qb = pcm(q);
+        g.apply(qb, qb.length, 2f);
+        check(Math.abs(sampleAt(qb, 95999) - 2000) <= 5, "limiter releases, quiet part doubled again (" + sampleAt(qb, 95999) + ")");
+    }
+
+    static void testAudioGainRampHasNoClick() {
+        // Резкий переход 100 % -> 200 % растягивается на буфер: соседние сэмплы без скачка
+        PcAudioGain g = new PcAudioGain();
+        short[] s = new short[960];
+        java.util.Arrays.fill(s, (short) 8000);
+        byte[] b = pcm(s);
+        g.apply(b, b.length, 1f);
+        byte[] b2 = pcm(s);
+        g.apply(b2, b2.length, 2f);
+        int maxStep = 0;
+        int prev = sampleAt(b, 959);
+        for (int i = 0; i < 960; i++) {
+            int v = sampleAt(b2, i);
+            maxStep = Math.max(maxStep, Math.abs(v - prev));
+            prev = v;
+        }
+        check(maxStep < 50, "gain change is ramped (max step " + maxStep + ")");
+        check(Math.abs(sampleAt(b2, 959) - 16000) < 40, "ramp reaches target gain");
+    }
+
     static void eq(Object got, Object want, String name) {
         if (got.equals(want)) passed++;
         else failures.add(name + "\n     want: " + want + "\n     got:  " + got);
@@ -737,6 +826,9 @@ public final class PcInputJvmTests {
             testAccelerationIsSmoothUnderTimestampJitter();
             testIconsParseAndFitViewBox();
             testSvgArcsAndCompactNumbers();
+            testAudioGainAmplifiesUpTo200Percent();
+            testAudioGainSoftLimitNoHardClipping();
+            testAudioGainRampHasNoClick();
         }
         System.out.println("JVM_TESTS_PASSED=" + passed + " FAILED=" + failures.size());
         for (String f : failures) System.out.println("  FAIL: " + f);

@@ -39,20 +39,39 @@ function updateSeekVisual(pos, dur){
   durEl.innerText = (dur && dur > 0) ? fmtTime(dur) : '—';
 }
 
+/**
+ * Перемотка. Раньше после отпускания ползунка опорная точка таймера оставалась старой:
+ * через 0,8 с ползунок «отпрыгивал» на прежнее место (до следующего опроса), и казалось,
+ * что перемотка не сработала. Теперь опорная точка сразу переносится на новую позицию,
+ * а синхронизация с ПК ждёт подтверждения новой позиции (не дольше 4 с).
+ */
 async function commitSeek(val){
   const pos = parseFloat(val);
-  mediaState.position = pos;
+  if (!isFinite(pos)) { mediaState.seeking = false; mediaState.seekDragging = false; return; }
+  mediaState.seekDragging = false;
   mediaState.seeking = true;
+  mediaState.seekTarget = pos;
+  mediaState.seekDeadline = performance.now() + 4000;
+  mediaState.position = pos;
+  mediaState.anchorPosition = pos;
+  mediaState.anchorPerfTime = performance.now();
   updateSeekVisual(pos, mediaState.duration);
   try {
-    await apiFetch('/media/control', {
+    const res = await apiFetch('/media/control', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({action: 'seek', position: pos})
     });
-    setTimeout(pollMedia, 350);
-  } catch (e) {} finally {
-    setTimeout(() => { mediaState.seeking = false; }, 800);
+    if (!res.ok){
+      const data = await res.json().catch(() => ({}));
+      const statusEl = document.getElementById('statusMsg');
+      if (statusEl && data.message) statusEl.innerText = data.message;
+      mediaState.seeking = false; // показать реальную позицию с ПК
+    }
+  } catch (e) {
+    mediaState.seeking = false;
   }
+  setTimeout(pollMedia, 300);
+  setTimeout(pollMedia, 1000);
 }
 
 async function commitPlayerVolume(val){
@@ -347,10 +366,10 @@ function renderQueuePanel(forceReRender = false, autoScroll = false){
           actContainer.dataset.bound = '1';
           actContainer.dataset.idx = String(itemIdx);
           actContainer.innerHTML =
-            '<button type="button" class="ytm-q-act next-act" title="Включить следующим">' +
+            '<button type="button" class="ytm-q-act next-act" title="' + t('queue_play_next_tip') + '">' +
               '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>' +
             '</button>' +
-            '<button type="button" class="ytm-q-act del del-act" title="Удалить из очереди">' +
+            '<button type="button" class="ytm-q-act del del-act" title="' + t('queue_remove_tip') + '">' +
               '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
             '</button>';
         }
@@ -420,7 +439,7 @@ async function addTrackToQueue(){
   const q = (input.value || '').trim();
   if (!q) return;
   if (btn) btn.disabled = true;
-  if (statusEl) statusEl.innerText = 'Поиск и добавление: ' + q + '...';
+  if (statusEl) statusEl.innerText = t('msg_queue_adding', {q});
   try {
     const res = await apiFetch('/media/queue/add', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -589,7 +608,8 @@ let _mediaTickerId = null;
 function startMediaTimelineTicker(){
   if (_mediaTickerId) return;
   _mediaTickerId = setInterval(() => {
-    if (mediaState.playing && !mediaState.seeking && mediaState.duration > 0 && mediaState.anchorPerfTime){
+    // Пока палец на ползунке — не двигаем его; после отпускания таймер идёт от новой позиции
+    if (mediaState.playing && !mediaState.seekDragging && mediaState.duration > 0 && mediaState.anchorPerfTime){
       const elapsed = (performance.now() - mediaState.anchorPerfTime) / 1000;
       const livePos = Math.min(mediaState.duration, Math.max(0, mediaState.anchorPosition + elapsed));
       mediaState.position = livePos;
@@ -652,6 +672,17 @@ async function pollMedia(){
     const srvPos = parseFloat(data.position) || 0;
     const srvDur = parseFloat(data.duration) || 0;
 
+    // Ждём, пока ПК подтвердит новую позицию после перемотки (или истечёт таймаут)
+    if (mediaState.seeking && !mediaState.seekDragging){
+      const confirmed = Math.abs(srvPos - (mediaState.seekTarget || 0)) < 3;
+      if (confirmed || performance.now() > (mediaState.seekDeadline || 0)){
+        mediaState.seeking = false;
+        mediaState.anchorPosition = srvPos;
+        mediaState.anchorPerfTime = performance.now();
+        mediaState.position = srvPos;
+      }
+    }
+
     if (!mediaState.seeking){
       mediaState.duration = srvDur;
       // Синхронизируем опорную временную метку монотонного таймера
@@ -701,12 +732,15 @@ let _mediaCommandPending = false;
 
 async function mediaControl(action){
   const now = Date.now();
-  // Защита от дребезга и двойного нажатия (минимум 300 мс между командами)
-  if (now - _lastMediaCommandTime < 300 || _mediaCommandPending){
-    return;
-  }
+  // Защита от дребезга (минимум 300 мс между командами). Раньше любое нажатие молча
+  // отбрасывалось, пока не придёт ответ на предыдущую команду: если ПК отвечал медленно
+  // (резервный путь через UI Automation), кнопки «вперёд/назад» не реагировали по нескольку секунд.
+  if (now - _lastMediaCommandTime < 300) return;
+  if (_mediaCommandPending && now - _lastMediaCommandTime < 1500) return;
   _lastMediaCommandTime = now;
   _mediaCommandPending = true;
+  const pressedBtn = (typeof event !== 'undefined' && event && event.currentTarget && event.currentTarget.classList) ? event.currentTarget : null;
+  if (pressedBtn) pressedBtn.classList.add('busy');
 
   if (action === 'playpause'){
     mediaState.playing = !mediaState.playing;
@@ -722,7 +756,12 @@ async function mediaControl(action){
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({action})
     });
-    await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok && data && data.message){
+      // Команда не выполнена (например, плеер не найден) — показываем причину, а не молчим
+      const statusEl = document.getElementById('statusMsg');
+      if (statusEl) statusEl.innerText = data.message;
+    }
     setTimeout(() => {
       pollMedia();
       loadQueue();
@@ -730,6 +769,7 @@ async function mediaControl(action){
   } catch (e) {
   } finally {
     _mediaCommandPending = false;
+    if (pressedBtn) pressedBtn.classList.remove('busy');
   }
 }
 

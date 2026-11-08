@@ -687,11 +687,11 @@ def _record_listening_history_locked(
 
 
 async def _control_media(action: str, position: float | None = None):
-    global _last_manual_skip
+    # _last_controlled_app_id раньше не был объявлен global: присваивание создавало локальную
+    # переменную, и приоритет «последнего управляемого плеера» никогда не запоминался.
+    global _last_manual_skip, _last_controlled_app_id
     if is_safe_test_mode():
         return True, None
-    if action == "seek" and position is not None:
-        _seek_tracked_position(float(position))
     try:
         session = await _select_media_session()
         if session is not None:
@@ -715,6 +715,8 @@ async def _control_media(action: str, position: float | None = None):
             else:
                 ok = False
             if ok:
+                if action == "seek" and position is not None:
+                    _seek_tracked_position(float(position))
                 try:
                     _last_controlled_app_id = (session.source_app_user_model_id or "").lower()
                 except Exception:
@@ -728,7 +730,9 @@ async def _control_media(action: str, position: float | None = None):
     _last_manual_skip = _mq._last_manual_skip
     invalidate_dom_cache()
     if action == "seek":
-        return True, None
+        # Раньше здесь возвращался «успех», хотя перемотка не выполнялась (менялась только
+        # расчётная позиция на сервере) — телефон показывал новую позицию, а трек играл дальше.
+        return False, "Перемотка не выполнена: плеер на ПК её не поддерживает или не найден"
     if _uia_invoke_ytm_player_bar_button(action):
         return True, None
     if _send_media_click_or_key(action):

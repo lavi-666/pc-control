@@ -947,3 +947,36 @@
   @keyframes popInCustom{
     from{opacity:0; transform:scale(0.92);} to{opacity:1; transform:scale(1);}
   }
+
+/* ---- Предварительные параметры демонстрации: плавное раскрытие/сворачивание ---- */
+.prelaunch{
+  background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px;
+  margin-bottom:12px; transition:border-color .2s ease, background .2s ease;
+}
+.prelaunch.open{border-color:var(--border-strong); background:rgba(255,255,255,0.045);}
+.prelaunch-toggle{
+  width:100%; display:flex; align-items:center; gap:8px; padding:10px 12px;
+  background:transparent !important; border:none !important; border-radius:12px;
+  color:var(--subtext); font-size:12.5px; font-weight:600; text-align:left; cursor:pointer;
+  user-select:none; -webkit-tap-highlight-color:transparent; box-shadow:none !important;
+}
+.prelaunch-toggle:active{transform:none;}
+.prelaunch-title{flex:1; min-width:0;}
+.prelaunch-ic{width:16px; height:16px; fill:currentColor; flex-shrink:0;}
+.prelaunch-chev{
+  width:20px; height:20px; fill:currentColor; flex-shrink:0;
+  transition:transform .28s cubic-bezier(.2,.7,.2,1);
+}
+.prelaunch.open .prelaunch-toggle{color:var(--text);}
+.prelaunch.open .prelaunch-chev{transform:rotate(180deg);}
+.prelaunch-body{
+  height:0; overflow:hidden; opacity:0;
+  transition:height .28s cubic-bezier(.2,.7,.2,1), opacity .22s ease;
+}
+.prelaunch.open .prelaunch-body{opacity:1;}
+.prelaunch-inner{padding:0 12px 10px;}
+@media (prefers-reduced-motion: reduce){
+  .prelaunch-body, .prelaunch-chev{transition:none;}
+}
+/* Команда плеера отправлена и ждёт ответа ПК */
+.ytm-icon-btn.busy, .ytm-play-btn.busy{opacity:.55; transition:opacity .15s ease;}

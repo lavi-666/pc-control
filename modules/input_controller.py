@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Any
 from flask import Blueprint, Response, jsonify, request
+from werkzeug.wsgi import get_input_stream
 
 from core.auth import check_token
 from core.logger import log_action, log_error
@@ -667,6 +668,9 @@ _mic_playback_lock = threading.Lock()
 _mic_active = False
 _mic_virtual_detected = False
 _mic_active_device_name = "No Virtual Audio Cable installed"
+_mic_session = 0
+_mic_session_lock = threading.Lock()
+_MIC_RATES = (8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000)
 
 
 def _get_target_mic_playback_device() -> tuple[Any, int, str, bool]:
@@ -897,8 +901,21 @@ def api_mic_stream():
     if not check_token(allow_stream_query=True):
         return jsonify({"message": "Unauthorized"}), 401
 
-    rate = int(request.args.get("rate", 16000))
-    channels = int(request.args.get("channels", 1))
+    global _mic_session
+    try:
+        rate = int(request.args.get("rate", 16000))
+        channels = int(request.args.get("channels", 1))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "rate/channels must be integers"}), 400
+    if rate not in _MIC_RATES or channels not in (1, 2):
+        return jsonify({"ok": False, "message": "Unsupported rate/channels"}), 400
+
+    # Новое подключение телефона заменяет старое (например, «зависшее» после обрыва Wi-Fi):
+    # закрываем прежнее устройство, чтобы открыть его с частотой нового потока.
+    with _mic_session_lock:
+        _mic_session += 1
+        my_session = _mic_session
+    _close_mic_playback()
 
     stream = _ensure_mic_playback_open(sample_rate=rate, channels=channels)
     if not stream:
@@ -908,19 +925,36 @@ def api_mic_stream():
             "message": "Виртуальный аудиокабель (VB-CABLE) не обнаружен на ПК. Для передачи микрофона в Windows требуется установить VB-CABLE (CABLE Input)."
         }), 400
 
+    frame_bytes = 2 * channels
+    pending = b""
     try:
-        # Потоковое чтение PCM-чанков из тела HTTP-запроса
-        while True:
-            chunk = request.stream.read(1024)
+        # Потоковое чтение PCM. Важно: request.stream ограничен MAX_CONTENT_LENGTH (1 МБ) —
+        # при chunked-передаче поток обрывался через ~30 с. Микрофон — бесконечный поток,
+        # поэтому читаем тело без этого ограничения (доступ к эндпоинту — только с паролем).
+        body = get_input_stream(request.environ, safe_fallback=False, max_content_length=None)
+        while my_session == _mic_session:
+            chunk = body.read(4096)
             if not chunk:
                 break
-            with _mic_playback_lock:
-                if _mic_playback_stream:
-                    _mic_playback_stream.write(chunk, exception_on_underflow=False)
+            # Чанки сети не выровнены по сэмплам: нечётный хвост раньше отбрасывался
+            # PyAudio, и все последующие сэмплы сдвигались на байт — громкий шум вместо голоса.
+            data = pending + chunk
+            cut = len(data) - (len(data) % frame_bytes)
+            pending = data[cut:]
+            if cut:
+                with _mic_playback_lock:
+                    if _mic_playback_stream is None:
+                        break
+                    _mic_playback_stream.write(data[:cut], exception_on_underflow=False)
         return jsonify({"ok": True})
     except Exception as e:
         log_error("mic_stream_err", e)
         return jsonify({"ok": False, "message": str(e)}), 500
+    finally:
+        # Телефон выключил микрофон или соединение оборвалось — освобождаем устройство,
+        # если его уже не забрал более новый поток.
+        if my_session == _mic_session:
+            _close_mic_playback()
 
 
 @input_bp.route("/api/mic/status", methods=["GET", "POST"])

@@ -37,7 +37,7 @@ const PC_MAC_ADDRESS = '';
         <span class="brand-sub" data-i18n="brand_sub">Настройки</span>
       </div>
     </div>
-    <div class="status-pill" id="statusPill" onclick="manualReconnect()" role="button" tabindex="0" title="Нажмите для проверки связи">
+    <div class="status-pill" id="statusPill" onclick="manualReconnect()" role="button" tabindex="0" title="Нажмите для проверки связи" data-i18n-title="tip_conn_check">
       <span class="dot" id="dot"></span>
       <span id="pctext" data-i18n="status_checking">Проверка...</span>
     </div>
@@ -177,7 +177,7 @@ const PC_MAC_ADDRESS = '';
           </div>
           <div style="display:flex; align-items:center; gap:6px;">
             <span id="queueCount" style="font-family:var(--font-mono); font-size:11px; color:var(--subtext);"></span>
-            <button class="btn-icon" id="queueScrollActiveBtn" onclick="scrollQueueToActive(true)" title="К текущему треку" style="width:24px; height:24px; padding:0; display:flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--subtext); cursor:pointer;">
+            <button class="btn-icon" id="queueScrollActiveBtn" onclick="scrollQueueToActive(true)" title="К текущему треку" data-i18n-title="queue_to_current_tip" style="width:24px; height:24px; padding:0; display:flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--subtext); cursor:pointer;">
               <svg width="14" height="14" viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3A8.994 8.994 0 0 0 13 3.06V1h-2v2.06A8.994 8.994 0 0 0 3.06 11H1v2h2.06A8.994 8.994 0 0 0 11 20.94V23h2v-2.06A8.994 8.994 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>
             </button>
             <button class="btn-icon" id="queueRefreshBtn" onclick="refreshQueueExplicit()" title="Обновить список очереди" data-i18n-title="queue_refresh_tip" style="width:24px; height:24px; padding:0; display:flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--subtext); cursor:pointer;">
@@ -232,11 +232,15 @@ const PC_MAC_ADDRESS = '';
         </button>
       </div>
 
-      <details class="screen-prelaunch-details" style="background:rgba(255,255,255,0.03); border:1px solid var(--border); border-radius:12px; padding:8px 12px; margin-bottom:12px;">
-        <summary style="cursor:pointer; color:var(--subtext); font-size:12.5px; font-weight:600; outline:none; user-select:none; padding:4px 0;">
-          ⚙ Предварительные параметры (экран, FPS, битрейт)
-        </summary>
-        <div style="margin-top:10px;">
+      <!-- Предварительные параметры: один пункт, по нажатию плавно раскрывается блок экрана/FPS/битрейта -->
+      <div class="prelaunch" id="screenPrelaunch">
+        <button type="button" class="prelaunch-toggle" id="screenPrelaunchToggle" onclick="togglePrelaunch()" aria-expanded="false" aria-controls="screenPrelaunchBody">
+          <svg class="prelaunch-ic" viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+          <span class="prelaunch-title" data-i18n="screen_prelaunch_title">Предварительные параметры</span>
+          <svg class="prelaunch-chev" viewBox="0 0 24 24"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+        </button>
+        <div class="prelaunch-body" id="screenPrelaunchBody" role="region">
+        <div class="prelaunch-inner">
           <div class="seg-row">
             <span class="seg-lbl" data-i18n="screen_lbl_monitor">Экран</span>
             <div class="seg-group" id="screenMonGroup">
@@ -279,12 +283,13 @@ const PC_MAC_ADDRESS = '';
               <svg id="screenVolIcon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
             </button>
             <div class="slider-zone" id="screenVolZone">
-              <input type="range" id="screenVolSlider" class="safe-range" min="0" max="100" step="1" value="50">
+              <input type="range" id="screenVolSlider" class="safe-range" min="0" max="200" step="1" value="50">
             </div>
             <div class="ytm-vol-val" id="screenVolVal">50%</div>
           </div>
         </div>
-      </details>
+        </div>
+      </div>
 
       <div class="screen-stage" id="screenStage" ondblclick="fullscreenScreen()">
         <div class="screen-badge">
@@ -292,7 +297,7 @@ const PC_MAC_ADDRESS = '';
           <span id="screenBadgeText">LIVE · Экран 1 · 1080p · 60 FPS</span>
         </div>
         <video id="screenVideo" autoplay playsinline muted></video>
-        <img id="screenImg" alt="Экран ПК" style="display:none;">
+        <img id="screenImg" alt="Экран ПК" data-i18n-alt="screen_img_alt" style="display:none;">
         <button class="screen-fs-btn" onclick="fullscreenScreen(event)" title="Полноэкранный режим" data-i18n-title="screen_fs_tip">
           <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
         </button>
@@ -350,7 +355,7 @@ const PC_MAC_ADDRESS = '';
         <div style="position:relative; flex:1; display:flex; align-items:center;">
           <svg viewBox="0 0 24 24" style="position:absolute; left:9px; width:14px; height:14px; fill:var(--muted); pointer-events:none;"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
           <input type="text" id="procSearchInput" oninput="onProcSearchInput()" style="width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:10px; color:var(--text); padding:7px 28px 7px 30px; font-size:12.5px; font-family:var(--font-sans); outline:none;" placeholder="Поиск процесса..." data-i18n-placeholder="proc_search_ph">
-          <button type="button" id="procSearchClearBtn" onclick="clearProcSearch()" style="position:absolute; right:6px; width:20px; height:20px; padding:0; background:none; border:none; color:var(--muted); font-size:11px; display:none; align-items:center; justify-content:center; cursor:pointer;" title="Очистить">✕</button>
+          <button type="button" id="procSearchClearBtn" onclick="clearProcSearch()" style="position:absolute; right:6px; width:20px; height:20px; padding:0; background:none; border:none; color:var(--muted); font-size:11px; display:none; align-items:center; justify-content:center; cursor:pointer;" title="Очистить" data-i18n-title="tip_clear">✕</button>
         </div>
         <span id="procCountBadge" style="font-family:var(--font-mono); font-size:11px; color:var(--muted); flex-shrink:0;">—</span>
         <button type="button" onclick="loadProcessesList()" style="width:auto; padding:6px 10px; font-size:11.5px; border-radius:8px; flex-shrink:0;" title="Обновить" data-i18n-title="proc_refresh_tip">
@@ -410,7 +415,7 @@ const PC_MAC_ADDRESS = '';
           <div style="font-size:11px; color:var(--subtext);" data-i18n="presets_modal_sub">Цепочки автозапуска программ, сайтов и пауз</div>
         </div>
       </div>
-      <button class="settings-modal-close" onclick="closePresetsModal()" title="Закрыть">✕</button>
+      <button class="settings-modal-close" onclick="closePresetsModal()" title="Закрыть" data-i18n-title="tip_close">✕</button>
     </div>
 
     <!-- Режим 1: Список сценариев -->
@@ -482,10 +487,10 @@ const PC_MAC_ADDRESS = '';
             <span style="font-size:12.5px; color:var(--subtext);" data-i18n="preset_delay_lbl">секунд задержки</span>
           </div>
           <div style="display:flex; gap:6px; margin-bottom:8px;">
-            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=1" style="flex:1; padding:5px;">1 сек</button>
-            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=3" style="flex:1; padding:5px;">3 сек</button>
-            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=5" style="flex:1; padding:5px;">5 сек</button>
-            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=10" style="flex:1; padding:5px;">10 сек</button>
+            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=1" style="flex:1; padding:5px;" data-i18n-n="1" data-i18n="delay_sec_short">1 сек</button>
+            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=3" style="flex:1; padding:5px;" data-i18n-n="3" data-i18n="delay_sec_short">3 сек</button>
+            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=5" style="flex:1; padding:5px;" data-i18n-n="5" data-i18n="delay_sec_short">5 сек</button>
+            <button type="button" class="settings-sec-btn" onclick="document.getElementById('stepDelaySecInput').value=10" style="flex:1; padding:5px;" data-i18n-n="10" data-i18n="delay_sec_short">10 сек</button>
           </div>
           <button type="button" class="settings-sec-btn" id="btnSubmitDelayStep" onclick="addDelayStepFromInputs()" style="width:100%; padding:8px 10px;" data-i18n="preset_btn_add_step">+ Добавить в цепочку</button>
         </div>
@@ -523,7 +528,7 @@ const PC_MAC_ADDRESS = '';
     <div style="width: 100%;">
       <div class="conn-field-wrap" style="margin-bottom: 14px;">
         <input type="text" class="conn-field pwd-masked" id="loginPasswordInput" placeholder="Ключ доступа / токен" data-i18n-placeholder="login_pwd_placeholder" autocomplete="one-time-code" autocorrect="off" autocapitalize="off" spellcheck="false" role="presentation" aria-autocomplete="none" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" name="sys_client_auth_code" autofocus style="font-size: 15px; padding-right: 42px;" onkeydown="if(event.key==='Enter'){event.preventDefault();submitLoginForm();}">
-        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeLoginPwd" onclick="toggleLoginPwdVisibility()" title="Показать / скрыть">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeLoginPwd" onclick="toggleLoginPwdVisibility()" title="Показать / скрыть" data-i18n-title="tip_show_hide">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
             <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
@@ -619,7 +624,7 @@ const PC_MAC_ADDRESS = '';
             <span class="conn-opt-url" id="connAutoUrlText" data-i18n="server_mode_auto_sub">Дом (••••••••••••) ↔ Интернет (••••••••••••)</span>
           </div>
           <div class="conn-opt-right">
-            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnAuto" onclick="event.stopPropagation(); toggleConnSecret('autoCard')" title="Показать / скрыть">
+            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnAuto" onclick="event.stopPropagation(); toggleConnSecret('autoCard')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
               <span class="conn-sec-stack">
                 <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
                 <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
@@ -634,13 +639,13 @@ const PC_MAC_ADDRESS = '';
             <span class="conn-opt-url" id="connLanUrlText">••••••••••••</span>
           </div>
           <div class="conn-opt-right">
-            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnLan" onclick="event.stopPropagation(); toggleConnSecret('lanCard')" title="Показать / скрыть">
+            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnLan" onclick="event.stopPropagation(); toggleConnSecret('lanCard')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
               <span class="conn-sec-stack">
                 <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
                 <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
               </span>
             </span>
-            <span role="button" tabindex="0" class="conn-sec-btn compact copy-btn" id="btnCopyConnLan" onclick="event.stopPropagation(); copyConnSecret('lanCard', this)" title="Скопировать">
+            <span role="button" tabindex="0" class="conn-sec-btn compact copy-btn" id="btnCopyConnLan" onclick="event.stopPropagation(); copyConnSecret('lanCard', this)" title="Скопировать" data-i18n-title="tip_copy">
               <span class="conn-sec-stack">
                 <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                 <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -655,13 +660,13 @@ const PC_MAC_ADDRESS = '';
             <span class="conn-opt-url" id="connVpnUrlText">••••••••••••</span>
           </div>
           <div class="conn-opt-right">
-            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnVpn" onclick="event.stopPropagation(); toggleConnSecret('vpnCard')" title="Показать / скрыть">
+            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnVpn" onclick="event.stopPropagation(); toggleConnSecret('vpnCard')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
               <span class="conn-sec-stack">
                 <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
                 <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
               </span>
             </span>
-            <span role="button" tabindex="0" class="conn-sec-btn compact copy-btn" id="btnCopyConnVpn" onclick="event.stopPropagation(); copyConnSecret('vpnCard', this)" title="Скопировать">
+            <span role="button" tabindex="0" class="conn-sec-btn compact copy-btn" id="btnCopyConnVpn" onclick="event.stopPropagation(); copyConnSecret('vpnCard', this)" title="Скопировать" data-i18n-title="tip_copy">
               <span class="conn-sec-stack">
                 <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                 <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -676,13 +681,13 @@ const PC_MAC_ADDRESS = '';
             <span class="conn-opt-url" id="connCustomUrlText">••••••••••••</span>
           </div>
           <div class="conn-opt-right">
-            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnCustom" onclick="event.stopPropagation(); toggleConnSecret('customCard')" title="Показать / скрыть">
+            <span role="button" tabindex="0" class="conn-sec-btn compact eye-btn" id="btnEyeConnCustom" onclick="event.stopPropagation(); toggleConnSecret('customCard')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
               <span class="conn-sec-stack">
                 <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
                 <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
               </span>
             </span>
-            <span role="button" tabindex="0" class="conn-sec-btn compact copy-btn" id="btnCopyConnCustom" onclick="event.stopPropagation(); copyConnSecret('customCard', this)" title="Скопировать">
+            <span role="button" tabindex="0" class="conn-sec-btn compact copy-btn" id="btnCopyConnCustom" onclick="event.stopPropagation(); copyConnSecret('customCard', this)" title="Скопировать" data-i18n-title="tip_copy">
               <span class="conn-sec-stack">
                 <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                 <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -696,13 +701,13 @@ const PC_MAC_ADDRESS = '';
       <div class="settings-field-label" data-i18n="server_lan_lbl">IP-адрес домашней сети (Wi-Fi):</div>
       <div class="conn-field-wrap">
         <input type="text" class="conn-field conn-masked" id="connLanHostInput" placeholder="http://192.168.0.100:5000" data-i18n-placeholder="server_lan_placeholder" oninput="onLanHostInputChange(this.value)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
-        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeLanInp" onclick="toggleConnSecret('lanInp')" title="Показать / скрыть">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeLanInp" onclick="toggleConnSecret('lanInp')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
             <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
           </span>
         </button>
-        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyLanInp" onclick="copyConnSecret('lanInp', this)" title="Скопировать">
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyLanInp" onclick="copyConnSecret('lanInp', this)" title="Скопировать" data-i18n-title="tip_copy">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -713,13 +718,13 @@ const PC_MAC_ADDRESS = '';
       <div class="settings-field-label" data-i18n="server_vpn_lbl">IP-адрес Tailscale (VPN):</div>
       <div class="conn-field-wrap">
         <input type="text" class="conn-field conn-masked" id="connVpnHostInput" placeholder="http://100.64.0.1:5000" data-i18n-placeholder="server_vpn_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
-        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeVpnInp" onclick="toggleConnSecret('vpnInp')" title="Показать / скрыть">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeVpnInp" onclick="toggleConnSecret('vpnInp')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
             <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
           </span>
         </button>
-        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyVpnInp" onclick="copyConnSecret('vpnInp', this)" title="Скопировать">
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyVpnInp" onclick="copyConnSecret('vpnInp', this)" title="Скопировать" data-i18n-title="tip_copy">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -730,13 +735,13 @@ const PC_MAC_ADDRESS = '';
       <div class="settings-field-label" data-i18n="server_custom_lbl">Свой IP-адрес или домен сервера:</div>
       <div class="conn-field-wrap">
         <input type="text" class="conn-field conn-masked" id="connCustomHostInput" placeholder="например, http://192.168.0.100:5000" data-i18n-placeholder="server_custom_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
-        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeCustomInp" onclick="toggleConnSecret('customInp')" title="Показать / скрыть">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeCustomInp" onclick="toggleConnSecret('customInp')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
             <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
           </span>
         </button>
-        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyCustomInp" onclick="copyConnSecret('customInp', this)" title="Скопировать">
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyCustomInp" onclick="copyConnSecret('customInp', this)" title="Скопировать" data-i18n-title="tip_copy">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -747,13 +752,13 @@ const PC_MAC_ADDRESS = '';
       <div class="settings-field-label" data-i18n="server_mac_lbl">MAC-адрес ПК для Wake-on-LAN:</div>
       <div class="conn-field-wrap">
         <input type="text" class="conn-field conn-masked" id="connMacInput" placeholder="например, AA-BB-CC-DD-EE-FF" data-i18n-placeholder="server_mac_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
-        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeMacInp" onclick="toggleConnSecret('macInp')" title="Показать / скрыть">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeMacInp" onclick="toggleConnSecret('macInp')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
             <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
           </span>
         </button>
-        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyMacInp" onclick="copyConnSecret('macInp', this)" title="Скопировать">
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyMacInp" onclick="copyConnSecret('macInp', this)" title="Скопировать" data-i18n-title="tip_copy">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -764,13 +769,13 @@ const PC_MAC_ADDRESS = '';
       <div class="settings-field-label" data-i18n="server_token_lbl">Пароль доступа к серверу:</div>
       <div class="conn-field-wrap">
         <input type="text" class="conn-field conn-masked" id="connTokenInput" placeholder="Пароль (по умолчанию вшит)" data-i18n-placeholder="server_token_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
-        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeTokenInp" onclick="toggleConnSecret('tokenInp')" title="Показать / скрыть">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeTokenInp" onclick="toggleConnSecret('tokenInp')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
             <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
           </span>
         </button>
-        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyTokenInp" onclick="copyConnSecret('tokenInp', this)" title="Скопировать">
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyTokenInp" onclick="copyConnSecret('tokenInp', this)" title="Скопировать" data-i18n-title="tip_copy">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -785,13 +790,13 @@ const PC_MAC_ADDRESS = '';
       <div class="settings-field-label" data-i18n="server_relay_lbl">Ретранслятор включения (WOL в Tailscale):</div>
       <div class="conn-field-wrap">
         <input type="text" class="conn-field conn-masked" id="connRelayInput" placeholder="http://100.64.0.2:5050" data-i18n-placeholder="server_relay_placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true">
-        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeRelayInp" onclick="toggleConnSecret('relayInp')" title="Показать / скрыть">
+        <button type="button" class="conn-sec-btn eye-btn" id="btnEyeRelayInp" onclick="toggleConnSecret('relayInp')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
             <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
           </span>
         </button>
-        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyRelayInp" onclick="copyConnSecret('relayInp', this)" title="Скопировать">
+        <button type="button" class="conn-sec-btn copy-btn" id="btnCopyRelayInp" onclick="copyConnSecret('relayInp', this)" title="Скопировать" data-i18n-title="tip_copy">
           <span class="conn-sec-stack">
             <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -871,19 +876,19 @@ const PC_MAC_ADDRESS = '';
     </div>
 
     <div style="background:#fff; border-radius:14px; padding:12px; display:inline-block; margin-bottom:12px; box-shadow:0 4px 20px rgba(0,0,0,0.5);">
-      <img id="qrModalImg" src="" alt="QR-код" style="width:200px; height:200px; display:block; border-radius:6px; background:#fff; object-fit:contain;">
+      <img id="qrModalImg" src="" alt="QR-код" data-i18n-alt="qr_alt" style="width:200px; height:200px; display:block; border-radius:6px; background:#fff; object-fit:contain;">
     </div>
     
     <div id="qrHintText" style="font-size:12px; color:var(--subtext); margin-bottom:6px;">Камера откроет пульт на телефоне (вверху будет кнопка APK):</div>
     <div style="display:flex; align-items:center; gap:6px; margin-bottom:14px;">
       <div id="qrModalUrl" style="flex:1; min-width:0; font-size:11.5px; font-family:var(--font-mono); background:var(--surface2); border:1px solid var(--border); padding:8px 10px; border-radius:10px; word-break:break-all; user-select:all; color:#60a5fa; text-align:left;">••••••••••••</div>
-      <button type="button" class="conn-sec-btn eye-btn" id="btnEyeQrUrl" onclick="toggleConnSecret('qrUrl')" title="Показать / скрыть">
+      <button type="button" class="conn-sec-btn eye-btn" id="btnEyeQrUrl" onclick="toggleConnSecret('qrUrl')" title="Показать / скрыть" data-i18n-title="tip_show_hide">
         <span class="conn-sec-stack">
           <svg class="conn-sec-svg icon-eye-off" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
           <svg class="conn-sec-svg icon-eye-on" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
         </span>
       </button>
-      <button type="button" class="conn-sec-btn copy-btn" id="btnCopyQrUrlIcon" onclick="copyConnSecret('qrUrl', this)" title="Скопировать">
+      <button type="button" class="conn-sec-btn copy-btn" id="btnCopyQrUrlIcon" onclick="copyConnSecret('qrUrl', this)" title="Скопировать" data-i18n-title="tip_copy">
         <span class="conn-sec-stack">
           <svg class="conn-sec-svg icon-copy" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
           <svg class="conn-sec-svg icon-check" viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>

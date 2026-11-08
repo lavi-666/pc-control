@@ -557,7 +557,7 @@ async function submitLoginForm(){
     }
   } catch (e) {
     if (errBox){
-      errBox.innerText = 'Не удалось связаться с сервером. Проверьте сеть или Tailscale.';
+      errBox.innerText = t('msg_server_unreachable_net');
       errBox.style.display = 'block';
     }
   } finally {
@@ -591,7 +591,7 @@ function logoutApp(){
     document.cookie = 'pc_token=; path=/; max-age=0; SameSite=Strict';
   } catch (e) {}
   closeSettingsModal();
-  requestNewToken('Вы вышли из системы');
+  requestNewToken(t('msg_logged_out'));
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 2200){
@@ -914,10 +914,10 @@ async function manualStopServer(){
   try {
     const res = await apiFetch('/api/server/stop', { method: 'POST' });
     const data = await res.json();
-    alert(data.message || 'Сервер остановлен');
+    alert(data.message || t('msg_server_stopped'));
     closeSettingsModal();
   } catch (e) {
-    alert('Сервер завершает работу...');
+    alert(t('msg_server_stopping'));
     closeSettingsModal();
   }
 }
@@ -974,7 +974,7 @@ function setConnectionState(newState, reason = ''){
 
     case ConnState.MANUALLY_DISCONNECTED:
       if (dot) dot.className = 'dot offline';
-      if (text) text.innerText = 'Отключено пользователем';
+      if (text) text.innerText = t('status_disconnected_user');
       if (offBanner) offBanner.classList.add('show');
       break;
   }
@@ -994,7 +994,7 @@ window.addEventListener('online', () => {
   }
 });
 window.addEventListener('offline', () => {
-  setConnectionState(ConnState.DISCONNECTED, 'Потеряно сетевое подключение на устройстве');
+  setConnectionState(ConnState.DISCONNECTED, t('status_network_lost'));
 });
 
 function generateRequestId() {
@@ -1212,6 +1212,9 @@ function attachSafeSlider(zoneEl, inputEl, fillColor, onInput, onCommit){
     clearHold();
     if (state === 'drag'){
       zoneEl.classList.remove('dragging');
+      // Система прервала жест (шторка, жест «назад»): применяем выбранное значение,
+      // иначе ползунок (например, перемотки) навсегда оставался в состоянии перетаскивания
+      if (onCommit) onCommit(parseFloat(inputEl.value || 0));
     }
     state = null;
   });
@@ -1451,7 +1454,7 @@ async function triggerWakeOnLan(){
     }, 2500);
   } else {
     statusEl.innerText = t('msg_wol_timeout');
-    alert('Для включения ПК отправкой Magic Packet по Wi‑Fi используйте приложение PC Control на Android.');
+    alert(t('msg_wol_android_only'));
   }
 }
 
@@ -1512,14 +1515,15 @@ const VOL_MUTE_SVG = '<path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45
 let muted = false;
 let sysVolDragging = false;
 
-// Локальная громкость потока на телефоне (по умолчанию 50%, диапазон 0%–100%, не трогает Windows)
+// Громкость демонстрации (по умолчанию 50%, диапазон 0%–200%: выше 100% — реальное усиление звука с мягким ограничителем, не трогает Windows)
+const STREAM_VOL_MAX = 200;
 let streamVolume = 50;
 let streamMuted = false;
 let streamVolDragging = false;
 let streamVolThrottleTimer = null;
 
 function syncStreamVolumeUI(pct, isMuted){
-  const rounded = Math.max(0, Math.min(100, Math.round(pct)));
+  const rounded = Math.max(0, Math.min(STREAM_VOL_MAX, Math.round(pct)));
   streamVolume = rounded;
   if (isMuted !== undefined){
     streamMuted = !!isMuted;
@@ -1541,18 +1545,22 @@ function syncStreamVolumeUI(pct, isMuted){
 }
 
 async function sendStreamVolumeToServer(pct, isMuted){
+  // Нативный плеер APK усиливает звук сам — передаём значение сразу, без ожидания сервера
+  if (window.AndroidBridge && typeof window.AndroidBridge.setNativeStreamVolume === 'function'){
+    try { window.AndroidBridge.setNativeStreamVolume(Math.max(0, Math.min(STREAM_VOL_MAX, Math.round(pct))), !!isMuted); } catch (e) {}
+  }
   try {
     await apiFetch('/screen/volume', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({percent: Math.max(0, Math.min(100, Math.round(pct))), muted: !!isMuted})
+      body: JSON.stringify({percent: Math.max(0, Math.min(STREAM_VOL_MAX, Math.round(pct))), muted: !!isMuted})
     });
   } catch (e) {}
 }
 
 function onStreamVolumeInput(val){
   streamVolDragging = true;
-  const pct = Math.max(0, Math.min(100, Math.round(val)));
+  const pct = Math.max(0, Math.min(STREAM_VOL_MAX, Math.round(val)));
   if (pct > 0 && streamMuted) streamMuted = false;
   syncStreamVolumeUI(pct, streamMuted);
   if (!streamVolThrottleTimer){
@@ -1569,7 +1577,7 @@ async function commitStreamVolume(val){
     clearTimeout(streamVolThrottleTimer);
     streamVolThrottleTimer = null;
   }
-  const pct = Math.max(0, Math.min(100, Math.round(val)));
+  const pct = Math.max(0, Math.min(STREAM_VOL_MAX, Math.round(val)));
   if (pct > 0 && streamMuted) streamMuted = false;
   syncStreamVolumeUI(pct, streamMuted);
   await sendStreamVolumeToServer(pct, streamMuted);
@@ -1659,7 +1667,7 @@ function renderLangMenu(){
   if (langData.languages.length === 0){
     const empty = document.createElement('div');
     empty.style.cssText = 'padding:10px; color:var(--muted); font-size:13px;';
-    empty.innerText = 'Загрузка...';
+    empty.innerText = t('msg_loading');
     menu.appendChild(empty);
     return;
   }

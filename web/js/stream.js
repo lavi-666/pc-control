@@ -428,6 +428,14 @@ document.addEventListener('webkitfullscreenchange', onScreenFullscreenChange);
   });
 })();
 
+/** Локализованная подпись монитора: 1/2/все — из словаря, остальные — «Экран N». */
+function monitorLabel(m){
+  if (m.id === 1) return t('screen_mon_1');
+  if (m.id === 2) return t('screen_mon_2');
+  if (m.id === 0) return t('screen_mon_all');
+  return t('screen_lbl_monitor') + ' ' + m.id;
+}
+
 function updateScreenUI(){
   const monGroup = document.getElementById('screenMonGroup');
   if (monGroup){
@@ -435,7 +443,7 @@ function updateScreenUI(){
     screenMonitors.forEach(m => {
       const b = document.createElement('button');
       b.className = 'seg-btn' + (screenCfg.monitor === m.id ? ' active' : '');
-      b.innerText = m.label;
+      b.innerText = monitorLabel(m);
       b.onclick = () => setScreenOpt('monitor', m.id);
       monGroup.appendChild(b);
     });
@@ -514,6 +522,36 @@ function toggleScreenPanel(){
   if (screenPanelOpen){
     loadMonitors();
     setTimeout(() => panel.scrollIntoView({block: 'nearest', behavior: 'smooth'}), 50);
+  }
+}
+
+/** «Предварительные параметры»: плавно раскрывает/сворачивает блок экрана, FPS и битрейта.
+ *  Высота анимируется от 0 до фактической (scrollHeight) и обратно — работает во всех WebView. */
+function togglePrelaunch(){
+  const wrap = document.getElementById('screenPrelaunch');
+  const body = document.getElementById('screenPrelaunchBody');
+  const btn = document.getElementById('screenPrelaunchToggle');
+  if (!wrap || !body) return;
+  const opening = !wrap.classList.contains('open');
+  if (btn) btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  if (body._prelaunchEnd) body.removeEventListener('transitionend', body._prelaunchEnd);
+  body._prelaunchEnd = (e) => {
+    if (e.target !== body || e.propertyName !== 'height') return;
+    // После раскрытия — авто-высота (содержимое может меняться), после сворачивания — 0
+    body.style.height = wrap.classList.contains('open') ? 'auto' : '0px';
+  };
+  body.addEventListener('transitionend', body._prelaunchEnd);
+  if (opening){
+    body.style.height = '0px';
+    wrap.classList.add('open');
+    const h = body.scrollHeight;
+    void body.offsetHeight; // зафиксировать начальную высоту перед переходом
+    body.style.height = h + 'px';
+  } else {
+    body.style.height = body.scrollHeight + 'px';
+    void body.offsetHeight;
+    wrap.classList.remove('open');
+    body.style.height = '0px';
   }
 }
 
@@ -625,7 +663,7 @@ async function startPcControlMode(){
       );
     } catch (err) {
       if (pcBtn) pcBtn.classList.remove('active');
-      if (statusEl) statusEl.innerText = 'PC Control Error: ' + err.message;
+      if (statusEl) statusEl.innerText = t('msg_pc_control_error') + err.message;
     }
     return;
   }
@@ -639,7 +677,7 @@ async function startPcControlMode(){
   if (!screenStreamOn) {
     await toggleScreenStream();
   }
-  if (statusEl) statusEl.innerText = 'Режим «Управление ПК» активен';
+  if (statusEl) statusEl.innerText = t('msg_pc_control_active');
 }
 
 window.onNativeScreenParamsUpdated = function(monitor, height, fps, bitrate){
@@ -691,7 +729,7 @@ async function toggleScreenStream(){
       screenStreamOn = false;
       if (btn) btn.className = 'btn-ytm-red';
       if (txt) txt.innerText = t('btn_start_screen');
-      if (statusEl) statusEl.innerText = 'Native Screen Error: ' + err.message;
+      if (statusEl) statusEl.innerText = t('msg_native_screen_error') + err.message;
     }
     return;
   }
@@ -715,8 +753,8 @@ async function toggleScreenStream(){
   stage.classList.remove('hud-hidden');
   stage.classList.add('active');
   btn.className = 'active-pill';
-  txt.innerText = 'Подключение...';
-  statusEl.innerText = 'Запускаю WebRTC демонстрацию экрана со звуком...';
+  txt.innerText = t('msg_connecting');
+  statusEl.innerText = t('msg_screen_webrtc_starting');
 
   await setScreenOpt('monitor', screenCfg.monitor);
   startScreenTelemetry();
@@ -751,7 +789,7 @@ async function toggleScreenStream(){
       const st = pc.connectionState;
       if (st === 'failed' || st === 'closed'){
         stopScreenStream(false);
-        statusEl.innerText = 'Демонстрация экрана завершена';
+        statusEl.innerText = t('msg_screen_stopped');
       }
     };
 
@@ -782,7 +820,7 @@ async function toggleScreenStream(){
     });
     const data = await res.json();
     if (!res.ok){
-      throw new Error(data.message || 'Ошибка WebRTC');
+      throw new Error(data.message || t('msg_webrtc_error'));
     }
 
     await pc.setRemoteDescription(new RTCSessionDescription({sdp: data.sdp, type: data.type}));

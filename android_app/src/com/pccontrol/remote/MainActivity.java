@@ -63,6 +63,16 @@ public class MainActivity extends Activity {
         return true;
     }
 
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 102 && nativeScreenView != null) {
+            boolean granted = grantResults != null && grantResults.length > 0
+                    && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            nativeScreenView.onRecordAudioPermissionResult(granted);
+        }
+    }
+
     public static void notifyBackgroundStateChanged(final boolean active) {
         if (instance != null && instance.webView != null) {
             instance.runOnUiThread(new Runnable() {
@@ -300,6 +310,12 @@ public class MainActivity extends Activity {
                     }
                 }
             });
+        }
+
+        /** Громкость демонстрации (0–200 %) из ползунка приложения — сразу в нативный плеер. */
+        @JavascriptInterface
+        public void setNativeStreamVolume(final int percent, final boolean muted) {
+            if (nativeScreenView != null) nativeScreenView.setStreamVolume(percent, muted);
         }
     }
 

@@ -124,7 +124,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private boolean isTouchpadEnabled = true;      // мышь в режиме «Управление ПК»
     private boolean isViewMouseEnabled = false;    // мышь в режиме «Демонстрация экрана»
     private boolean isKeyboardVisible = false;
-    private boolean isMicStreaming = false;
+    private volatile boolean isMicStreaming = false;
 
     // Сплит-панель настроек с анимацией уменьшения экрана
     private FrameLayout splitSettingsContainer;
@@ -250,7 +250,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private volatile HttpURLConnection activeConn;
     private final AtomicBoolean isStreaming = new AtomicBoolean(false);
     private final Object surfaceLock = new Object();
-    private boolean surfaceReady = false;
+    private volatile boolean surfaceReady = false;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     // Параметры стрима
@@ -520,6 +520,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             if (isKeyboardVisible) showCustomKeyboard(false);
             releaseLocalInputState(true);
             if (inputClient.isRunning()) inputClient.stop();
+            // Микрофон — функция «Управления ПК»: в демонстрации нет кнопки, чтобы его выключить
+            if (isMicStreaming) stopMicStreaming();
             isViewMouseEnabled = false;
             if (topToolbar != null) topToolbar.setVisibility(View.VISIBLE);
             if (titleView != null) titleView.setText("Демонстрация экрана");
@@ -549,12 +551,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         floatingControlsGroup.setClipChildren(false);
         floatingControlsGroup.setClipToPadding(false);
 
-        // Шестерёнка: открывает/закрывает меню; можно перетащить в другое место
-        floatingGearBtn = new PcUi.IconBtn(context, PcIcons.GEAR, 46, 22, true, "Меню управления");
+        // Шестерёнка: открывает полноценные настройки демонстрации и управления ПК
+        // (выдвижное меню быстрых функций — только по стрелке). Можно перетащить в другое место.
+        floatingGearBtn = new PcUi.IconBtn(context, PcIcons.GEAR, 46, 22, true, "Настройки");
         floatingGearBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
-                toggleQuickDrawer();
+                toggleSplitSettings();
             }
         });
         floatingGearBtn.setOnTouchListener(new OnTouchListener() {
@@ -620,9 +623,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         floatingMenuStrip.setClipChildren(false);
         floatingMenuStrip.setVisibility(View.GONE);
 
-        floatingSettingsBtn = menuButton(context, PcIcons.TUNE, "Настройки", new Runnable() {
-            @Override public void run() { toggleSplitSettings(); }
-        });
+        // Настройки открываются шестерёнкой, поэтому отдельной кнопки настроек в меню нет
+        floatingSettingsBtn = null;
         floatingSoundBtn = menuButton(context, PcIcons.HEADPHONES, "Звук ПК", new Runnable() {
             @Override public void run() { setAudioEnabled(!isAudioEnabled); updateQuickActionStates(); }
         });
@@ -638,7 +640,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         floatingMouseBtn = menuButton(context, PcIcons.MOUSE, "Мышь (тачпад)", new Runnable() {
             @Override public void run() { toggleMouseControl(); }
         });
-        View[] items = {floatingSettingsBtn, floatingSoundBtn, floatingMicBtn, floatingFsBtn, floatingKbdBtn, floatingMouseBtn};
+        View[] items = {floatingSoundBtn, floatingMicBtn, floatingFsBtn, floatingKbdBtn, floatingMouseBtn};
         for (View b : items) {
             floatingMenuStrip.addView(b);
             addToolbarSpacer(context, floatingMenuStrip, 8);
@@ -688,7 +690,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (floatingFsBtn != null) floatingFsBtn.setState(toggleState(isFullscreen, false, PcUi.ST_FLOATING));
         if (floatingSettingsBtn != null) floatingSettingsBtn.setState(toggleState(isSplitSettingsOpen, false, PcUi.ST_FLOATING));
         if (floatingArrowBtn != null) floatingArrowBtn.setState(isQuickDrawerOpen ? PcUi.ST_ACTIVE : PcUi.ST_FLOATING);
-        if (floatingGearBtn != null) floatingGearBtn.setState(isQuickDrawerOpen ? PcUi.ST_ACTIVE : PcUi.ST_FLOATING);
+        // Шестерёнка отражает только состояние настроек, стрелка — только состояние меню
+        if (floatingGearBtn != null) floatingGearBtn.setState(isSplitSettingsOpen ? PcUi.ST_ACTIVE : PcUi.ST_FLOATING);
         maybeWarnLegacyServer(st);
     }
 
@@ -808,7 +811,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void openSplitSettingsWithAnimation(int section) {
         isSplitSettingsOpen = true;
         activeSettingsSection = section;
-        if (isQuickDrawerOpen) toggleQuickDrawer();
+        updateQuickActionStates();
+        // Меню быстрых функций не трогаем: оно скрывается вместе с плавающими кнопками
+        // и после закрытия настроек возвращается в том же состоянии.
         renderSplitSettingsContent();
 
         // Скрываем плавающие кнопки и клавиатуру на время настроек (клавиши при этом отпускаются)
@@ -853,6 +858,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void closeSplitSettingsWithAnimation() {
         isSplitSettingsOpen = false;
         leaveTouchpadEditor();
+        // Раньше прозрачность, цвета, чувствительность и т. п. сохранялись только кнопками
+        // «Применить»/«Сохранить» (а в разделе «Прозрачность и цвета» такой кнопки нет) —
+        // после перезапуска изменения терялись. Сохраняем при любом закрытии настроек.
+        savePreferences();
+        updateQuickActionStates();
 
         videoContainer.animate()
                 .scaleX(1.0f)
@@ -1971,113 +1981,233 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         }
     }
 
+    /** Нажали «Микрофон», но разрешения ещё не было: после ответа пользователя включаем сами. */
+    private boolean pendingMicStart = false;
+    /** Предыдущий поток микрофона: новый ждёт его завершения (на многих телефонах одновременно может писать только один AudioRecord). */
+    private MicSenderThread lastMicThread = null;
+
     private void startMicStreaming() {
+        if (!isStreaming.get() || operatingMode != MODE_PC_CONTROL) {
+            Toast.makeText(getContext(), "Микрофон работает только во время «Управления ПК»", Toast.LENGTH_SHORT).show();
+            return;
+        }
         MainActivity act = MainActivity.getInstance();
         if (act != null && !act.checkOrRequestRecordAudioPermission()) {
-            Toast.makeText(getContext(), "Требуется разрешение на запись звука", Toast.LENGTH_SHORT).show();
+            pendingMicStart = true;
+            Toast.makeText(getContext(), "Разрешите доступ к микрофону — передача начнётся автоматически", Toast.LENGTH_LONG).show();
             return;
         }
 
         synchronized (micLock) {
             if (isMicStreaming) return;
             isMicStreaming = true;
-            updateQuickActionStates();
-
-            micSenderThread = new MicSenderThread();
+            micSenderThread = new MicSenderThread(lastMicThread);
+            lastMicThread = micSenderThread;
             micSenderThread.start();
         }
-        Toast.makeText(getContext(), "Подключение микрофона к ПК...", Toast.LENGTH_SHORT).show();
+        updateQuickActionStates();
+        Toast.makeText(getContext(), "Подключение микрофона к ПК…", Toast.LENGTH_SHORT).show();
+    }
+
+    /** Ответ на системный запрос разрешения RECORD_AUDIO (вызывается из MainActivity). */
+    public void onRecordAudioPermissionResult(boolean granted) {
+        if (!pendingMicStart) return;
+        pendingMicStart = false;
+        if (granted) {
+            startMicStreaming();
+        } else {
+            Toast.makeText(getContext(), "Без разрешения на запись звука микрофон телефона не работает", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void stopMicStreaming() {
         synchronized (micLock) {
             isMicStreaming = false;
+            pendingMicStart = false;
             if (micSenderThread != null) {
                 micSenderThread.shutdown();
                 micSenderThread = null;
             }
-            updateQuickActionStates();
         }
+        updateQuickActionStates();
     }
 
+    /** Ошибка из потока микрофона: выключаем кнопку, только если это всё ещё текущий поток. */
+    private void failMic(final MicSenderThread from, final String message) {
+        post(new Runnable() {
+            @Override public void run() {
+                boolean current;
+                synchronized (micLock) {
+                    current = (micSenderThread == from);
+                }
+                if (!current) return; // пользователь уже выключил/перезапустил микрофон
+                stopMicStreaming();
+                if (message != null) Toast.makeText(getContext(), message, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /**
+     * Телефон → ПК: AudioRecord (16 бит, моно) → HTTP chunked POST /api/mic/stream → сервер
+     * проигрывает звук в виртуальный кабель (VB-CABLE «CABLE Input»), и в Windows он доступен
+     * как микрофон «CABLE Output». Без виртуального кабеля сервер отвечает 400.
+     */
     private class MicSenderThread extends Thread {
         private final AtomicBoolean active = new AtomicBoolean(true);
-        private AudioRecord recorder = null;
+        private final MicSenderThread previous;
 
-        public MicSenderThread() {
+        MicSenderThread(MicSenderThread previous) {
             super("pc-control-mic-sender");
+            this.previous = previous;
+        }
+
+        /** Проверка до захвата микрофона: пароль, версия сервера и наличие виртуального кабеля. */
+        private String precheck() {
+            HttpURLConnection c = null;
+            try {
+                c = (HttpURLConnection) new URL(serverUrl + "/api/mic/status").openConnection();
+                c.setConnectTimeout(4000);
+                c.setReadTimeout(6000);
+                if (!authToken.isEmpty()) c.setRequestProperty("X-Auth-Token", authToken);
+                int code = c.getResponseCode();
+                if (code == 401) return "Микрофон: неверный пароль сервера";
+                if (code == 404) return "Сервер PC Control на ПК устарел — обновите его, чтобы передавать микрофон";
+                if (code != 200) return "Микрофон: сервер ответил ошибкой " + code;
+                StringBuilder sb = new StringBuilder();
+                try (InputStream in = c.getInputStream()) {
+                    byte[] b = new byte[2048];
+                    int n;
+                    while ((n = in.read(b)) > 0) sb.append(new String(b, 0, n, StandardCharsets.UTF_8));
+                }
+                org.json.JSONObject st = new org.json.JSONObject(sb.toString());
+                if (!st.optBoolean("virtual_cable_detected", false) && !st.optBoolean("active", false)) {
+                    return "На ПК не найден виртуальный аудиокабель (VB-CABLE). Установите его — "
+                            + "тогда голос с телефона появится в Windows как микрофон «CABLE Output».";
+                }
+                return null;
+            } catch (Exception e) {
+                return "Микрофон: нет связи с ПК";
+            } finally {
+                if (c != null) try { c.disconnect(); } catch (Exception ignored) {}
+            }
+        }
+
+        private AudioRecord openRecorder(int sampleRate) {
+            int channelConfig = AudioFormat.CHANNEL_IN_MONO;
+            int fmt = AudioFormat.ENCODING_PCM_16BIT;
+            int min = AudioRecord.getMinBufferSize(sampleRate, channelConfig, fmt);
+            if (min <= 0) return null;
+            int bufferSize = Math.max(min * 2, sampleRate / 5); // ≥ 100 мс
+            // VOICE_COMMUNICATION включает эхоподавление: звук ПК из динамика телефона
+            // не возвращается обратно на ПК. Если источник недоступен — обычный MIC.
+            int[] sources = {MediaRecorder.AudioSource.VOICE_COMMUNICATION, MediaRecorder.AudioSource.MIC};
+            for (int src : sources) {
+                AudioRecord r = null;
+                try {
+                    r = new AudioRecord(src, sampleRate, channelConfig, fmt, bufferSize);
+                    if (r.getState() == AudioRecord.STATE_INITIALIZED) return r;
+                } catch (Exception ignored) {}
+                if (r != null) try { r.release(); } catch (Exception ignored) {}
+            }
+            return null;
         }
 
         @Override
         public void run() {
-            int sampleRate = 16000;
-            int channelConfig = AudioFormat.CHANNEL_IN_MONO;
-            int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
-            int bufferSize = Math.max(AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat) * 2, 2048);
+            if (previous != null) {
+                previous.shutdown();
+                try { previous.join(1500); } catch (InterruptedException e) { return; }
+            }
+            if (!active.get()) return;
 
+            String problem = precheck();
+            if (problem != null) {
+                if (active.get()) failMic(this, problem);
+                return;
+            }
+            if (!active.get()) return;
+
+            AudioRecord recorder = null;
+            HttpURLConnection conn = null;
+            boolean userStopped = false;
             try {
-                recorder = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, audioFormat, bufferSize);
-                if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
-                    post(new Runnable() {
-                        @Override public void run() { stopMicStreaming(); }
-                    });
+                int sampleRate = 48000;
+                recorder = openRecorder(sampleRate);
+                if (recorder == null) {
+                    sampleRate = 16000;
+                    recorder = openRecorder(sampleRate);
+                }
+                if (recorder == null) {
+                    failMic(this, "Микрофон телефона занят другим приложением или недоступен");
                     return;
                 }
                 recorder.startRecording();
-
-                URL url = new URL(serverUrl + "/api/mic/stream?rate=" + sampleRate + "&channels=1");
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setDoOutput(true);
-                conn.setChunkedStreamingMode(1024);
-                conn.setRequestProperty("Content-Type", "application/octet-stream");
-                if (!authToken.isEmpty()) {
-                    conn.setRequestProperty("X-Auth-Token", authToken);
+                if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+                    failMic(this, "Микрофон телефона занят другим приложением");
+                    return;
                 }
 
+                // 20 мс звука на пакет — небольшая задержка без лишних накладных расходов
+                int chunk = sampleRate / 50 * 2;
+                conn = (HttpURLConnection) new URL(serverUrl + "/api/mic/stream?rate=" + sampleRate + "&channels=1").openConnection();
+                conn.setRequestMethod("POST");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(4000);
+                conn.setReadTimeout(8000);
+                conn.setChunkedStreamingMode(chunk);
+                conn.setRequestProperty("Content-Type", "application/octet-stream");
+                if (!authToken.isEmpty()) conn.setRequestProperty("X-Auth-Token", authToken);
+
+                boolean announced = false;
                 try (OutputStream os = conn.getOutputStream()) {
-                    byte[] buf = new byte[1024];
+                    byte[] buf = new byte[chunk];
                     while (active.get() && isStreaming.get()) {
                         int read = recorder.read(buf, 0, buf.length);
                         if (read > 0) {
                             os.write(buf, 0, read);
                             os.flush();
+                            if (!announced) {
+                                announced = true;
+                                post(new Runnable() {
+                                    @Override public void run() {
+                                        if (isMicStreaming) Toast.makeText(getContext(), "Микрофон телефона передаётся на ПК", Toast.LENGTH_SHORT).show();
+                                    }
+                                });
+                            }
+                        } else if (read < 0) {
+                            throw new java.io.IOException("AudioRecord.read " + read);
                         }
                     }
                 }
+                userStopped = !active.get();
                 int code = conn.getResponseCode();
-                if (code == 200) {
-                    post(new Runnable() {
-                        @Override public void run() {
-                            Toast.makeText(getContext(), "Микрофон успешно передан на ПК", Toast.LENGTH_SHORT).show();
-                        }
-                    });
+                if (code == 400) {
+                    failMic(this, "На ПК не найден виртуальный аудиокабель (VB-CABLE)");
+                } else if (code == 401) {
+                    failMic(this, "Микрофон: неверный пароль сервера");
+                } else if (code != 200 && !userStopped) {
+                    failMic(this, "Микрофон: сервер ответил ошибкой " + code);
                 }
-                conn.disconnect();
             } catch (Exception e) {
-                final String errStr = (e.getMessage() != null && e.getMessage().contains("400"))
-                        ? "На ПК требуется VB-CABLE для микрофона"
-                        : "Сбой передачи микрофона на ПК";
-                post(new Runnable() {
-                    @Override public void run() {
-                        stopMicStreaming();
-                        Toast.makeText(getContext(), errStr, Toast.LENGTH_LONG).show();
-                    }
-                });
+                if (active.get() && isStreaming.get()) {
+                    // Сервер мог ответить ошибкой до конца передачи — пробуем прочитать код
+                    String msg = "Передача микрофона прервалась (нет связи с ПК)";
+                    try {
+                        if (conn != null && conn.getResponseCode() == 400) msg = "На ПК не найден виртуальный аудиокабель (VB-CABLE)";
+                    } catch (Exception ignored) {}
+                    failMic(this, msg);
+                }
             } finally {
                 if (recorder != null) {
-                    try {
-                        recorder.stop();
-                        recorder.release();
-                    } catch (Exception ignored) {}
-                    recorder = null;
+                    try { recorder.stop(); } catch (Exception ignored) {}
+                    try { recorder.release(); } catch (Exception ignored) {}
                 }
+                if (conn != null) try { conn.disconnect(); } catch (Exception ignored) {}
             }
         }
 
-        public void shutdown() {
+        void shutdown() {
             active.set(false);
-            interrupt();
         }
     }
 
@@ -2099,6 +2229,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
             int minBufSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat);
             int bufSize = Math.max(minBufSize * 2, 8192);
+            final int frameBytes = 4; // 16 бит × 2 канала
 
             try {
                 audioTrack = new AudioTrack(
@@ -2109,60 +2240,92 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         bufSize,
                         AudioTrack.MODE_STREAM
                 );
-                float vol = isAudioMuted ? 0f : (audioVolume / 100.0f);
-                audioTrack.setVolume(vol);
+                // Громкость задаёт ползунок «Громкость демонстрации» (0–200 %) — программное
+                // усиление PcAudioGain; сам AudioTrack играет на полной громкости.
+                audioTrack.setVolume(1.0f);
                 audioTrack.play();
 
-                updateAudioStatusOnMain("Подключение...", Color.parseColor("#38BDF8"));
-
-                String aUrl = serverUrl + "/audio?token=" + URLEncoder.encode(authToken, "UTF-8") + "&t=" + System.currentTimeMillis();
-                URL u = new URL(aUrl);
-                HttpURLConnection c = (HttpURLConnection) u.openConnection();
-                c.setConnectTimeout(4000);
-                c.setReadTimeout(10000);
-                c.setRequestProperty("Accept", "audio/wav");
-
-                if (c.getResponseCode() != 200) {
-                    updateAudioStatusOnMain("Ошибка (" + c.getResponseCode() + ")", PcUi.DANGER);
-                    return;
-                }
-
-                updateAudioStatusOnMain("Подключен (48 kHz)", Color.parseColor("#22C55E"));
-
-                try (InputStream raw = c.getInputStream();
-                     BufferedInputStream bis = new BufferedInputStream(raw, 16384)) {
-
-                    // Пропуск 44-байтного заголовка WAV при наличии
-                    bis.mark(44);
-                    byte[] hdr = new byte[44];
-                    int rHdr = bis.read(hdr, 0, 44);
-                    if (rHdr == 44 && hdr[0] == 'R' && hdr[1] == 'I' && hdr[2] == 'F' && hdr[3] == 'F') {
-                        // Заголовок пропущен
+                int attempt = 0;
+                // Переподключение при обрыве сети: раньше звук ПК пропадал до конца сеанса
+                while (running.get() && isStreaming.get()) {
+                    if (attempt > 0) {
+                        updateAudioStatusOnMain("Переподключение...", Color.parseColor("#38BDF8"));
+                        try { Thread.sleep(Math.min(3000, 600L * attempt)); } catch (InterruptedException e) { break; }
+                        if (!running.get() || !isStreaming.get()) break;
                     } else {
-                        bis.reset();
+                        updateAudioStatusOnMain("Подключение...", Color.parseColor("#38BDF8"));
                     }
-
-                    byte[] chunk = new byte[1920];
-                    long totalBytesWritten = 0;
-
-                    while (running.get() && isStreaming.get()) {
-                        int r = bis.read(chunk, 0, chunk.length);
-                        if (r <= 0) break;
-
-                        // Компенсация дрифта (порог 100 мс = 9600 сэмплов)
-                        long playHead = audioTrack.getPlaybackHeadPosition();
-                        long writtenFrames = totalBytesWritten / 4;
-                        long latencyFrames = writtenFrames - playHead;
-                        if (latencyFrames > 48000 * 0.10) {
-                            audioTrack.flush();
-                            totalBytesWritten = playHead * 4;
+                    attempt++;
+                    refreshStreamVolume();
+                    HttpURLConnection c = null;
+                    try {
+                        String aUrl = serverUrl + "/audio?token=" + URLEncoder.encode(authToken, "UTF-8") + "&t=" + System.currentTimeMillis();
+                        c = (HttpURLConnection) new URL(aUrl).openConnection();
+                        c.setConnectTimeout(4000);
+                        c.setReadTimeout(10000);
+                        c.setRequestProperty("Accept", "audio/wav");
+                        int code = c.getResponseCode();
+                        if (code == 401) {
+                            updateAudioStatusOnMain("Ошибка пароля", PcUi.DANGER);
+                            break;
                         }
+                        if (code != 200) {
+                            updateAudioStatusOnMain("Ошибка (" + code + ")", PcUi.DANGER);
+                            continue;
+                        }
+                        updateAudioStatusOnMain("Подключен (48 kHz)", Color.parseColor("#22C55E"));
 
-                        int written = audioTrack.write(chunk, 0, r);
-                        if (written > 0) totalBytesWritten += written;
+                        try (InputStream raw = c.getInputStream();
+                             BufferedInputStream bis = new BufferedInputStream(raw, 16384)) {
+
+                            // Пропуск 44-байтного заголовка WAV при наличии
+                            bis.mark(44);
+                            byte[] hdr = new byte[44];
+                            int rHdr = bis.read(hdr, 0, 44);
+                            if (!(rHdr == 44 && hdr[0] == 'R' && hdr[1] == 'I' && hdr[2] == 'F' && hdr[3] == 'F')) {
+                                bis.reset();
+                            }
+
+                            byte[] chunk = new byte[1920 + frameBytes];
+                            int carry = 0;
+                            long totalBytesWritten = 0;
+                            long startHead = audioTrack.getPlaybackHeadPosition();
+
+                            while (running.get() && isStreaming.get()) {
+                                int r = bis.read(chunk, carry, 1920);
+                                if (r <= 0) break;
+                                attempt = 1; // поток идёт — следующий обрыв переподключаем быстро
+                                int avail = carry + r;
+                                // Сеть отдаёт куски произвольной длины: пишем только целые кадры,
+                                // хвост переносим. Иначе AudioTrack отбрасывал кусок и все
+                                // последующие сэмплы сдвигались — вместо звука шёл шум.
+                                int whole = avail - (avail % frameBytes);
+                                if (whole > 0) {
+                                    gain.apply(chunk, whole, PcAudioGain.percentToGain(streamVolumePercent, streamVolumeMuted));
+
+                                    // Компенсация дрифта (порог 100 мс)
+                                    long playHead = audioTrack.getPlaybackHeadPosition() - startHead;
+                                    long latencyFrames = totalBytesWritten / frameBytes - playHead;
+                                    if (latencyFrames > 48000 * 0.10) {
+                                        audioTrack.flush();
+                                        startHead = audioTrack.getPlaybackHeadPosition();
+                                        totalBytesWritten = 0;
+                                    }
+
+                                    int written = audioTrack.write(chunk, 0, whole);
+                                    if (written > 0) totalBytesWritten += written;
+                                }
+                                carry = avail - whole;
+                                if (carry > 0) System.arraycopy(chunk, whole, chunk, 0, carry);
+                            }
+                        }
+                    } catch (Exception e) {
+                        // обрыв — переподключимся на следующей итерации
+                    } finally {
+                        if (c != null) try { c.disconnect(); } catch (Exception ignored) {}
                     }
                 }
-                c.disconnect();
+                updateAudioStatusOnMain("Отключен", PcUi.SUBTEXT);
             } catch (Exception e) {
                 updateAudioStatusOnMain("Отключен", PcUi.SUBTEXT);
             } finally {
@@ -2176,10 +2339,46 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         }
 
+        private final PcAudioGain gain = new PcAudioGain();
+
         public void shutdown() {
             running.set(false);
             interrupt();
         }
+    }
+
+    // Громкость демонстрации (общая с ползунком приложения, хранится на ПК: /screen/volume)
+    private volatile int streamVolumePercent = 50;
+    private volatile boolean streamVolumeMuted = false;
+
+    /** Читает с ПК громкость демонстрации, выбранную ползунком в приложении (0–200 %). */
+    private void refreshStreamVolume() {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(serverUrl + "/screen/volume").openConnection();
+            c.setConnectTimeout(3000);
+            c.setReadTimeout(3000);
+            if (!authToken.isEmpty()) c.setRequestProperty("X-Auth-Token", authToken);
+            if (c.getResponseCode() != 200) return;
+            StringBuilder sb = new StringBuilder();
+            try (InputStream in = c.getInputStream()) {
+                byte[] b = new byte[512];
+                int n;
+                while ((n = in.read(b)) > 0) sb.append(new String(b, 0, n, StandardCharsets.UTF_8));
+            }
+            org.json.JSONObject o = new org.json.JSONObject(sb.toString());
+            streamVolumePercent = Math.max(0, Math.min(PcAudioGain.MAX_PERCENT, o.optInt("percent", streamVolumePercent)));
+            streamVolumeMuted = o.optBoolean("muted", false);
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) try { c.disconnect(); } catch (Exception ignored) {}
+        }
+    }
+
+    /** Громкость из интерфейса приложения (мост WebView), применяется сразу. */
+    public void setStreamVolume(int percent, boolean muted) {
+        streamVolumePercent = Math.max(0, Math.min(PcAudioGain.MAX_PERCENT, percent));
+        streamVolumeMuted = muted;
     }
 
     private void updateAudioStatusOnMain(final String status, final int color) {
@@ -2711,6 +2910,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     totalBytesReceived += (payloadLen + 17);
                     receivedFpsTracker.recordEvent();
 
+                    if (!surfaceReady || decoder == null) throw new Exception("Surface lost");
                     feedDecoder(frameBuf, payloadLen, flags, ptsUs);
                 }
             } catch (Exception e) {
@@ -2902,6 +3102,15 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     public void surfaceDestroyed(SurfaceHolder holder) {
         synchronized (surfaceLock) {
             this.surfaceReady = false;
+        }
+        // Сворачивание приложения/выключение экрана: декодер должен отпустить поверхность до её
+        // уничтожения. Раньше он оставался привязан к мёртвой Surface, ошибки глушились, и после
+        // возврата в приложение экран оставался чёрным. Обрываем соединение — рабочий поток
+        // дождётся новой поверхности и переподключится с новым декодером.
+        releaseDecoder();
+        HttpURLConnection conn = activeConn;
+        if (conn != null) {
+            try { conn.disconnect(); } catch (Exception ignored) {}
         }
     }
 

@@ -114,6 +114,39 @@ _stream_vol_cfg = {
     "muted": False,
 }
 _stream_vol_lock = threading.Lock()
+# Громкость демонстрации: 0–200 %. Выше 100 % — настоящее усиление сигнала.
+STREAM_VOL_MAX = 200
+# Пиковый лимитер для усиления > 100 %: потолок пиков и время восстановления.
+# Коэффициент мгновенно снижается так, чтобы пик кадра не превысил потолок, и плавно
+# возвращается — нет ни обрезания пиков (хрипа), ни искажения формы волны.
+_LIMIT_CEIL = 0.97
+_LIMIT_RELEASE_S = 0.150
+
+
+def apply_stream_gain(samples, gain_from: float, gain_to: float, env: float = 1.0,
+                      block_seconds: float = 0.02):
+    """Громкость 0–200 % для int16-сэмплов (numpy). Изменение усиления плавно растягивается
+    на кадр (без щелчков), выше 100 % работает пиковый лимитер. Возвращает (int16, env) —
+    env (состояние лимитера) передаётся в следующий вызов."""
+    import numpy as np
+    x = samples.astype(np.float32) * (1.0 / 32768.0)
+    if abs(gain_to - gain_from) > 1e-4 and x.size:
+        y = x * np.linspace(gain_from, gain_to, num=x.size, dtype=np.float32)
+    else:
+        y = x * np.float32(gain_to)
+    if x.size:
+        peak = float(np.max(np.abs(y)))
+        need = min(1.0, _LIMIT_CEIL / peak) if peak > 0 else 1.0
+        released = env + (1.0 - env) * (1.0 - math.exp(-block_seconds / _LIMIT_RELEASE_S))
+        new_env = min(released, need)
+        if new_env < env:
+            y *= np.float32(new_env)  # атака: сразу на весь кадр — пик не выйдет за потолок
+        elif new_env != 1.0 or env != 1.0:
+            # восстановление: плавно, каждое значение ≤ need, поэтому перегруза нет
+            y *= np.linspace(env, new_env, num=y.size, dtype=np.float32)
+        env = new_env
+    out = np.clip(np.round(y * 32767.0), -32768, 32767).astype(np.int16)
+    return out, env
 
 
 def _restore_stream_settings():
@@ -136,7 +169,7 @@ def _restore_stream_settings():
             elif key == "codec":
                 _screen_cfg["codec"] = "auto"
     if isinstance(volume, dict):
-        if type(volume.get("percent")) is int and 0 <= volume["percent"] <= 100:
+        if type(volume.get("percent")) is int and 0 <= volume["percent"] <= STREAM_VOL_MAX:
             _stream_vol_cfg["percent"] = volume["percent"]
         if isinstance(volume.get("muted"), bool):
             _stream_vol_cfg["muted"] = volume["muted"]
@@ -366,13 +399,18 @@ def _create_audio_track(source: str = "loopback"):
                 with _stream_vol_lock:
                     sv_pct = int(_stream_vol_cfg.get("percent", 50))
                     sv_muted = bool(_stream_vol_cfg.get("muted", False))
-                if sv_muted or sv_pct <= 0:
+                target = 0.0 if sv_muted else max(0.0, min(STREAM_VOL_MAX / 100.0, sv_pct / 100.0))
+                prev = getattr(self, "_gain", target)
+                self._gain = target
+                if target == 0.0 and prev == 0.0:
                     data = b"\x00" * self.BYTES_PER_FRAME
-                elif sv_pct != 100:
-                    gain = max(0.0, min(1.0, sv_pct / 100.0))
+                elif not (prev == 1.0 and target == 1.0 and getattr(self, "_limit_env", 1.0) == 1.0):
+                    # Усиление до 200 % с плавным переходом и пиковым лимитером
                     samples = np.frombuffer(data, dtype=np.int16)
-                    scaled = (samples.astype(np.float32) * gain).astype(np.int16)
-                    data = scaled.tobytes()
+                    out, self._limit_env = apply_stream_gain(
+                        samples, prev, target, getattr(self, "_limit_env", 1.0),
+                        block_seconds=self.SAMPLES / float(self.SAMPLE_RATE))
+                    data = out.tobytes()
 
             frame = av.AudioFrame(format="s16", layout="stereo", samples=self.SAMPLES)
             frame.planes[0].update(data)
@@ -1504,7 +1542,7 @@ def screen_volume():
                 try:
                     v = float(data["percent"])
                     if not (math.isnan(v) or math.isinf(v)):
-                        _stream_vol_cfg["percent"] = max(0, min(100, int(round(v))))
+                        _stream_vol_cfg["percent"] = max(0, min(STREAM_VOL_MAX, int(round(v))))
                 except (ValueError, TypeError, OverflowError):
                     pass
             if "muted" in data:
