@@ -91,7 +91,7 @@ PC Control is available in **three formats** — in every case everything after 
    - **Windows Firewall** — explains why the rule is needed and creates it after you agree (Windows asks for administrator confirmation); it only counts as done when the rule really exists;
    - **Network access** — checks that the server answers on its network address.
 
-   If a step fails the wizard stops, shows the reason and a **Retry** button. Reopen it any time with **Setup wizard** above the checklist.
+   If a step fails the wizard stops, shows the reason and a **Retry** button. Reopen it any time with the **Setup wizard** button in the **Setup & Readiness** section.
 2. **Connect Phone**:
    - **Option A (Web App)**: Scan the QR code with your phone camera to instantly open the remote in Safari, Chrome, or Firefox.
    - **Option B (Android APK)**: Install [`PC_Control.apk`](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control.apk) on Android (8.0+) and scan the QR code to pair.

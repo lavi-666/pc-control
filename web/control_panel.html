@@ -1790,7 +1790,7 @@
   <div>
     <div class="section-title">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
-      <span id="txtChecklistTitle" data-i18n="checklist_title">Pre-launch Checklist</span>
+      <span id="txtChecklistTitle" data-i18n="checklist_title">Setup &amp; Readiness</span>
       <button class="btn btn-primary wiz-open-btn" id="btnOpenWizard" onclick="openSetupWizard(false)" data-i18n="wiz_open_btn">Setup wizard</button>
     </div>
     <!-- Баннер доступного обновления (немодальный, отключаемый) -->
@@ -2369,7 +2369,7 @@
       remote_view_title: "Remote Control",
       btn_reload_remote: "Reload",
       btn_open_app_window: "Separate Window",
-      checklist_title: "Pre-launch Checklist",
+      checklist_title: "Setup & Readiness",
       step1_title: "Python Libraries",
       step1_req: "REQUIRED",
       step1_desc: "Required step. Installs essential packages (Flask, Pillow, Winsdk, etc.) required for the server to run.",
@@ -2543,7 +2543,7 @@
       remote_view_title: "Пульт управления",
       btn_reload_remote: "Обновить",
       btn_open_app_window: "В отдельном окне",
-      checklist_title: "Чек-лист подготовки перед запуском",
+      checklist_title: "Подготовка к работе",
       step1_title: "Библиотеки Python",
       step1_req: "ОБЯЗАТЕЛЬНО",
       step1_desc: "Обязательный шаг. Установка ключевых пакетов (Flask, Pillow, Winsdk и др.), без которых сервер не сможет запуститься.",
@@ -2717,7 +2717,7 @@
       remote_view_title: "Пульт керування",
       btn_reload_remote: "Оновити",
       btn_open_app_window: "В окремому вікні",
-      checklist_title: "Чек-лист підготовки перед запуском",
+      checklist_title: "Підготовка до роботи",
       step1_title: "Бібліотеки Python",
       step1_req: "ОБОВ'ЯЗКОВО",
       step1_desc: "Обов'язковий крок. Встановлення ключових пакетів (Flask, Pillow, Winsdk та ін.), без яких сервер не зможе запуститися.",
@@ -2893,7 +2893,7 @@
     wiz_fw_ok: 'Inbound rule for port {port} is present.',
     wiz_fw_ask: 'For the phone to reach this PC, Windows Firewall must allow incoming connections to port {port} (private networks only). Windows will ask for administrator confirmation.',
     wiz_fw_run: 'Creating the firewall rule — confirm the Windows prompt if it appears…',
-    wiz_fw_skipped: 'Skipped. The phone may be unable to connect over Wi-Fi until the rule is added (button «Apply» in the checklist).',
+    wiz_fw_skipped: 'Skipped. The phone may be unable to connect over Wi-Fi until the rule is added (the «Apply rule» button in «Setup & Readiness»).',
     wiz_fw_fail: 'Firewall rule was not created: {m}',
     wiz_lan_ok: 'The server accepts connections at its network address {url}. The final check is connecting the phone.',
     wiz_lan_warn: 'The server did not answer at {url}. A VPN, a third-party firewall/antivirus or a guest Wi-Fi with client isolation can block the phone. The phone may still work — check it with the QR code.',
@@ -2918,7 +2918,7 @@
     wiz_fw_ok: 'Входящее правило для порта {port} есть.',
     wiz_fw_ask: 'Чтобы телефон мог подключиться к ПК, брандмауэр Windows должен разрешить входящие подключения к порту {port} (только в частных сетях). Windows запросит подтверждение администратора.',
     wiz_fw_run: 'Создаётся правило брандмауэра — подтвердите запрос Windows, если он появится…',
-    wiz_fw_skipped: 'Пропущено. Пока правило не добавлено (кнопка «Применить» в чек-листе), телефон может не подключиться по Wi-Fi.',
+    wiz_fw_skipped: 'Пропущено. Пока правило не добавлено (кнопка «Применить правило» в разделе «Подготовка к работе»), телефон может не подключиться по Wi-Fi.',
     wiz_fw_fail: 'Правило брандмауэра не создано: {m}',
     wiz_lan_ok: 'Сервер принимает подключения по сетевому адресу {url}. Окончательная проверка — подключение телефона.',
     wiz_lan_warn: 'Сервер не ответил по адресу {url}. Подключению телефона может мешать VPN, сторонний брандмауэр/антивирус или гостевой Wi-Fi с изоляцией клиентов. Телефон всё равно может работать — проверьте по QR-коду.',
@@ -2943,7 +2943,7 @@
     wiz_fw_ok: 'Вхідне правило для порту {port} є.',
     wiz_fw_ask: 'Щоб телефон міг підключитися до ПК, брандмауер Windows має дозволити вхідні підключення до порту {port} (лише в приватних мережах). Windows попросить підтвердження адміністратора.',
     wiz_fw_run: 'Створюється правило брандмауера — підтвердьте запит Windows, якщо він з’явиться…',
-    wiz_fw_skipped: 'Пропущено. Поки правило не додано (кнопка «Застосувати» в чек-листі), телефон може не підключитися через Wi-Fi.',
+    wiz_fw_skipped: 'Пропущено. Поки правило не додано (кнопка «Застосувати правило» в розділі «Підготовка до роботи»), телефон може не підключитися через Wi-Fi.',
     wiz_fw_fail: 'Правило брандмауера не створено: {m}',
     wiz_lan_ok: 'Сервер приймає підключення за мережевою адресою {url}. Остаточна перевірка — підключення телефона.',
     wiz_lan_warn: 'Сервер не відповів за адресою {url}. Підключенню телефона може заважати VPN, сторонній брандмауер/антивірус або гостьовий Wi-Fi з ізоляцією клієнтів. Телефон усе одно може працювати — перевірте за QR-кодом.',
