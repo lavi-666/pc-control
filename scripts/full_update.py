@@ -203,6 +203,15 @@ def _check(base):
         changed, removed, old = compare(base, remote['manifest'])
         local = local_build(base)
         remote_date = _parse_iso(remote['date'])
+        if local and local['commit'] == remote['manifest'].get('revision'):
+            # Тот же коммит, что и в релизе: код одинаковый. Различаются только файлы, которых нет
+            # в релизе (папка разработки, личный APK) — «обновление» удалило бы их.
+            return {'ok': True, 'has_update': False, 'same_build': True, 'changed_count': 0, 'removed_count': 0,
+                    'changed_files': [], 'removed_files': [], 'current_version': local['commit'][:12],
+                    'current_commit': local['commit'][:12], 'latest_commit': local['commit'][:12],
+                    'commit_message': remote['title'], 'commit_date': remote['date'],
+                    'release_url': REPOSITORY + '/releases/latest',
+                    'message': 'Установлена последняя версия. Обновление не требуется.'}
         if (local and remote_date and _parse_iso(local['date']) >= remote_date
                 and local['commit'] != remote['manifest'].get('revision')):
             # Установленный код НОВЕЕ опубликованного релиза (например, ZIP ветки main после
@@ -298,6 +307,8 @@ def prepare(base, port, restart_server=False, log=lambda message: None, open_bro
             return {'ok': True, 'restarting': False, 'message': 'Все файлы уже актуальны.'}
         local = local_build(base)
         remote_date = _parse_iso(remote['date'])
+        if local and local['commit'] == remote['manifest'].get('revision'):
+            return {'ok': True, 'restarting': False, 'message': 'Установлена последняя версия. Обновление не требуется.'}
         if (local and remote_date and _parse_iso(local['date']) >= remote_date
                 and local['commit'] != remote['manifest'].get('revision')):
             return {'ok': False, 'error_code': 'ERR_LOCAL_NEWER',
