@@ -165,7 +165,7 @@ def main():
     print(f"  WOL Relay:            http://{cfg['wol_relay_ip']}:{cfg['relay_port']}")
     print(f"  Wake-on-LAN MAC:      {cfg['mac_address']}")
     print("=" * 70)
-    print("Now you can launch scripts\\3_start_server.bat - the server will run")
+    print("Now start the server from Launcher.exe (button Start server) - the server will run")
     print("with your personalized parameters!")
     print("=" * 70)
 

@@ -1,8 +1,0 @@
-54e77549a4b98bc5098141c61832629192497537
-4ae5bdbe8e0002c0c572db309779bc0ae6b4b96f
-8a2d5513a4a6642d3813b8ad53bf15a423e2269c
-  backup/before-rollback-fix-2026-11-08 54e7754 docs(report): document full rollback of native android overhaul and archive backup
-  backup/native-android-overhaul        4ae5bdb fix(android): implement native android dashboard, ApiClient, Wi-Fi discovery, fix web PC control overlay and sign release APK
-  feature/secure-updater                7738d9a build(launcher): compile transition binary with release updater
-* main                                  54e7754 docs(report): document full rollback of native android overhaul and archive backup
-  old-main                              56b5c7a fix(mobile): resolve phone remote links, automatic token ingestion, and QR network selection

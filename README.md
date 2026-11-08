@@ -9,7 +9,6 @@ Works directly in your Wi-Fi network (or over Tailscale) — no accounts, no clo
 
 [![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078D6?style=flat-square&logo=windows&logoColor=white)](#installation)
 [![Android 7.0+](https://img.shields.io/badge/Android-7.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](#connecting-the-phone)
-[![CI](https://github.com/lavi-666/pc-control/actions/workflows/ci.yml/badge.svg)](https://github.com/lavi-666/pc-control/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
 [Русский](README.ru.md) · **English**
@@ -61,7 +60,6 @@ You don't need to install Python or libraries — the app uses its own isolated 
 
 - The folder path may contain spaces and non-Latin characters. No administrator rights are needed to install.
 - Removal: the **Uninstall Program** button in the panel (reverts firewall rules and other system changes), or simply delete the folder.
-- The repository root also contains the `PC-Control-Setup.exe` installer (shortcuts, entry in Installed apps). It is built separately (`scripts/build_installer.py`) and may lag behind the current code.
 
 ---
 
@@ -112,6 +110,7 @@ When the program files are updated, the panel restarts itself with the new code.
 - Passwords and keys are not written to logs.
 - The firewall rule only allows connections from local networks and Tailscale.
 - No accounts, analytics or telemetry: data goes directly between the phone and the PC.
+- An APK rebuilt with the Rebuild APK button or after a password change contains your password — don't publish it. Don't publish `config.json` either.
 
 ---
 
@@ -160,29 +159,7 @@ web/          — web remote and control panel
 Settings live in `config.json` (created automatically; don't publish it — it contains the access password).
 </details>
 
-<details>
-<summary><b>Running tests</b></summary>
-
-```powershell
-python -m pip install -r requirements.txt pytest
-python -m pytest tests -q
-```
-
-The tests start a separate isolated server and don't touch your `config.json`.
-</details>
-
-<details>
-<summary><b>Building</b></summary>
-
-```powershell
-scripts\build_launcher.bat           # Launcher.exe
-python scripts\build_apk.py          # PC_Control.apk (requires Android SDK and JDK 17)
-python scripts\build_installer.py    # PC-Control-Setup.exe
-python scripts\package_windows.py    # PC_Control_Windows.zip
-```
-
-Note: `build_apk.py` embeds the password from your `config.json` into the APK. Such an APK is personal — don't publish or commit it.
-</details>
+The repository contains only what the program needs to run. Tests, release build tools and reports are kept separately and are not published here.
 
 ---
 

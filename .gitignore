@@ -65,3 +65,33 @@ comparison-reports/
 
 comparison-benchmarks/
 PC-Control.apk
+
+# --- Не публикуется: нужно только для разработки (файлы остаются локально) ---
+/Отчёты/
+/Backup_Before_Rollback_Native_Android/
+/docs/
+/tests/
+/ci/
+/.github/
+/streamer_rs/
+/README.old.md
+/README.ru.old.md
+/benchmark_*.json
+/PC_Control.apk.idsig
+/PC-Control-Setup.exe
+/scripts/Installer.cs
+/scripts/installer.iss
+/scripts/build_installer.py
+/scripts/build_runtime.py
+/scripts/package_windows.py
+/scripts/verify_zip.py
+/scripts/verify_release_consistency.py
+/scripts/test_streaming_pipeline.py
+/scripts/benchmark_*.py
+/scripts/build_launcher.bat
+/scripts/Launcher.cs
+/scripts/Uninstall.cs
+/scripts/updater.bat
+/scripts/2_setup_autologon.cmd
+/scripts/1_install_dependencies.bat
+/scripts/3_start_server.bat

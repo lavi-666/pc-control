@@ -9,7 +9,6 @@
 
 [![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078D6?style=flat-square&logo=windows&logoColor=white)](#установка)
 [![Android 7.0+](https://img.shields.io/badge/Android-7.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](#подключение-телефона)
-[![CI](https://github.com/lavi-666/pc-control/actions/workflows/ci.yml/badge.svg)](https://github.com/lavi-666/pc-control/actions/workflows/ci.yml)
 [![Лицензия MIT](https://img.shields.io/badge/Лицензия-MIT-blue?style=flat-square)](LICENSE)
 
 **Русский** · [English](README.md)
@@ -61,7 +60,6 @@ Python и библиотеки ставить вручную не нужно —
 
 - Путь к папке может содержать пробелы и кириллицу. Права администратора для установки не нужны.
 - Удаление: кнопка **«Удалить программу»** в панели (откатывает правила брандмауэра и другие изменения системы) или просто удалить папку.
-- В корне репозитория также есть установщик `PC-Control-Setup.exe` (ярлыки, запись в «Установленных приложениях»). Он собирается отдельно (`scripts/build_installer.py`) и может отставать от текущего кода.
 
 ---
 
@@ -112,6 +110,7 @@ Python и библиотеки ставить вручную не нужно —
 - Пароли и ключи не записываются в журналы.
 - Правило брандмауэра разрешает подключения только из локальных сетей и Tailscale.
 - Нет аккаунтов, аналитики и телеметрии: данные идут напрямую между телефоном и компьютером.
+- APK, пересобранный кнопкой «Пересобрать APK» или после смены пароля, содержит ваш пароль — не публикуйте его. Файл `config.json` тоже не выкладывайте.
 
 ---
 
@@ -160,29 +159,7 @@ web/          — веб-пульт и панель управления
 Настройки хранятся в `config.json` (создаётся автоматически; не публикуйте его — в нём пароль доступа).
 </details>
 
-<details>
-<summary><b>Запуск тестов</b></summary>
-
-```powershell
-python -m pip install -r requirements.txt pytest
-python -m pytest tests -q
-```
-
-Тесты запускают отдельный изолированный сервер и не трогают ваш `config.json`.
-</details>
-
-<details>
-<summary><b>Сборка</b></summary>
-
-```powershell
-scripts\build_launcher.bat           # Launcher.exe
-python scripts\build_apk.py          # PC_Control.apk (нужны Android SDK и JDK 17)
-python scripts\build_installer.py    # PC-Control-Setup.exe
-python scripts\package_windows.py    # PC_Control_Windows.zip
-```
-
-Важно: `build_apk.py` встраивает в APK пароль из вашего `config.json`. Такой APK — личный, не публикуйте его и не коммитьте.
-</details>
+В репозитории хранится только то, что нужно для работы программы. Тесты, инструменты сборки релизов и отчёты ведутся отдельно и сюда не публикуются.
 
 ---
 
