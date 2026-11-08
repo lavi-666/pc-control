@@ -21,7 +21,7 @@ PENDING = '.pccontrol-update.pending'
 REPOSITORY = 'https://github.com/lavi-666/pc-control'
 API = 'https://api.github.com/repos/lavi-666/pc-control/releases/latest'
 DIRECTORIES = {'core', 'modules', 'scripts', 'web', 'tools', 'runtime', 'docs'}
-ROOT_FILES = {'Launcher.exe', 'Uninstall.exe', 'PC_Control.apk', 'pc_control.ico', 'server.py', 'open_app.pyw',
+ROOT_FILES = {'Launcher.exe', 'Uninstall.exe', 'unstaller.exe', 'version.json', 'PC_Control.apk', 'pc_control.ico', 'server.py', 'open_app.pyw',
               'requirements.txt', 'requirements-runtime.lock', 'runtime-source.json', 'config.example.json',
               'README.md', 'README.ru.md', 'LICENSE', 'launcher.bat', 'start_server.bat',
               'stop_server.bat', 'change_password.bat', 'uninstall.bat', 'START_HERE.txt', 'build-info.json'}
