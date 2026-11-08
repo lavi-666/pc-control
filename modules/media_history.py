@@ -6,9 +6,9 @@ import json
 import time
 from pathlib import Path
 
-from core.config import BASE_DIR
+from core.config import BASE_DIR, DATA_DIR
 
-LISTENING_HISTORY_FILE = BASE_DIR / "listening_history.json"
+LISTENING_HISTORY_FILE = DATA_DIR / "listening_history.json"
 LISTENING_HISTORY_MAX = 100
 
 _listening_history: list[dict] = []

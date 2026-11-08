@@ -14,12 +14,18 @@ from pathlib import Path
 
 # Базовые директории проекта
 BASE_DIR = Path(__file__).resolve().parent.parent
-LOGS_DIR = BASE_DIR / "logs"
+# Папка пользовательских данных (config.json, журналы, сценарии, история). По умолчанию — папка
+# проекта. Тесты задают PC_CONTROL_DATA_DIR: раньше они писали в НАСТОЯЩИЕ настройки
+# пользователя (например, выключали звук трансляции и меняли её параметры).
+DATA_DIR = Path(os.environ["PC_CONTROL_DATA_DIR"]).resolve() if os.environ.get("PC_CONTROL_DATA_DIR") else BASE_DIR
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = DATA_DIR / "config.json"
+LOGS_DIR = DATA_DIR / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
 ERROR_LOG_FILE = LOGS_DIR / "error_log.txt"
 
-LOG_FILE = BASE_DIR / "actions_log.jsonl"
-SCREENSHOTS_DIR = BASE_DIR / "screenshots"
+LOG_FILE = DATA_DIR / "actions_log.jsonl"
+SCREENSHOTS_DIR = DATA_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
 
 WEB_DIR = BASE_DIR / "web"
@@ -104,7 +110,7 @@ _cached_config_mtime: int = -1
 
 def load_app_config() -> dict:
     global _cached_config, _cached_config_mtime
-    cfg_file = BASE_DIR / "config.json"
+    cfg_file = CONFIG_FILE
     with _config_lock:
         if cfg_file.exists():
             try:
@@ -144,7 +150,7 @@ APP_CONFIG = load_app_config()
 
 def save_app_config(cfg: dict) -> bool:
     global APP_CONFIG, AUTH_TOKEN, _cached_config, _cached_config_mtime
-    cfg_file = BASE_DIR / "config.json"
+    cfg_file = CONFIG_FILE
     with _config_lock:
         tmp_file = None
         try:

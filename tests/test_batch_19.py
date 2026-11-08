@@ -8,7 +8,7 @@ import time
 import urllib.request
 
 HOST = "127.0.0.1"
-PORT = 5000
+PORT = int(__import__("os").environ.get("PC_CONTROL_TEST_PORT", "5000"))
 from pathlib import Path as _P
 import sys as _S
 _ROOT_DIR = str(_P(__file__).resolve().parent.parent)

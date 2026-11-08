@@ -22,13 +22,13 @@ from flask import Blueprint, jsonify, request
 import psutil
 
 from core.auth import check_token
-from core.config import BASE_DIR, CHROME, NO_WINDOW, is_safe_test_mode
+from core.config import BASE_DIR, CHROME, DATA_DIR, NO_WINDOW, is_safe_test_mode
 from core.logger import log_action, log_error
 from modules.system import HIDDEN_PROCESSES
 
 presets_bp = Blueprint("presets", __name__)
 
-PRESETS_FILE = BASE_DIR / "launch_presets.json"
+PRESETS_FILE = DATA_DIR / "launch_presets.json"
 
 # Кэш проиндексированных программ на ПК
 _PROGRAMS_CACHE: List[Dict[str, Any]] = []

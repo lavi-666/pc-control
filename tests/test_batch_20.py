@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.request
 
-BASE_URL = "http://127.0.0.1:5000"
+BASE_URL = __import__("os").environ.get("PC_CONTROL_TEST_BASE_URL", "http://127.0.0.1:5000")  # изолированный сервер (tests/conftest.py)
 from pathlib import Path as _P
 import sys as _S
 _ROOT_DIR = str(_P(__file__).resolve().parent.parent)
@@ -95,7 +95,7 @@ def run_batch_20():
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        s.connect(("127.0.0.1", 5000))
+        s.connect(("127.0.0.1", int(__import__("os").environ.get("PC_CONTROL_TEST_PORT", "5000"))))
         s.sendall(f"GET /processes HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Auth-Token: {TOKEN}\r\nX-Safe-Mode: 1\r\n\r\n".encode())
         _ = s.recv(64)  # read start of stream then disconnect abruptly
     finally:

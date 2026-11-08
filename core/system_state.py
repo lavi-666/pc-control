@@ -34,7 +34,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-LOGS_DIR = BASE_DIR / "logs"
+# PC_CONTROL_DATA_DIR — изолированная папка данных для тестов (см. core/config.py)
+LOGS_DIR = (Path(os.environ["PC_CONTROL_DATA_DIR"]).resolve() if os.environ.get("PC_CONTROL_DATA_DIR") else BASE_DIR) / "logs"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 _journal_lock = threading.RLock()

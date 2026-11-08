@@ -174,6 +174,44 @@ class AuditRegressionTests(unittest.TestCase):
             mu._read_ytm_live_dom(force=True)
             self.assertEqual(len(calls), n0 + 1, "force bypasses the back-off")
 
+    def test_audio_streams_silence_when_pc_is_quiet(self):
+        """WASAPI loopback не отдаёт данных, пока на ПК тишина: блокирующее чтение висело вечно,
+        соединение телефона обрывалось по таймауту, зависшие запросы копились. Теперь в паузах
+        сервер сам отдаёт тишину в реальном времени."""
+        import time as _t
+        import modules.streaming as st
+
+        class SilentStream:
+            def start_stream(self): pass
+            def stop_stream(self): pass
+            def close(self): pass
+
+        class SilentPA:
+            def get_default_wasapi_loopback(self):
+                return {"index": 0, "defaultSampleRate": 48000, "maxInputChannels": 2}
+            def open(self, **kw):
+                self.kw = kw
+                return SilentStream()  # callback никогда не вызывается — как WASAPI в тишине
+
+        fake = SilentPA()
+        with mock.patch.object(st, "_shared_pyaudio", return_value=fake), \
+                self.server.app.test_request_context(f"/audio?token={self.token}"):
+            resp = st.audio()
+            it = iter(resp.response)
+            t0 = _t.monotonic()
+            header = next(it)
+            self.assertEqual(header[:4], b"RIFF")
+            got = 0
+            while _t.monotonic() - t0 < 0.6:
+                chunk = next(it)
+                self.assertEqual(chunk.strip(b"\x00"), b"", "silence must be zeros")
+                got += len(chunk)
+            resp.response.close()
+        self.assertIn("stream_callback", fake.kw, "capture must be callback-based (no blocking read)")
+        rate = got / (_t.monotonic() - t0)
+        self.assertGreater(rate, 48000 * 4 * 0.6, f"silence must flow ~real-time, got {rate:.0f} B/s")
+        self.assertEqual(st._PA_ACTIVE_STREAMS, 0)
+
     def test_audio_reuses_one_portaudio_instance(self):
         import modules.streaming as st
         created = []

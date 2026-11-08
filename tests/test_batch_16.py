@@ -5,7 +5,7 @@ Batch 16: Матрица CORS (Cross-Origin Resource Sharing) для всех э
 import urllib.error
 import urllib.request
 
-BASE_URL = "http://127.0.0.1:5000"
+BASE_URL = __import__("os").environ.get("PC_CONTROL_TEST_BASE_URL", "http://127.0.0.1:5000")  # изолированный сервер (tests/conftest.py)
 
 def check_cors(path):
     req = urllib.request.Request(BASE_URL + path, method="OPTIONS")

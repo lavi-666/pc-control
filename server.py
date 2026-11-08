@@ -30,6 +30,7 @@ import re
 
 from core.config import (
     BASE_DIR,
+    LOGS_DIR,
     WEB_INDEX_FILE,
     is_safe_test_mode,
     set_safe_test_mode,
@@ -858,7 +859,7 @@ def _ensure_watchdog():
     if os.environ.get("PC_CONTROL_TEST_MODE") == "1":
         return
     try:
-        flag_path = BASE_DIR / "logs" / "manual_stop.flag"
+        flag_path = LOGS_DIR / "manual_stop.flag"
         if flag_path.exists():
             try:
                 flag_path.unlink()
@@ -883,7 +884,7 @@ def api_server_stop():
     не перезапускал сервер до следующего явного ручного запуска."""
     if not check_token():
         return jsonify({"message": get_msg("invalid_token")}), 401
-    flag_path = BASE_DIR / "logs" / "manual_stop.flag"
+    flag_path = LOGS_DIR / "manual_stop.flag"
     flag_path.parent.mkdir(parents=True, exist_ok=True)
     flag_path.write_text("manual_stop", encoding="utf-8")
     log_action("server_stop_manual")

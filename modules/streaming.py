@@ -1025,6 +1025,21 @@ def audio():
             )
 
         def generate_wasapi_wav():
+            # WASAPI loopback НЕ отдаёт данных, пока на ПК ничего не звучит: блокирующий
+            # stream.read() висел бесконечно, сервер не замечал отключения телефона, зависшие
+            # запросы копились и блокировали открытие новых потоков — звук ПК не возвращался.
+            # Поэтому захват через callback (без блокирующего чтения), а в паузах сервер сам
+            # отдаёт тишину в реальном времени: соединение живо, обрыв клиента виден сразу.
+            import queue as _queue
+            q = _queue.Queue(maxsize=100)
+
+            def _on_audio(in_data, frame_count, time_info, status):
+                try:
+                    q.put_nowait(in_data)
+                except _queue.Full:
+                    pass  # клиент не успевает читать — старые данные не копим
+                return (None, pyaudio.paContinue)
+
             stream = None
             _audio_stream_enter()
             try:
@@ -1032,16 +1047,28 @@ def audio():
                     format=pyaudio.paInt16,
                     channels=channels,
                     rate=rate,
-                    frames_per_buffer=2048,
+                    frames_per_buffer=960,
                     input=True,
                     input_device_index=dev_idx,
+                    stream_callback=_on_audio,
                 )
+                stream.start_stream()
                 yield _build_wav_header(rate, channels)
+                bytes_per_sec = rate * channels * 2
+                frame_align = channels * 2
+                last = time.monotonic()
                 while True:
-                    pcm = stream.read(2048, exception_on_overflow=False)
-                    if not pcm:
-                        break
-                    yield pcm
+                    try:
+                        pcm = q.get(timeout=0.1)
+                        last = time.monotonic()
+                    except _queue.Empty:
+                        now = time.monotonic()
+                        n = int((now - last) * bytes_per_sec)
+                        n -= n % frame_align
+                        last = now
+                        pcm = b"\x00" * n  # тишина за прошедшее время
+                    if pcm:
+                        yield pcm
             except GeneratorExit:
                 pass
             except Exception as e:

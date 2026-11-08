@@ -11,7 +11,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from server import log_action, get_history
 
-BASE_URL = "http://127.0.0.1:5000"
+BASE_URL = __import__("os").environ.get("PC_CONTROL_TEST_BASE_URL", "http://127.0.0.1:5000")  # изолированный сервер (tests/conftest.py)
 from pathlib import Path as _P
 import sys as _S
 _ROOT_DIR = str(_P(__file__).resolve().parent.parent)
