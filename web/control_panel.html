@@ -3598,6 +3598,14 @@
       if (!res.ok) return;
       const data = await res.json();
       if (requestId !== statusRequestId) return;
+      // Панель перезапустилась с обновлённым кодом — перезагружаем страницу, чтобы получить новый интерфейс.
+      if (data.panel_build) {
+        if (window.__panelBuild && window.__panelBuild !== data.panel_build && !wizRunning) {
+          location.reload();
+          return;
+        }
+        window.__panelBuild = data.panel_build;
+      }
       currentStatus = data;
 
       // Если в localStorage нет сохраненного языка, берем язык из конфигурации сервера

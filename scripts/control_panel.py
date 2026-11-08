@@ -200,6 +200,58 @@ def _idle_watchdog():
         if (time.time() - _last_activity_time) > 300.0:
             os._exit(0)
 
+def _code_fingerprint() -> str:
+    """Отпечаток кода панели (время изменения и размер файлов).
+    Launcher.exe при уже запущенной панели только открывает её окно, поэтому после обновления или
+    исправления старый процесс продолжал бы работать со старым кодом."""
+    files = [BASE_DIR / "scripts" / "control_panel.py", BASE_DIR / "web" / "control_panel.html"]
+    for folder in (BASE_DIR / "core", BASE_DIR / "scripts"):
+        try:
+            files.extend(sorted(folder.glob("*.py")))
+        except OSError:
+            pass
+    parts = []
+    for f in files:
+        try:
+            st = f.stat()
+            parts.append(f"{f.name}:{st.st_mtime_ns}:{st.st_size}")
+        except OSError:
+            parts.append(f"{f.name}:-")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+PANEL_BUILD = _code_fingerprint()
+_httpd = None
+_self_restart_blocked = False
+
+
+def _self_restart_watcher():
+    """Код панели на диске изменился → запускаем новую копию панели и завершаем эту.
+    Сервер управления ПК (server.py) — отдельный процесс и при этом не перезапускается."""
+    time.sleep(10)
+    while True:
+        time.sleep(3)
+        if _is_busy or _self_restart_blocked or _code_fingerprint() == PANEL_BUILD:
+            continue
+        time.sleep(2)  # даём дописать все файлы (обновление копирует их по одному)
+        if _is_busy or _self_restart_blocked:
+            continue
+        try:
+            args = [a for a in sys.argv[1:] if a not in ("--no-browser", "--replace", "--check-update")]
+            subprocess.Popen([sys.executable, "-E", "-s", str(Path(__file__).resolve()), *args,
+                              "--no-browser", "--replace"],
+                             cwd=str(BASE_DIR), creationflags=NO_WINDOW)
+        except Exception as e:
+            append_log(f"[WARNING] Panel code changed, but the new panel could not be started: {e}")
+            return
+        append_log("[INFO] Panel code was updated - restarting the control panel...")
+        try:
+            if _httpd is not None:
+                _httpd.server_close()
+        finally:
+            os._exit(0)
+
+
 def is_already_serving() -> bool:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{CONTROL_PORT}/api/identity", timeout=1) as response:
@@ -1787,6 +1839,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "busy_action": _busy_action,
                 "setup_in_progress": bool(_is_busy and "Dependencies Installation" in _busy_action),
                 "setup_completed": bool(cfg.get("setup_completed", False)),
+                "panel_build": PANEL_BUILD,
                 "update_info": LATEST_UPDATE_INFO,
                 "full_update_status": get_update_status()
             })
@@ -2594,7 +2647,11 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             if action == "apply_update":
+                global _self_restart_blocked
+                _self_restart_blocked = True  # обновление само перезапустит панель
                 res = apply_github_update()
+                if not (res.get("ok") and res.get("restarting")):
+                    _self_restart_blocked = False
                 self.send_json(res)
                 if res.get("ok") and res.get("restarting"):
                     threading.Timer(0.6, lambda: os._exit(0)).start()
@@ -2799,6 +2856,13 @@ def launch_browser_gui(url: str):
 def main():
     gui_url = f"http://127.0.0.1:{CONTROL_PORT}"
 
+    global _httpd
+    if "--replace" in sys.argv:
+        # Нас запустила прежняя копия панели (её код обновился): ждём, пока она освободит порт.
+        for _ in range(60):
+            if not is_already_serving():
+                break
+            time.sleep(0.25)
     # Если сервер уже запущен другим процессом — просто открываем окно браузера и выходим
     if is_already_serving():
         if "--no-browser" not in sys.argv:
@@ -2811,14 +2875,22 @@ def main():
     print(f"Запуск веб-сервера панели на http://127.0.0.1:{CONTROL_PORT} ...")
 
     server_address = ("127.0.0.1", CONTROL_PORT)
-    try:
-        httpd = http.server.ThreadingHTTPServer(server_address, ControlPanelHandler)
-    except Exception as e:
-        print(f"[ОШИБКА] Не удалось занять порт {CONTROL_PORT}: {e}")
-        return
+    httpd = None
+    for attempt in range(20 if "--replace" in sys.argv else 1):
+        try:
+            httpd = http.server.ThreadingHTTPServer(server_address, ControlPanelHandler)
+            break
+        except OSError as e:
+            if attempt == (19 if "--replace" in sys.argv else 0):
+                print(f"[ОШИБКА] Не удалось занять порт {CONTROL_PORT}: {e}")
+                return
+            time.sleep(0.25)
+    _httpd = httpd
 
     # Запускаем фоновый сторож активности: при закрытии браузера процесс завершится сам
     threading.Thread(target=_idle_watchdog, daemon=True).start()
+    # Код панели обновился на диске → панель перезапускает себя сама
+    threading.Thread(target=_self_restart_watcher, daemon=True).start()
 
     # Проверка первого запуска: авто-создание config.json и автоустановка библиотек
     threading.Timer(0.8, check_first_run_setup).start()
