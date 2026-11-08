@@ -408,21 +408,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         touchpadEngine.configure(density, mouseSensitivity, mouseAccel, scrollSpeed, invertScroll, isMouseAbsolute);
     }
 
+    /** «Демонстрация экрана» — только просмотр: мышь и клавиатура работают лишь в «Управлении ПК». */
     private boolean isMouseActive() {
-        return operatingMode == MODE_PC_CONTROL ? isTouchpadEnabled : isViewMouseEnabled;
+        return operatingMode == MODE_PC_CONTROL && isTouchpadEnabled;
     }
 
     private void toggleMouseControl() {
-        if (operatingMode == MODE_PC_CONTROL) {
-            isTouchpadEnabled = !isTouchpadEnabled;
-        } else {
-            isViewMouseEnabled = !isViewMouseEnabled;
-            if (isViewMouseEnabled) {
-                mainHandler.removeCallbacks(hideControlsRunnable);
-            } else {
-                scheduleControlsAutoHide();
-            }
-        }
+        if (operatingMode != MODE_PC_CONTROL) return;
+        isTouchpadEnabled = !isTouchpadEnabled;
         if (!isMouseActive() && touchpadEngine != null) {
             touchpadEngine.cancel();
             touchGestureOwned = false;
@@ -433,9 +426,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         Toast.makeText(getContext(), isMouseActive() ? "Управление мышью включено" : "Управление мышью выключено", Toast.LENGTH_SHORT).show();
     }
 
-    /** Открывает поток ввода на ПК (если идёт трансляция). */
+    /** Открывает поток ввода на ПК (только «Управление ПК» и только во время трансляции). */
     private void ensureInputClient() {
-        if (isStreaming.get() && !inputClient.isRunning()) {
+        if (operatingMode == MODE_PC_CONTROL && isStreaming.get() && !inputClient.isRunning()) {
             inputClient.start();
         }
     }
@@ -513,16 +506,18 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 applyOpacities();
             }
             if (titleView != null) titleView.setText("Управление ПК");
-            if (toolbarMouseBtn != null) toolbarMouseBtn.setVisibility(View.GONE);
-            if (toolbarKbdBtn != null) toolbarKbdBtn.setVisibility(View.GONE);
+            if (isStreaming.get()) ensureInputClient();
         } else {
+            // Демонстрация экрана — только просмотр: никакого ввода на ПК
             if (floatingControlsGroup != null) floatingControlsGroup.setVisibility(View.GONE);
             if (quickActionsDrawer != null) quickActionsDrawer.setVisibility(View.GONE);
+            isQuickDrawerOpen = false;
             if (isKeyboardVisible) showCustomKeyboard(false);
+            releaseLocalInputState(true);
+            if (inputClient.isRunning()) inputClient.stop();
+            isViewMouseEnabled = false;
             if (topToolbar != null) topToolbar.setVisibility(View.VISIBLE);
             if (titleView != null) titleView.setText("Демонстрация экрана");
-            if (toolbarMouseBtn != null) toolbarMouseBtn.setVisibility(View.VISIBLE);
-            if (toolbarKbdBtn != null) toolbarKbdBtn.setVisibility(View.VISIBLE);
         }
         updateQuickActionStates();
         updateTouchpadZoneVisibility();
@@ -1009,9 +1004,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         addNav(ctx, PcIcons.MONITOR, "Экран", "Выбор монитора", 1);
         addNav(ctx, PcIcons.IMAGE, "Качество изображения", "Разрешение и битрейт", 2);
         addNav(ctx, PcIcons.CLOCK, "Частота кадров", "30 · 60 · 90 FPS", 3);
-        addNav(ctx, PcIcons.MOUSE, "Тачпад и мышь", "Зона, чувствительность, прокрутка", 4);
-        addNav(ctx, PcIcons.KEYBOARD, "Клавиатура ПК", "Размер, положение, язык", 5);
-        addNav(ctx, PcIcons.EYE, "Прозрачность и кнопки", "Видимость элементов интерфейса", 6);
+        if (operatingMode == MODE_PC_CONTROL) {
+            // Ввод настраивается только в «Управлении ПК»; в демонстрации — лишь параметры видео
+            addNav(ctx, PcIcons.MOUSE, "Тачпад и мышь", "Зона, чувствительность, прокрутка", 4);
+            addNav(ctx, PcIcons.KEYBOARD, "Клавиатура ПК", "Размер, положение, язык", 5);
+            addNav(ctx, PcIcons.EYE, "Прозрачность и кнопки", "Видимость элементов интерфейса", 6);
+        }
 
         settingsBody.addView(PcUi.divider(ctx));
         PcUi.Btn diagBtn = new PcUi.Btn(ctx, PcIcons.CHART, "Диагностика потока", true);
@@ -1622,6 +1620,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     /** Плавное открытие (выезд снизу + проявление) и закрытие клавиатуры. */
     private void showCustomKeyboard(boolean show) {
+        if (show && operatingMode != MODE_PC_CONTROL) return; // в демонстрации ввода нет
         isKeyboardVisible = show;
         if (keyboardPanel != null) {
             keyboardPanel.animate().cancel();
@@ -2297,8 +2296,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             scheduleControlsAutoHide();
         }
 
-        // Поток ввода: сразу в режиме «Управление ПК», в демонстрации — при включении мыши/клавиатуры
-        if (operatingMode == MODE_PC_CONTROL || isMouseActive() || isKeyboardVisible) {
+        // Поток ввода открывается только в режиме «Управление ПК»; «Демонстрация экрана» — только просмотр
+        if (operatingMode == MODE_PC_CONTROL) {
             inputClient.start();
         }
         applyTouchpadConfig();
@@ -2848,23 +2847,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         });
         topToolbar.addView(scaleModeBtn);
 
-        addToolbarSpacer(context, topToolbar, 6);
-
-        // Отдельные кнопки управления мышью и клавиатурой во время демонстрации
-        toolbarMouseBtn = new PcUi.IconBtn(context, PcIcons.MOUSE, 40, 20, false, "Мышь");
-        toolbarMouseBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) { toggleMouseControl(); }
-        });
-        topToolbar.addView(toolbarMouseBtn);
-
-        addToolbarSpacer(context, topToolbar, 6);
-
-        toolbarKbdBtn = new PcUi.IconBtn(context, PcIcons.KEYBOARD, 40, 20, false, "Клавиатура");
-        toolbarKbdBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) { toggleCustomKeyboard(); }
-        });
-        topToolbar.addView(toolbarKbdBtn);
-
+        // Мыши и клавиатуры здесь нет: «Демонстрация экрана» — только просмотр,
+        // управление ПК — отдельный режим «Управление ПК».
         addToolbarSpacer(context, topToolbar, 6);
 
         fullscreenBtn = new PcUi.IconBtn(context, PcIcons.FULLSCREEN, 40, 20, false, "Полноэкранный режим");
