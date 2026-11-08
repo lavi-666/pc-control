@@ -1,0 +1,2112 @@
+diff --git a/android_app/AndroidManifest.xml b/android_app/AndroidManifest.xml
+index 7cfa320..b4a7cc1 100644
+--- a/android_app/AndroidManifest.xml
++++ b/android_app/AndroidManifest.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     package="com.pccontrol.remote"
+-    android:versionCode="6"
+-    android:versionName="2.4.0">
++    android:versionCode="7"
++    android:versionName="2.3">
+ 
+     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
+ 
+diff --git a/android_app/src/com/pccontrol/remote/ApiClient.java b/android_app/src/com/pccontrol/remote/ApiClient.java
+deleted file mode 100644
+index 0868a6a..0000000
+--- a/android_app/src/com/pccontrol/remote/ApiClient.java
++++ /dev/null
+@@ -1,379 +0,0 @@
+-package com.pccontrol.remote;
+-
+-import android.content.Context;
+-import android.content.SharedPreferences;
+-import android.net.ConnectivityManager;
+-import android.net.NetworkInfo;
+-import android.net.wifi.WifiInfo;
+-import android.net.wifi.WifiManager;
+-import android.os.Handler;
+-import android.os.Looper;
+-import android.util.Log;
+-
+-import org.json.JSONArray;
+-import org.json.JSONObject;
+-
+-import java.io.BufferedReader;
+-import java.io.InputStream;
+-import java.io.InputStreamReader;
+-import java.io.OutputStream;
+-import java.net.DatagramPacket;
+-import java.net.DatagramSocket;
+-import java.net.HttpURLConnection;
+-import java.net.InetAddress;
+-import java.net.URL;
+-import java.nio.charset.StandardCharsets;
+-import java.util.concurrent.ExecutorService;
+-import java.util.concurrent.Executors;
+-
+-/**
+- * ApiClient - Полностью нативный клиент сетевых запросов к Windows-серверу PC Control.
+- * Обеспечивает:
+- * 1. Реальные асинхронные HTTP/JSON запросы без WebView.
+- * 2. Автоматическое сохранение и загрузку адреса сервера и токена в SharedPreferences.
+- * 3. LAN автодискавери сервера в локальной сети Wi-Fi.
+- * 4. Управление питанием, медиа, громкостью, клавиатурой и мышью.
+- */
+-public class ApiClient {
+-    private static final String TAG = "PCControl_ApiClient";
+-    private static final String PREFS_NAME = "pccontrol_native_prefs";
+-    private static final String KEY_SERVER_URL = "server_url";
+-    private static final String KEY_AUTH_TOKEN = "auth_token";
+-    private static final String DEFAULT_SERVER_URL = "http://192.168.0.101:5000";
+-    private static final String DEFAULT_TOKEN = "<REDACTED>";
+-
+-    private static ApiClient instance;
+-    private final Context context;
+-    private final SharedPreferences prefs;
+-    private final ExecutorService executor = Executors.newFixedThreadPool(4);
+-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+-
+-    private String serverUrl;
+-    private String authToken;
+-
+-    public interface ApiCallback {
+-        void onSuccess(JSONObject response);
+-        void onError(String error, int statusCode);
+-    }
+-
+-    public interface DiscoveryCallback {
+-        void onDiscovered(String foundUrl);
+-        void onNotFound();
+-    }
+-
+-    public static synchronized ApiClient getInstance(Context context) {
+-        if (instance == null) {
+-            instance = new ApiClient(context.getApplicationContext());
+-        }
+-        return instance;
+-    }
+-
+-    private ApiClient(Context context) {
+-        this.context = context;
+-        this.prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+-        this.serverUrl = prefs.getString(KEY_SERVER_URL, DEFAULT_SERVER_URL);
+-        this.authToken = prefs.getString(KEY_AUTH_TOKEN, DEFAULT_TOKEN);
+-    }
+-
+-    public synchronized String getServerUrl() {
+-        return serverUrl != null ? serverUrl : DEFAULT_SERVER_URL;
+-    }
+-
+-    public synchronized void setServerUrl(String url) {
+-        if (url == null) url = "";
+-        url = url.trim();
+-        while (url.endsWith("/")) {
+-            url = url.substring(0, url.length() - 1);
+-        }
+-        if (!url.isEmpty() && !url.startsWith("http://") && !url.startsWith("https://")) {
+-            url = "http://" + url;
+-        }
+-        this.serverUrl = url;
+-        prefs.edit().putString(KEY_SERVER_URL, url).apply();
+-    }
+-
+-    public synchronized String getAuthToken() {
+-        return authToken != null ? authToken : "";
+-    }
+-
+-    public synchronized void setAuthToken(String token) {
+-        this.authToken = token != null ? token.trim() : "";
+-        prefs.edit().putString(KEY_AUTH_TOKEN, this.authToken).apply();
+-    }
+-
+-    /**
+-     * Выполняет произвольный HTTP-запрос в пуле потоков.
+-     */
+-    public void executeRequest(final String endpoint, final String method, final JSONObject body, final ApiCallback callback) {
+-        executor.execute(new Runnable() {
+-            @Override
+-            public void run() {
+-                HttpURLConnection conn = null;
+-                try {
+-                    String base = getServerUrl();
+-                    if (!base.startsWith("http://") && !base.startsWith("https://")) {
+-                        base = "http://" + base;
+-                    }
+-                    String path = endpoint.startsWith("/") ? endpoint : "/" + endpoint;
+-                    URL url = new URL(base + path);
+-                    conn = (HttpURLConnection) url.openConnection();
+-                    conn.setRequestMethod(method);
+-                    conn.setConnectTimeout(3500);
+-                    conn.setReadTimeout(5000);
+-                    conn.setUseCaches(false);
+-                    conn.setRequestProperty("Accept", "application/json");
+-                    conn.setRequestProperty("User-Agent", "PCControl-Android/2.4.0");
+-
+-                    String token = getAuthToken();
+-                    if (token != null && !token.isEmpty()) {
+-                        conn.setRequestProperty("X-Auth-Token", token);
+-                    }
+-
+-                    if (body != null && ("POST".equalsIgnoreCase(method) || "PUT".equalsIgnoreCase(method))) {
+-                        conn.setDoOutput(true);
+-                        conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+-                        byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+-                        try (OutputStream os = conn.getOutputStream()) {
+-                            os.write(bytes);
+-                            os.flush();
+-                        }
+-                    }
+-
+-                    final int code = conn.getResponseCode();
+-                    InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
+-                    String responseStr = "";
+-                    if (is != null) {
+-                        try (BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+-                            StringBuilder sb = new StringBuilder();
+-                            String line;
+-                            while ((line = br.readLine()) != null) {
+-                                sb.append(line);
+-                            }
+-                            responseStr = sb.toString();
+-                        }
+-                    }
+-
+-                    if (code >= 200 && code < 400) {
+-                        JSONObject json;
+-                        try {
+-                            json = responseStr.isEmpty() ? new JSONObject() : new JSONObject(responseStr);
+-                        } catch (Exception e) {
+-                            json = new JSONObject();
+-                            json.put("raw", responseStr);
+-                        }
+-                        final JSONObject finalJson = json;
+-                        mainHandler.post(new Runnable() {
+-                            @Override
+-                            public void run() {
+-                                if (callback != null) callback.onSuccess(finalJson);
+-                            }
+-                        });
+-                    } else {
+-                        String errMsg = "HTTP " + code;
+-                        try {
+-                            JSONObject errJson = new JSONObject(responseStr);
+-                            if (errJson.has("message")) {
+-                                errMsg = errJson.getString("message");
+-                            }
+-                        } catch (Exception ignored) {}
+-                        final String finalErrMsg = errMsg;
+-                        mainHandler.post(new Runnable() {
+-                            @Override
+-                            public void run() {
+-                                if (callback != null) callback.onError(finalErrMsg, code);
+-                            }
+-                        });
+-                    }
+-
+-                } catch (final Exception e) {
+-                    mainHandler.post(new Runnable() {
+-                        @Override
+-                        public void run() {
+-                            if (callback != null) callback.onError(e.getMessage() != null ? e.getMessage() : "Сбой сетевого подключения", -1);
+-                        }
+-                    });
+-                } finally {
+-                    if (conn != null) {
+-                        conn.disconnect();
+-                    }
+-                }
+-            }
+-        });
+-    }
+-
+-    /**
+-     * Проверка статуса сервера и соединения.
+-     */
+-    public void checkStatus(final ApiCallback callback) {
+-        executeRequest("/status", "GET", null, callback);
+-    }
+-
+-    /**
+-     * Управление питанием (shutdown, reboot, sleep, lock).
+-     */
+-    public void powerAction(String action, ApiCallback callback) {
+-        try {
+-            JSONObject body = new JSONObject();
+-            body.put("action", action);
+-            executeRequest("/action", "POST", body, callback);
+-        } catch (Exception e) {
+-            if (callback != null) callback.onError(e.getMessage(), -1);
+-        }
+-    }
+-
+-    /**
+-     * Управление медиаплеером (play_pause, next, prev, stop).
+-     */
+-    public void mediaControl(String command, ApiCallback callback) {
+-        try {
+-            JSONObject body = new JSONObject();
+-            body.put("action", command);
+-            executeRequest("/media/control", "POST", body, callback);
+-        } catch (Exception e) {
+-            if (callback != null) callback.onError(e.getMessage(), -1);
+-        }
+-    }
+-
+-    /**
+-     * Получение текущей громкости системы.
+-     */
+-    public void getVolume(ApiCallback callback) {
+-        executeRequest("/volume", "GET", null, callback);
+-    }
+-
+-    /**
+-     * Установка громкости Windows (0..100).
+-     */
+-    public void setVolume(int level, ApiCallback callback) {
+-        try {
+-            JSONObject body = new JSONObject();
+-            body.put("level", Math.max(0, Math.min(100, level)));
+-            executeRequest("/volume", "POST", body, callback);
+-        } catch (Exception e) {
+-            if (callback != null) callback.onError(e.getMessage(), -1);
+-        }
+-    }
+-
+-    /**
+-     * Переключение беззвучного режима (Mute).
+-     */
+-    public void toggleMute(ApiCallback callback) {
+-        executeRequest("/mute", "POST", new JSONObject(), callback);
+-    }
+-
+-    /**
+-     * Отправка сочетания клавиш (hotkey).
+-     */
+-    public void keyboardHotkey(String[] keys, ApiCallback callback) {
+-        try {
+-            JSONObject body = new JSONObject();
+-            body.put("action", "hotkey");
+-            JSONArray arr = new JSONArray();
+-            for (String k : keys) arr.put(k);
+-            body.put("keys", arr);
+-            executeRequest("/api/keyboard", "POST", body, callback);
+-        } catch (Exception e) {
+-            if (callback != null) callback.onError(e.getMessage(), -1);
+-        }
+-    }
+-
+-    /**
+-     * Отправка произвольного текста на ПК.
+-     */
+-    public void keyboardText(String text, ApiCallback callback) {
+-        try {
+-            JSONObject body = new JSONObject();
+-            body.put("action", "text");
+-            body.put("text", text);
+-            executeRequest("/api/keyboard", "POST", body, callback);
+-        } catch (Exception e) {
+-            if (callback != null) callback.onError(e.getMessage(), -1);
+-        }
+-    }
+-
+-    /**
+-     * Быстрое автообнаружение ПК в локальной сети (LAN Auto-Discovery).
+-     */
+-    public void discoverServer(final DiscoveryCallback callback) {
+-        executor.execute(new Runnable() {
+-            @Override
+-            public void run() {
+-                // 1. Пробуем текущий сохранённый URL
+-                final String current = getServerUrl();
+-                if (pingUrl(current)) {
+-                    mainHandler.post(new Runnable() {
+-                        @Override
+-                        public void run() {
+-                            if (callback != null) callback.onDiscovered(current);
+-                        }
+-                    });
+-                    return;
+-                }
+-
+-                // 2. Получаем IP адрес устройства в Wi-Fi сети
+-                String deviceIp = getLocalWifiIpAddress();
+-                if (deviceIp != null && deviceIp.contains(".")) {
+-                    String prefix = deviceIp.substring(0, deviceIp.lastIndexOf('.') + 1);
+-                    // Проверяем наиболее частые адреса роутеров и хостов в подсети
+-                    int[] quickCandidates = new int[]{101, 100, 102, 105, 110, 150, 200, 1, 2, 3};
+-                    for (int lastByte : quickCandidates) {
+-                        final String testUrl = "http://" + prefix + lastByte + ":5000";
+-                        if (pingUrl(testUrl)) {
+-                            setServerUrl(testUrl);
+-                            mainHandler.post(new Runnable() {
+-                                @Override
+-                                public void run() {
+-                                    if (callback != null) callback.onDiscovered(testUrl);
+-                                }
+-                            });
+-                            return;
+-                        }
+-                    }
+-                }
+-
+-                mainHandler.post(new Runnable() {
+-                    @Override
+-                    public void run() {
+-                        if (callback != null) callback.onNotFound();
+-                    }
+-                });
+-            }
+-        });
+-    }
+-
+-    private boolean pingUrl(String rawUrl) {
+-        if (rawUrl == null || rawUrl.trim().isEmpty()) return false;
+-        HttpURLConnection conn = null;
+-        try {
+-            URL u = new URL(rawUrl.endsWith("/") ? rawUrl + "status" : rawUrl + "/status");
+-            conn = (HttpURLConnection) u.openConnection();
+-            conn.setConnectTimeout(800);
+-            conn.setReadTimeout(1200);
+-            conn.setRequestMethod("GET");
+-            int code = conn.getResponseCode();
+-            return code == 200;
+-        } catch (Exception ignored) {
+-            return false;
+-        } finally {
+-            if (conn != null) conn.disconnect();
+-        }
+-    }
+-
+-    private String getLocalWifiIpAddress() {
+-        try {
+-            WifiManager wm = (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
+-            if (wm != null) {
+-                WifiInfo wi = wm.getConnectionInfo();
+-                int ipInt = wi.getIpAddress();
+-                if (ipInt != 0) {
+-                    return String.format("%d.%d.%d.%d",
+-                            (ipInt & 0xff),
+-                            (ipInt >> 8 & 0xff),
+-                            (ipInt >> 16 & 0xff),
+-                            (ipInt >> 24 & 0xff));
+-                }
+-            }
+-        } catch (Exception ignored) {}
+-        return null;
+-    }
+-}
+diff --git a/android_app/src/com/pccontrol/remote/MainActivity.java b/android_app/src/com/pccontrol/remote/MainActivity.java
+index 1bdc20c..bc09bc9 100644
+--- a/android_app/src/com/pccontrol/remote/MainActivity.java
++++ b/android_app/src/com/pccontrol/remote/MainActivity.java
+@@ -44,12 +44,10 @@ import java.util.Set;
+ public class MainActivity extends Activity {
+     private static MainActivity instance;
+     private FrameLayout rootLayout;
+-    private NativeDashboardView nativeDashboardView;
+-    private NativeScreenView nativeScreenView;
+     private WebView webView;
++    private NativeScreenView nativeScreenView;
+     private View customView;
+     private WebChromeClient.CustomViewCallback customViewCallback;
+-    private ApiClient apiClient;
+ 
+     public static MainActivity getInstance() {
+         return instance;
+@@ -80,6 +78,8 @@ public class MainActivity extends Activity {
+     }
+ 
+     public class AndroidBridge {
++        // Send Wake-on-LAN Magic Packet: 6 x 0xFF + 16 x MAC (102 bytes) via UDP to ports 9 and 7.
++        // Automatically finds Wi-Fi broadcast addresses and holds MulticastLock to protect against Android packet drops.
+         @JavascriptInterface
+         public String sendWakeOnLan(final String mac, final String targetsCsv) {
+             final byte[] macBytes;
+@@ -115,6 +115,7 @@ public class MainActivity extends Activity {
+             targetSet.add("192.168.0.255");
+             targetSet.add("192.168.1.255");
+ 
++            // Dynamically query device network interfaces to discover current Wi-Fi broadcast address
+             try {
+                 Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+                 while (interfaces != null && interfaces.hasMoreElements()) {
+@@ -197,17 +198,18 @@ public class MainActivity extends Activity {
+                     fos.write(bytes);
+                     fos.flush();
+                 }
++                final String savedPath = outFile.getAbsolutePath();
+                 runOnUiThread(new Runnable() {
+                     @Override
+                     public void run() {
+-                        Toast.makeText(MainActivity.this, "Скриншот сохранён: " + safeFileName, Toast.LENGTH_SHORT).show();
++                        Toast.makeText(MainActivity.this, "Saved to Downloads: " + safeFileName, Toast.LENGTH_SHORT).show();
+                     }
+                 });
+             } catch (final Exception e) {
+                 runOnUiThread(new Runnable() {
+                     @Override
+                     public void run() {
+-                        Toast.makeText(MainActivity.this, "Ошибка сохранения: " + e.getMessage(), Toast.LENGTH_SHORT).show();
++                        Toast.makeText(MainActivity.this, "Save error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                     }
+                 });
+             }
+@@ -243,7 +245,7 @@ public class MainActivity extends Activity {
+                             startService(intent);
+                         }
+                     } catch (Exception e) {
+-                        Toast.makeText(MainActivity.this, "Фоновый режим: " + e.getMessage(), Toast.LENGTH_SHORT).show();
++                        Toast.makeText(MainActivity.this, "Background mode error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                     }
+                 }
+             });
+@@ -264,7 +266,11 @@ public class MainActivity extends Activity {
+             runOnUiThread(new Runnable() {
+                 @Override
+                 public void run() {
+-                    startNativeStreamingInternal(serverUrl, token, monitor, height, fps, bitrate, quality, codec, NativeScreenView.MODE_VIEW);
++                    if (nativeScreenView != null) {
++                        nativeScreenView.setOperatingMode(NativeScreenView.MODE_VIEW);
++                        nativeScreenView.configure(serverUrl, token, monitor, height, fps, bitrate, quality, codec);
++                        nativeScreenView.startStream();
++                    }
+                 }
+             });
+         }
+@@ -274,7 +280,11 @@ public class MainActivity extends Activity {
+             runOnUiThread(new Runnable() {
+                 @Override
+                 public void run() {
+-                    startNativeStreamingInternal(serverUrl, token, monitor, height, fps, bitrate, quality, codec, NativeScreenView.MODE_PC_CONTROL);
++                    if (nativeScreenView != null) {
++                        nativeScreenView.setOperatingMode(NativeScreenView.MODE_PC_CONTROL);
++                        nativeScreenView.configure(serverUrl, token, monitor, height, fps, bitrate, quality, codec);
++                        nativeScreenView.startStream();
++                    }
+                 }
+             });
+         }
+@@ -284,47 +294,19 @@ public class MainActivity extends Activity {
+             runOnUiThread(new Runnable() {
+                 @Override
+                 public void run() {
+-                    stopNativeStreamingInternal();
++                    if (nativeScreenView != null) {
++                        nativeScreenView.stopStream();
++                        setNativeFullscreen(false);
++                    }
+                 }
+             });
+         }
+     }
+ 
+-    private void startNativeStreamingInternal(String serverUrl, String token, int monitor, int height, int fps, int bitrate, String quality, String codec, int mode) {
+-        String effUrl = (serverUrl != null && !serverUrl.trim().isEmpty() && !serverUrl.contains("pccontrol.local"))
+-                ? serverUrl.trim() : apiClient.getServerUrl();
+-        String effToken = (token != null && !token.trim().isEmpty())
+-                ? token.trim() : apiClient.getAuthToken();
+-
+-        if (nativeDashboardView != null) nativeDashboardView.setVisibility(View.GONE);
+-        if (webView != null) webView.setVisibility(View.GONE);
+-
+-        if (nativeScreenView != null) {
+-            nativeScreenView.setVisibility(View.VISIBLE);
+-            nativeScreenView.setOperatingMode(mode);
+-            nativeScreenView.configure(effUrl, effToken, monitor, height, fps, bitrate, quality, codec);
+-            nativeScreenView.startStream();
+-            setNativeFullscreen(true);
+-        }
+-    }
+-
+-    private void stopNativeStreamingInternal() {
+-        if (nativeScreenView != null) {
+-            nativeScreenView.stopStream();
+-            nativeScreenView.setVisibility(View.GONE);
+-        }
+-        setNativeFullscreen(false);
+-        if (nativeDashboardView != null) {
+-            nativeDashboardView.setVisibility(View.VISIBLE);
+-            nativeDashboardView.refreshStatus();
+-        }
+-    }
+-
+     @Override
+     protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+         instance = this;
+-        apiClient = ApiClient.getInstance(this);
+ 
+         requestWindowFeature(Window.FEATURE_NO_TITLE);
+         Window win = getWindow();
+@@ -338,74 +320,15 @@ public class MainActivity extends Activity {
+         rootLayout = new FrameLayout(this);
+         rootLayout.setBackgroundColor(Color.parseColor("#030303"));
+ 
+-        // 1. Создаем нативный главный дашборд PC Control (Основной интерфейс)
+-        nativeDashboardView = new NativeDashboardView(this);
+-        nativeDashboardView.setCallback(new NativeDashboardView.DashboardCallback() {
+-            @Override
+-            public void onStartPcControlRequested() {
+-                startNativeStreamingInternal(null, null, 0, 1080, 60, 50, "auto", "auto", NativeScreenView.MODE_PC_CONTROL);
+-            }
+-
+-            @Override
+-            public void onStartScreenRequested() {
+-                startNativeStreamingInternal(null, null, 0, 1080, 60, 50, "auto", "auto", NativeScreenView.MODE_VIEW);
+-            }
+-
+-            @Override
+-            public void onOpenWebViewRequested() {
+-                if (nativeDashboardView != null) nativeDashboardView.setVisibility(View.GONE);
+-                if (webView != null) {
+-                    webView.setVisibility(View.VISIBLE);
+-                    String html = loadAssetHtml("index.html");
+-                    webView.loadDataWithBaseURL(apiClient.getServerUrl() + "/", html, "text/html", "UTF-8", null);
+-                }
+-            }
+-        });
+-        rootLayout.addView(nativeDashboardView, new FrameLayout.LayoutParams(
+-                ViewGroup.LayoutParams.MATCH_PARENT,
+-                ViewGroup.LayoutParams.MATCH_PARENT
+-        ));
+-
+-        // 2. Создаем нативный плеер стриминга и управления (MediaCodec + SurfaceView + Touchpad + Keyboard)
+-        nativeScreenView = new NativeScreenView(this);
+-        nativeScreenView.setVisibility(View.GONE);
+-        nativeScreenView.setPlayerCallback(new NativeScreenView.PlayerCallback() {
+-            @Override
+-            public void onCloseRequested() {
+-                stopNativeStreamingInternal();
+-            }
+-
+-            @Override
+-            public void onFullscreenToggled(boolean isFullscreen) {
+-                setNativeFullscreen(isFullscreen);
+-            }
+-
+-            @Override
+-            public void onSettingsChanged(final int monitor, final int height, final int fps, final int bitrate) {}
+-        });
+-        rootLayout.addView(nativeScreenView, new FrameLayout.LayoutParams(
+-                ViewGroup.LayoutParams.MATCH_PARENT,
+-                ViewGroup.LayoutParams.MATCH_PARENT
+-        ));
+-
+-        // 3. Создаем вспомогательный WebView (для глубоких настроек и веб-инструментов)
+-        setupAuxiliaryWebView();
+-
+-        setContentView(rootLayout);
+-
+-        handleIntent(getIntent());
+-    }
+-
+-    private void setupAuxiliaryWebView() {
+         webView = new WebView(this);
+         webView.setBackgroundColor(Color.parseColor("#030303"));
+-        webView.setVisibility(View.GONE);
+ 
+         WebSettings ws = webView.getSettings();
+         ws.setJavaScriptEnabled(true);
+         ws.setDomStorageEnabled(true);
+         ws.setDatabaseEnabled(true);
+         ws.setMediaPlaybackRequiresUserGesture(false);
++        // Защита: отключаем небезопасный доступ к локальным файлам через file:// и универсальный кросс-доменный доступ
+         ws.setAllowFileAccess(false);
+         ws.setAllowContentAccess(true);
+         ws.setAllowFileAccessFromFileURLs(false);
+@@ -426,6 +349,7 @@ public class MainActivity extends Activity {
+                     if ("pccontrol.local".equalsIgnoreCase(host) || "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host)) {
+                         return false;
+                     }
++                    // Внешние ссылки открываются во внешнем системном браузере, а не внутри привилегированного WebView
+                     try {
+                         android.content.Intent browserIntent = new android.content.Intent(android.content.Intent.ACTION_VIEW, uri);
+                         startActivity(browserIntent);
+@@ -444,6 +368,18 @@ public class MainActivity extends Activity {
+                 return super.shouldInterceptRequest(view, request);
+             }
+ 
++            @SuppressWarnings("deprecation")
++            @Override
++            public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
++                if (url != null) {
++                    try {
++                        WebResourceResponse resp = handleAssetRequest(Uri.parse(url));
++                        if (resp != null) return resp;
++                    } catch (Exception ignored) {}
++                }
++                return super.shouldInterceptRequest(view, url);
++            }
++
+             private WebResourceResponse handleAssetRequest(Uri uri) {
+                 if (uri == null) return null;
+                 String host = uri.getHost();
+@@ -459,13 +395,25 @@ public class MainActivity extends Activity {
+                                 InputStream is = getAssets().open(path);
+                                 String mime = "application/octet-stream";
+                                 String encoding = null;
+-                                if (path.endsWith(".png")) mime = "image/png";
+-                                else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) mime = "image/jpeg";
+-                                else if (path.endsWith(".svg")) { mime = "image/svg+xml"; encoding = "UTF-8"; }
+-                                else if (path.endsWith(".ico")) mime = "image/x-icon";
+-                                else if (path.endsWith(".html")) { mime = "text/html"; encoding = "UTF-8"; }
+-                                else if (path.endsWith(".css")) { mime = "text/css"; encoding = "UTF-8"; }
+-                                else if (path.endsWith(".js")) { mime = "application/javascript"; encoding = "UTF-8"; }
++                                if (path.endsWith(".png")) {
++                                    mime = "image/png";
++                                } else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) {
++                                    mime = "image/jpeg";
++                                } else if (path.endsWith(".svg")) {
++                                    mime = "image/svg+xml";
++                                    encoding = "UTF-8";
++                                } else if (path.endsWith(".ico")) {
++                                    mime = "image/x-icon";
++                                } else if (path.endsWith(".html")) {
++                                    mime = "text/html";
++                                    encoding = "UTF-8";
++                                } else if (path.endsWith(".css")) {
++                                    mime = "text/css";
++                                    encoding = "UTF-8";
++                                } else if (path.endsWith(".js")) {
++                                    mime = "application/javascript";
++                                    encoding = "UTF-8";
++                                }
+                                 return new WebResourceResponse(mime, encoding, is);
+                             } catch (Exception ignored) {}
+                         }
+@@ -482,14 +430,34 @@ public class MainActivity extends Activity {
+                     @Override
+                     public void run() {
+                         if (request == null) return;
++                        Uri origin = request.getOrigin();
++                        if (origin == null) {
++                            request.deny();
++                            return;
++                        }
++                        String host = origin.getHost();
++                        // Разрешаем только доверенные локальные источники
++                        boolean isTrustedOrigin = "pccontrol.local".equalsIgnoreCase(host)
++                                || "127.0.0.1".equals(host)
++                                || "localhost".equalsIgnoreCase(host);
++
++                        if (!isTrustedOrigin) {
++                            request.deny();
++                            return;
++                        }
++
++                        // Проверяем типы ресурсов: разрешаем только аудио захват для WebRTC аудио, камеру и остальное отклоняем
+                         List<String> allowed = new ArrayList<>();
+                         for (String r : request.getResources()) {
+                             if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) {
+                                 allowed.add(r);
+                             }
+                         }
+-                        if (!allowed.isEmpty()) request.grant(allowed.toArray(new String[0]));
+-                        else request.deny();
++                        if (!allowed.isEmpty()) {
++                            request.grant(allowed.toArray(new String[0]));
++                        } else {
++                            request.deny();
++                        }
+                     }
+                 });
+             }
+@@ -510,11 +478,20 @@ public class MainActivity extends Activity {
+                         ViewGroup.LayoutParams.MATCH_PARENT,
+                         ViewGroup.LayoutParams.MATCH_PARENT
+                 ));
++                getWindow().getDecorView().setSystemUiVisibility(
++                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
++                        | View.SYSTEM_UI_FLAG_FULLSCREEN
++                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
++                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
++                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
++                );
+             }
+ 
+             @Override
+             public void onHideCustomView() {
+-                if (customView == null) return;
++                if (customView == null) {
++                    return;
++                }
+                 try {
+                     setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                 } catch (Exception ignored) {}
+@@ -525,6 +502,7 @@ public class MainActivity extends Activity {
+                     customViewCallback = null;
+                 }
+                 webView.setVisibility(View.VISIBLE);
++                getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+             }
+         });
+ 
+@@ -532,30 +510,60 @@ public class MainActivity extends Activity {
+                 ViewGroup.LayoutParams.MATCH_PARENT,
+                 ViewGroup.LayoutParams.MATCH_PARENT
+         ));
+-    }
+ 
+-    private void handleIntent(android.content.Intent intent) {
+-        if (intent != null && intent.getData() != null) {
+-            Uri uri = intent.getData();
+-            String host = uri.getQueryParameter("host");
+-            String token = uri.getQueryParameter("token");
+-            if (host != null && !host.trim().isEmpty()) {
+-                apiClient.setServerUrl(host);
++        nativeScreenView = new NativeScreenView(this);
++        nativeScreenView.setVisibility(View.GONE);
++        nativeScreenView.setPlayerCallback(new NativeScreenView.PlayerCallback() {
++            @Override
++            public void onCloseRequested() {
++                setNativeFullscreen(false);
++                if (webView != null) {
++                    webView.evaluateJavascript("if (typeof onNativeScreenClosed === 'function') { onNativeScreenClosed(); }", null);
++                }
+             }
+-            if (token != null && !token.trim().isEmpty()) {
+-                apiClient.setAuthToken(token);
++
++            @Override
++            public void onFullscreenToggled(boolean isFullscreen) {
++                setNativeFullscreen(isFullscreen);
+             }
+-            if (nativeDashboardView != null) {
+-                nativeDashboardView.refreshStatus();
++
++            @Override
++            public void onSettingsChanged(final int monitor, final int height, final int fps, final int bitrate) {
++                if (webView != null) {
++                    webView.evaluateJavascript("if (typeof onNativeScreenParamsUpdated === 'function') { onNativeScreenParamsUpdated(" + monitor + "," + height + "," + fps + "," + bitrate + "); }", null);
++                }
+             }
+-        }
++        });
++        rootLayout.addView(nativeScreenView, new FrameLayout.LayoutParams(
++                ViewGroup.LayoutParams.MATCH_PARENT,
++                ViewGroup.LayoutParams.MATCH_PARENT
++        ));
++
++        setContentView(rootLayout);
++
++        String html = loadAssetHtml("index.html");
++        webView.loadDataWithBaseURL(buildBaseUrl(getIntent()), html, "text/html", "UTF-8", null);
+     }
+ 
+     @Override
+     protected void onNewIntent(android.content.Intent intent) {
+         super.onNewIntent(intent);
+         setIntent(intent);
+-        handleIntent(intent);
++        if (webView != null && intent != null && intent.getData() != null) {
++            String html = loadAssetHtml("index.html");
++            webView.loadDataWithBaseURL(buildBaseUrl(intent), html, "text/html", "UTF-8", null);
++        }
++    }
++
++    private String buildBaseUrl(android.content.Intent intent) {
++        if (intent != null && intent.getData() != null) {
++            Uri uri = intent.getData();
++            String query = uri.getEncodedQuery();
++            if (query != null && !query.isEmpty()) {
++                return "http://pccontrol.local/?" + query;
++            }
++        }
++        return "http://pccontrol.local/";
+     }
+ 
+     private String loadAssetHtml(String name) {
+@@ -630,21 +638,53 @@ public class MainActivity extends Activity {
+             if (nativeScreenView.handleBackPressed()) {
+                 return;
+             }
+-            stopNativeStreamingInternal();
+-            return;
+-        }
+-        if (webView != null && webView.getVisibility() == View.VISIBLE) {
+-            webView.setVisibility(View.GONE);
+-            if (nativeDashboardView != null) {
+-                nativeDashboardView.setVisibility(View.VISIBLE);
+-                nativeDashboardView.refreshStatus();
++            nativeScreenView.stopStream();
++            setNativeFullscreen(false);
++            if (webView != null) {
++                webView.evaluateJavascript("if (typeof onNativeScreenClosed === 'function') { onNativeScreenClosed(); }", null);
+             }
+             return;
+         }
+-        if (customView != null && webView != null) {
++        if (customView != null) {
+             webView.getWebChromeClient().onHideCustomView();
+             return;
+         }
++        if (webView != null) {
++            webView.evaluateJavascript(
++                "(function(){" +
++                "  var pm = document.getElementById('presetsModalBackdrop');" +
++                "  if (pm && pm.classList.contains('open')) { closePresetsModal(); return 'handled'; }" +
++                "  var sm = document.getElementById('settingsModalBackdrop');" +
++                "  if (sm && sm.classList.contains('open')) { closeSettingsModal(); return 'handled'; }" +
++                "  var cm = document.getElementById('connModalBackdrop');" +
++                "  if (cm && cm.classList.contains('open')) { toggleConnModal(false); return 'handled'; }" +
++                "  var st = document.getElementById('screenStage');" +
++                "  if (st && st.classList.contains('pseudo-fs')) { st.classList.remove('pseudo-fs'); return 'handled'; }" +
++                "  var qp = document.getElementById('queuePanel');" +
++                "  if (qp && qp.classList.contains('open')) { toggleQueuePanel(); return 'handled'; }" +
++                "  var pb = document.getElementById('processesBox');" +
++                "  if (pb && pb.style.display === 'block') { pb.style.display = 'none'; return 'handled'; }" +
++                "  var hb = document.getElementById('historyBox');" +
++                "  if (hb && hb.style.display === 'block') { hb.style.display = 'none'; return 'handled'; }" +
++                "  var mm = document.getElementById('modeMenu');" +
++                "  if (mm && mm.classList.contains('open')) { closeModeMenu(); return 'handled'; }" +
++                "  var lm = document.getElementById('langMenu');" +
++                "  if (lm && lm.classList.contains('open')) { closeLangMenu(); return 'handled'; }" +
++                "  var ab = document.getElementById('appVolumesBox');" +
++                "  if (ab && ab.style.display === 'block') { ab.style.display = 'none'; return 'handled'; }" +
++                "  return 'exit';" +
++                "})()",
++                new android.webkit.ValueCallback<String>() {
++                    @Override
++                    public void onReceiveValue(String value) {
++                        if (value == null || !value.contains("handled")) {
++                            MainActivity.super.onBackPressed();
++                        }
++                    }
++                }
++            );
++            return;
++        }
+         super.onBackPressed();
+     }
+ 
+@@ -662,10 +702,7 @@ public class MainActivity extends Activity {
+     @Override
+     protected void onResume() {
+         super.onResume();
+-        if (nativeDashboardView != null && nativeDashboardView.getVisibility() == View.VISIBLE) {
+-            nativeDashboardView.refreshStatus();
+-        }
+-        if (webView != null && webView.getVisibility() == View.VISIBLE) {
++        if (webView != null) {
+             webView.onResume();
+             webView.evaluateJavascript("window.__hostAppActive = true; if (typeof adaptivePollTick === 'function') adaptivePollTick();", null);
+         }
+diff --git a/android_app/src/com/pccontrol/remote/NativeDashboardView.java b/android_app/src/com/pccontrol/remote/NativeDashboardView.java
+deleted file mode 100644
+index b2a87d5..0000000
+--- a/android_app/src/com/pccontrol/remote/NativeDashboardView.java
++++ /dev/null
+@@ -1,746 +0,0 @@
+-package com.pccontrol.remote;
+-
+-import android.app.AlertDialog;
+-import android.content.Context;
+-import android.content.DialogInterface;
+-import android.graphics.Color;
+-import android.graphics.Typeface;
+-import android.graphics.drawable.GradientDrawable;
+-import android.graphics.drawable.RippleDrawable;
+-import android.os.Build;
+-import android.text.InputType;
+-import android.view.Gravity;
+-import android.view.View;
+-import android.view.ViewGroup;
+-import android.widget.Button;
+-import android.widget.EditText;
+-import android.widget.ImageView;
+-import android.widget.LinearLayout;
+-import android.widget.ScrollView;
+-import android.widget.SeekBar;
+-import android.widget.TextView;
+-import android.widget.Toast;
+-
+-import org.json.JSONObject;
+-
+-/**
+- * NativeDashboardView - Нативный главный экран управления PC Control.
+- * Полностью автономен от WebView, спроектирован в едином дизайн-коде PC Control:
+- * - Глубокий тёмный фон #030303
+- * - Карточки #121212 с бордером #1E2530 и скруглением 16dp
+- * - Акцентный неоново-голубой цвет #38BDF8
+- * - Сенсорные области от 48x48 dp
+- * - Управление питанием, медиаплеером, громкостью и быстрым переходом в режимы
+- */
+-public class NativeDashboardView extends ScrollView {
+-
+-    private final LinearLayout container;
+-    private final ApiClient apiClient;
+-
+-    private TextView statusPillText;
+-    private View statusIndicatorDot;
+-    private TextView serverAddressText;
+-    private SeekBar volumeSeekBar;
+-    private TextView volumePercentText;
+-    private Button btnMute;
+-
+-    private DashboardCallback callback;
+-    private boolean isUpdatingVolumeFromNet = false;
+-
+-    public interface DashboardCallback {
+-        void onStartPcControlRequested();
+-        void onStartScreenRequested();
+-        void onOpenWebViewRequested();
+-    }
+-
+-    public NativeDashboardView(Context context) {
+-        super(context);
+-        this.apiClient = ApiClient.getInstance(context);
+-
+-        setBackgroundColor(Color.parseColor("#030303"));
+-        setFillViewport(true);
+-        setVerticalScrollBarEnabled(false);
+-
+-        container = new LinearLayout(context);
+-        container.setOrientation(LinearLayout.VERTICAL);
+-        int pad = dp(16);
+-        container.setPadding(pad, pad, pad, dp(32));
+-
+-        addView(container, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+-
+-        buildHeader();
+-        buildHeroCards();
+-        buildVolumeAndMediaCard();
+-        buildPowerCard();
+-        buildQuickActionsCard();
+-
+-        refreshStatus();
+-    }
+-
+-    public void setCallback(DashboardCallback callback) {
+-        this.callback = callback;
+-    }
+-
+-    private int dp(int value) {
+-        float density = getResources().getDisplayMetrics().density;
+-        return (int) (value * density + 0.5f);
+-    }
+-
+-    private GradientDrawable createCardBg(String bgColor, String borderColor, int radiusDp) {
+-        GradientDrawable gd = new GradientDrawable();
+-        gd.setColor(Color.parseColor(bgColor));
+-        if (borderColor != null) {
+-            gd.setStroke(dp(1), Color.parseColor(borderColor));
+-        }
+-        gd.setCornerRadius(dp(radiusDp));
+-        return gd;
+-    }
+-
+-    private Button createStyledButton(String text, String bgColor, String textColor, int heightDp) {
+-        Button btn = new Button(getContext());
+-        btn.setText(text);
+-        btn.setTextColor(Color.parseColor(textColor));
+-        btn.setTextSize(14);
+-        btn.setTypeface(Typeface.DEFAULT_BOLD);
+-        btn.setAllCaps(false);
+-        btn.setGravity(Gravity.CENTER);
+-        btn.setMinHeight(dp(Math.max(48, heightDp)));
+-
+-        GradientDrawable normalBg = createCardBg(bgColor, "#2A3649", 12);
+-        btn.setBackground(normalBg);
+-        return btn;
+-    }
+-
+-    // --- 1. ШАПКА И СТАТУС СЕРВЕРА ---
+-    private void buildHeader() {
+-        LinearLayout headerCard = new LinearLayout(getContext());
+-        headerCard.setOrientation(LinearLayout.VERTICAL);
+-        headerCard.setBackground(createCardBg("#121212", "#1E2530", 16));
+-        int pad = dp(16);
+-        headerCard.setPadding(pad, pad, pad, pad);
+-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+-        lp.bottomMargin = dp(16);
+-        headerCard.setLayoutParams(lp);
+-
+-        // Верхний ряд: Название и кнопки управления
+-        LinearLayout topRow = new LinearLayout(getContext());
+-        topRow.setOrientation(LinearLayout.HORIZONTAL);
+-        topRow.setGravity(Gravity.CENTER_VERTICAL);
+-
+-        TextView title = new TextView(getContext());
+-        title.setText("PC CONTROL");
+-        title.setTextColor(Color.parseColor("#F8FAFC"));
+-        title.setTextSize(19);
+-        title.setTypeface(Typeface.DEFAULT_BOLD);
+-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        topRow.addView(title, titleLp);
+-
+-        // Кнопка Обновить
+-        Button btnRefresh = createStyledButton("⟲", "#1A222D", "#38BDF8", 40);
+-        btnRefresh.setTextSize(16);
+-        LinearLayout.LayoutParams refLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+-        refLp.rightMargin = dp(8);
+-        btnRefresh.setLayoutParams(refLp);
+-        btnRefresh.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                refreshStatus();
+-            }
+-        });
+-        topRow.addView(btnRefresh);
+-
+-        // Кнопка Настройки подключения
+-        Button btnSettings = createStyledButton("⚙", "#1A222D", "#F8FAFC", 40);
+-        btnSettings.setTextSize(16);
+-        LinearLayout.LayoutParams setLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+-        btnSettings.setLayoutParams(setLp);
+-        btnSettings.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                showServerConfigDialog();
+-            }
+-        });
+-        topRow.addView(btnSettings);
+-
+-        headerCard.addView(topRow);
+-
+-        // Нижний ряд: Статус-пилл и текущий адрес
+-        LinearLayout statusRow = new LinearLayout(getContext());
+-        statusRow.setOrientation(LinearLayout.HORIZONTAL);
+-        statusRow.setGravity(Gravity.CENTER_VERTICAL);
+-        statusRow.setPadding(0, dp(12), 0, 0);
+-
+-        statusIndicatorDot = new View(getContext());
+-        GradientDrawable dotBg = new GradientDrawable();
+-        dotBg.setShape(GradientDrawable.OVAL);
+-        dotBg.setColor(Color.parseColor("#F59E0B")); // Исходно желтый (поиск)
+-        statusIndicatorDot.setBackground(dotBg);
+-        LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(10), dp(10));
+-        dotLp.rightMargin = dp(8);
+-        statusRow.addView(statusIndicatorDot, dotLp);
+-
+-        statusPillText = new TextView(getContext());
+-        statusPillText.setText("Подключение к ПК...");
+-        statusPillText.setTextColor(Color.parseColor("#94A3B8"));
+-        statusPillText.setTextSize(13);
+-        statusRow.addView(statusPillText);
+-
+-        headerCard.addView(statusRow);
+-
+-        serverAddressText = new TextView(getContext());
+-        serverAddressText.setText(apiClient.getServerUrl());
+-        serverAddressText.setTextColor(Color.parseColor("#64748B"));
+-        serverAddressText.setTextSize(11);
+-        serverAddressText.setPadding(dp(18), dp(4), 0, 0);
+-        headerCard.addView(serverAddressText);
+-
+-        container.addView(headerCard);
+-    }
+-
+-    // --- 2. ГЛАВНЫЕ РЕЖИМЫ (УПРАВЛЕНИЕ ПК И ДЕМОНСТРАЦИЯ) ---
+-    private void buildHeroCards() {
+-        // КАРТА 1: УПРАВЛЕНИЕ ПК (Главная фича)
+-        LinearLayout pcControlHero = new LinearLayout(getContext());
+-        pcControlHero.setOrientation(LinearLayout.VERTICAL);
+-        pcControlHero.setBackground(createCardBg("#161D26", "#38BDF8", 16));
+-        int pad = dp(16);
+-        pcControlHero.setPadding(pad, pad, pad, pad);
+-        LinearLayout.LayoutParams pcLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+-        pcLp.bottomMargin = dp(12);
+-        pcControlHero.setLayoutParams(pcLp);
+-
+-        LinearLayout titleRow = new LinearLayout(getContext());
+-        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+-        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+-
+-        TextView icon = new TextView(getContext());
+-        icon.setText("🎮 ");
+-        icon.setTextSize(18);
+-        titleRow.addView(icon);
+-
+-        TextView heroTitle = new TextView(getContext());
+-        heroTitle.setText("Управление ПК");
+-        heroTitle.setTextColor(Color.parseColor("#38BDF8"));
+-        heroTitle.setTextSize(17);
+-        heroTitle.setTypeface(Typeface.DEFAULT_BOLD);
+-        titleRow.addView(heroTitle);
+-
+-        TextView badge = new TextView(getContext());
+-        badge.setText("  ИНТЕРАКТИВНЫЙ ПУЛЬТ");
+-        badge.setTextColor(Color.parseColor("#94A3B8"));
+-        badge.setTextSize(10);
+-        titleRow.addView(badge);
+-
+-        pcControlHero.addView(titleRow);
+-
+-        TextView heroDesc = new TextView(getContext());
+-        heroDesc.setText("Прозрачный настраиваемый тачпад, кастомная клавиатура, звук Windows и микрофон.");
+-        heroDesc.setTextColor(Color.parseColor("#CBD5E1"));
+-        heroDesc.setTextSize(12);
+-        heroDesc.setPadding(0, dp(6), 0, dp(12));
+-        pcControlHero.addView(heroDesc);
+-
+-        Button btnStartPc = createStyledButton("Запустить Управление ПК ▶", "#38BDF8", "#030303", 52);
+-        btnStartPc.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                if (callback != null) callback.onStartPcControlRequested();
+-            }
+-        });
+-        pcControlHero.addView(btnStartPc);
+-
+-        container.addView(pcControlHero);
+-
+-        // КАРТА 2: ДЕМОНСТРАЦИЯ ЭКРАНА (Moonlight просмотр)
+-        LinearLayout screenHero = new LinearLayout(getContext());
+-        screenHero.setOrientation(LinearLayout.VERTICAL);
+-        screenHero.setBackground(createCardBg("#121212", "#1E2530", 16));
+-        screenHero.setPadding(pad, pad, pad, pad);
+-        LinearLayout.LayoutParams scLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+-        scLp.bottomMargin = dp(16);
+-        screenHero.setLayoutParams(scLp);
+-
+-        LinearLayout scTitleRow = new LinearLayout(getContext());
+-        scTitleRow.setOrientation(LinearLayout.HORIZONTAL);
+-        scTitleRow.setGravity(Gravity.CENTER_VERTICAL);
+-
+-        TextView scIcon = new TextView(getContext());
+-        scIcon.setText("🖥️ ");
+-        scIcon.setTextSize(18);
+-        scTitleRow.addView(scIcon);
+-
+-        TextView scTitle = new TextView(getContext());
+-        scTitle.setText("Демонстрация экрана");
+-        scTitle.setTextColor(Color.parseColor("#F8FAFC"));
+-        scTitle.setTextSize(17);
+-        scTitle.setTypeface(Typeface.DEFAULT_BOLD);
+-        scTitleRow.addView(scTitle);
+-
+-        TextView scBadge = new TextView(getContext());
+-        scBadge.setText("  60 FPS MEDIACODEC");
+-        scBadge.setTextColor(Color.parseColor("#64748B"));
+-        scBadge.setTextSize(10);
+-        scTitleRow.addView(scBadge);
+-
+-        screenHero.addView(scTitleRow);
+-
+-        TextView scDesc = new TextView(getContext());
+-        scDesc.setText("Аппаратный просмотр экрана компьютера в реальном времени с передачей звука.");
+-        scDesc.setTextColor(Color.parseColor("#94A3B8"));
+-        scDesc.setTextSize(12);
+-        scDesc.setPadding(0, dp(6), 0, dp(12));
+-        screenHero.addView(scDesc);
+-
+-        Button btnStartSc = createStyledButton("Открыть демонстрацию ▶", "#1A222D", "#F8FAFC", 48);
+-        btnStartSc.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                if (callback != null) callback.onStartScreenRequested();
+-            }
+-        });
+-        screenHero.addView(btnStartSc);
+-
+-        container.addView(screenHero);
+-    }
+-
+-    // --- 3. ГРОМКОСТЬ И МЕДИА ---
+-    private void buildVolumeAndMediaCard() {
+-        LinearLayout card = new LinearLayout(getContext());
+-        card.setOrientation(LinearLayout.VERTICAL);
+-        card.setBackground(createCardBg("#121212", "#1E2530", 16));
+-        int pad = dp(16);
+-        card.setPadding(pad, pad, pad, pad);
+-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+-        lp.bottomMargin = dp(16);
+-        card.setLayoutParams(lp);
+-
+-        TextView secTitle = new TextView(getContext());
+-        secTitle.setText("ГРОМКОСТЬ И МЕДИА");
+-        secTitle.setTextColor(Color.parseColor("#64748B"));
+-        secTitle.setTextSize(12);
+-        secTitle.setTypeface(Typeface.DEFAULT_BOLD);
+-        card.addView(secTitle);
+-
+-        // Ползунок громкости
+-        LinearLayout volRow = new LinearLayout(getContext());
+-        volRow.setOrientation(LinearLayout.HORIZONTAL);
+-        volRow.setGravity(Gravity.CENTER_VERTICAL);
+-        volRow.setPadding(0, dp(12), 0, dp(16));
+-
+-        TextView spkIcon = new TextView(getContext());
+-        spkIcon.setText("🔊");
+-        spkIcon.setTextSize(18);
+-        volRow.addView(spkIcon);
+-
+-        volumeSeekBar = new SeekBar(getContext());
+-        volumeSeekBar.setMax(100);
+-        volumeSeekBar.setProgress(50);
+-        LinearLayout.LayoutParams sbLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        sbLp.leftMargin = dp(8);
+-        sbLp.rightMargin = dp(8);
+-        volumeSeekBar.setLayoutParams(sbLp);
+-        volumeSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+-            @Override
+-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+-                if (fromUser) {
+-                    volumePercentText.setText(progress + "%");
+-                }
+-            }
+-
+-            @Override
+-            public void onStartTrackingTouch(SeekBar seekBar) {}
+-
+-            @Override
+-            public void onStopTrackingTouch(SeekBar seekBar) {
+-                if (!isUpdatingVolumeFromNet) {
+-                    apiClient.setVolume(seekBar.getProgress(), null);
+-                }
+-            }
+-        });
+-        volRow.addView(volumeSeekBar);
+-
+-        volumePercentText = new TextView(getContext());
+-        volumePercentText.setText("50%");
+-        volumePercentText.setTextColor(Color.parseColor("#38BDF8"));
+-        volumePercentText.setTextSize(14);
+-        volumePercentText.setTypeface(Typeface.DEFAULT_BOLD);
+-        volRow.addView(volumePercentText);
+-
+-        card.addView(volRow);
+-
+-        // Кнопки медиауправления
+-        LinearLayout mediaRow = new LinearLayout(getContext());
+-        mediaRow.setOrientation(LinearLayout.HORIZONTAL);
+-
+-        Button btnPrev = createStyledButton("⏮", "#1A222D", "#F8FAFC", 48);
+-        btnPrev.setTextSize(18);
+-        LinearLayout.LayoutParams btnLp1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        btnLp1.rightMargin = dp(6);
+-        btnPrev.setLayoutParams(btnLp1);
+-        btnPrev.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                apiClient.mediaControl("prev", null);
+-            }
+-        });
+-        mediaRow.addView(btnPrev);
+-
+-        Button btnPlay = createStyledButton("⏯", "#1A222D", "#38BDF8", 48);
+-        btnPlay.setTextSize(18);
+-        LinearLayout.LayoutParams btnLp2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        btnLp2.rightMargin = dp(6);
+-        btnPlay.setLayoutParams(btnLp2);
+-        btnPlay.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                apiClient.mediaControl("play_pause", null);
+-            }
+-        });
+-        mediaRow.addView(btnPlay);
+-
+-        Button btnNext = createStyledButton("⏭", "#1A222D", "#F8FAFC", 48);
+-        btnNext.setTextSize(18);
+-        LinearLayout.LayoutParams btnLp3 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        btnLp3.rightMargin = dp(6);
+-        btnNext.setLayoutParams(btnLp3);
+-        btnNext.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                apiClient.mediaControl("next", null);
+-            }
+-        });
+-        mediaRow.addView(btnNext);
+-
+-        btnMute = createStyledButton("🔇", "#1A222D", "#F8FAFC", 48);
+-        btnMute.setTextSize(18);
+-        LinearLayout.LayoutParams btnLp4 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        btnMute.setLayoutParams(btnLp4);
+-        btnMute.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                apiClient.toggleMute(new ApiClient.ApiCallback() {
+-                    @Override
+-                    public void onSuccess(JSONObject response) {
+-                        refreshVolume();
+-                    }
+-
+-                    @Override
+-                    public void onError(String error, int statusCode) {}
+-                });
+-            }
+-        });
+-        mediaRow.addView(btnMute);
+-
+-        card.addView(mediaRow);
+-        container.addView(card);
+-    }
+-
+-    // --- 4. УПРАВЛЕНИЕ ПИТАНИЕМ ---
+-    private void buildPowerCard() {
+-        LinearLayout card = new LinearLayout(getContext());
+-        card.setOrientation(LinearLayout.VERTICAL);
+-        card.setBackground(createCardBg("#121212", "#1E2530", 16));
+-        int pad = dp(16);
+-        card.setPadding(pad, pad, pad, pad);
+-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+-        lp.bottomMargin = dp(16);
+-        card.setLayoutParams(lp);
+-
+-        TextView secTitle = new TextView(getContext());
+-        secTitle.setText("УПРАВЛЕНИЕ ПИТАНИЕМ");
+-        secTitle.setTextColor(Color.parseColor("#64748B"));
+-        secTitle.setTextSize(12);
+-        secTitle.setTypeface(Typeface.DEFAULT_BOLD);
+-        secTitle.setPadding(0, 0, 0, dp(12));
+-        card.addView(secTitle);
+-
+-        // Ряд 1: Сон и Блокировка
+-        LinearLayout row1 = new LinearLayout(getContext());
+-        row1.setOrientation(LinearLayout.HORIZONTAL);
+-        row1.setPadding(0, 0, 0, dp(8));
+-
+-        Button btnSleep = createStyledButton("💤 Сон", "#1A222D", "#F8FAFC", 48);
+-        LinearLayout.LayoutParams r1p1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        r1p1.rightMargin = dp(6);
+-        btnSleep.setLayoutParams(r1p1);
+-        btnSleep.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                confirmAction("Перевести компьютер в спящий режим?", "sleep");
+-            }
+-        });
+-        row1.addView(btnSleep);
+-
+-        Button btnLock = createStyledButton("🔒 Блокировка", "#1A222D", "#F8FAFC", 48);
+-        LinearLayout.LayoutParams r1p2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        btnLock.setLayoutParams(r1p2);
+-        btnLock.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                apiClient.powerAction("lock", new ApiClient.ApiCallback() {
+-                    @Override
+-                    public void onSuccess(JSONObject response) {
+-                        Toast.makeText(getContext(), "ПК заблокирован", Toast.LENGTH_SHORT).show();
+-                    }
+-
+-                    @Override
+-                    public void onError(String error, int statusCode) {
+-                        Toast.makeText(getContext(), "Ошибка: " + error, Toast.LENGTH_SHORT).show();
+-                    }
+-                });
+-            }
+-        });
+-        row1.addView(btnLock);
+-
+-        card.addView(row1);
+-
+-        // Ряд 2: Перезагрузка и Выключение
+-        LinearLayout row2 = new LinearLayout(getContext());
+-        row2.setOrientation(LinearLayout.HORIZONTAL);
+-
+-        Button btnReboot = createStyledButton("🔄 Перезагрузка", "#1A222D", "#F59E0B", 48);
+-        LinearLayout.LayoutParams r2p1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        r2p1.rightMargin = dp(6);
+-        btnReboot.setLayoutParams(r2p1);
+-        btnReboot.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                confirmAction("Перезагрузить компьютер сейчас?", "reboot");
+-            }
+-        });
+-        row2.addView(btnReboot);
+-
+-        Button btnShutdown = createStyledButton("⏻ Выключение", "#261517", "#EF4444", 48);
+-        LinearLayout.LayoutParams r2p2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        btnShutdown.setLayoutParams(r2p2);
+-        btnShutdown.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                confirmAction("Выключить компьютер?", "shutdown");
+-            }
+-        });
+-        row2.addView(btnShutdown);
+-
+-        card.addView(row2);
+-        container.addView(card);
+-    }
+-
+-    // --- 5. БЫСТРЫЕ ДЕЙСТВИЯ ---
+-    private void buildQuickActionsCard() {
+-        LinearLayout card = new LinearLayout(getContext());
+-        card.setOrientation(LinearLayout.VERTICAL);
+-        card.setBackground(createCardBg("#121212", "#1E2530", 16));
+-        int pad = dp(16);
+-        card.setPadding(pad, pad, pad, pad);
+-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+-        card.setLayoutParams(lp);
+-
+-        TextView secTitle = new TextView(getContext());
+-        secTitle.setText("БЫСТРЫЕ ДЕЙСТВИЯ WINDOWS");
+-        secTitle.setTextColor(Color.parseColor("#64748B"));
+-        secTitle.setTextSize(12);
+-        secTitle.setTypeface(Typeface.DEFAULT_BOLD);
+-        secTitle.setPadding(0, 0, 0, dp(12));
+-        card.addView(secTitle);
+-
+-        LinearLayout row = new LinearLayout(getContext());
+-        row.setOrientation(LinearLayout.HORIZONTAL);
+-
+-        Button btnWinD = createStyledButton("⊞ Свернуть всё", "#1A222D", "#F8FAFC", 48);
+-        LinearLayout.LayoutParams b1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        b1.rightMargin = dp(6);
+-        btnWinD.setLayoutParams(b1);
+-        btnWinD.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                apiClient.keyboardHotkey(new String[]{"win", "d"}, null);
+-            }
+-        });
+-        row.addView(btnWinD);
+-
+-        Button btnTaskMgr = createStyledButton("📋 Диспетчер", "#1A222D", "#F8FAFC", 48);
+-        LinearLayout.LayoutParams b2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        b2.rightMargin = dp(6);
+-        btnTaskMgr.setLayoutParams(b2);
+-        btnTaskMgr.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                apiClient.keyboardHotkey(new String[]{"ctrl", "shift", "esc"}, null);
+-            }
+-        });
+-        row.addView(btnTaskMgr);
+-
+-        Button btnWebTools = createStyledButton("🌐 Веб-пульт", "#1A222D", "#38BDF8", 48);
+-        LinearLayout.LayoutParams b3 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+-        btnWebTools.setLayoutParams(b3);
+-        btnWebTools.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(View v) {
+-                if (callback != null) callback.onOpenWebViewRequested();
+-            }
+-        });
+-        row.addView(btnWebTools);
+-
+-        card.addView(row);
+-        container.addView(card);
+-    }
+-
+-    private void confirmAction(String message, final String action) {
+-        new AlertDialog.Builder(getContext(), AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+-                .setTitle("Подтверждение")
+-                .setMessage(message)
+-                .setPositiveButton("Да", new DialogInterface.OnClickListener() {
+-                    @Override
+-                    public void onClick(DialogInterface dialog, int which) {
+-                        apiClient.powerAction(action, new ApiClient.ApiCallback() {
+-                            @Override
+-                            public void onSuccess(JSONObject response) {
+-                                Toast.makeText(getContext(), "Команда выполнена", Toast.LENGTH_SHORT).show();
+-                            }
+-
+-                            @Override
+-                            public void onError(String error, int statusCode) {
+-                                Toast.makeText(getContext(), "Ошибка: " + error, Toast.LENGTH_SHORT).show();
+-                            }
+-                        });
+-                    }
+-                })
+-                .setNegativeButton("Отмена", null)
+-                .show();
+-    }
+-
+-    public void refreshStatus() {
+-        if (serverAddressText != null) {
+-            serverAddressText.setText(apiClient.getServerUrl());
+-        }
+-        apiClient.checkStatus(new ApiClient.ApiCallback() {
+-            @Override
+-            public void onSuccess(JSONObject response) {
+-                if (statusIndicatorDot != null) {
+-                    GradientDrawable dot = new GradientDrawable();
+-                    dot.setShape(GradientDrawable.OVAL);
+-                    dot.setColor(Color.parseColor("#10B981")); // Зеленый
+-                    statusIndicatorDot.setBackground(dot);
+-                }
+-                if (statusPillText != null) {
+-                    String hostname = response.optString("hostname", "ПК");
+-                    statusPillText.setText("Подключено к " + hostname);
+-                    statusPillText.setTextColor(Color.parseColor("#10B981"));
+-                }
+-                refreshVolume();
+-            }
+-
+-            @Override
+-            public void onError(String error, int statusCode) {
+-                if (statusIndicatorDot != null) {
+-                    GradientDrawable dot = new GradientDrawable();
+-                    dot.setShape(GradientDrawable.OVAL);
+-                    dot.setColor(Color.parseColor("#EF4444")); // Красный
+-                    statusIndicatorDot.setBackground(dot);
+-                }
+-                if (statusPillText != null) {
+-                    statusPillText.setText("Сервер недоступен (" + error + ")");
+-                    statusPillText.setTextColor(Color.parseColor("#EF4444"));
+-                }
+-            }
+-        });
+-    }
+-
+-    private void refreshVolume() {
+-        apiClient.getVolume(new ApiClient.ApiCallback() {
+-            @Override
+-            public void onSuccess(JSONObject response) {
+-                int percent = response.optInt("percent", 50);
+-                boolean muted = response.optBoolean("muted", false);
+-                isUpdatingVolumeFromNet = true;
+-                if (volumeSeekBar != null) volumeSeekBar.setProgress(percent);
+-                if (volumePercentText != null) volumePercentText.setText(percent + "%");
+-                if (btnMute != null) {
+-                    btnMute.setTextColor(muted ? Color.parseColor("#EF4444") : Color.parseColor("#F8FAFC"));
+-                }
+-                isUpdatingVolumeFromNet = false;
+-            }
+-
+-            @Override
+-            public void onError(String error, int statusCode) {}
+-        });
+-    }
+-
+-    private void showServerConfigDialog() {
+-        AlertDialog.Builder builder = new AlertDialog.Builder(getContext(), AlertDialog.THEME_DEVICE_DEFAULT_DARK);
+-        builder.setTitle("Настройки подключения к ПК");
+-
+-        LinearLayout layout = new LinearLayout(getContext());
+-        layout.setOrientation(LinearLayout.VERTICAL);
+-        int pad = dp(20);
+-        layout.setPadding(pad, pad, pad, pad);
+-
+-        TextView labelUrl = new TextView(getContext());
+-        labelUrl.setText("IP-адрес и порт сервера Windows:");
+-        labelUrl.setTextColor(Color.parseColor("#94A3B8"));
+-        labelUrl.setTextSize(12);
+-        layout.addView(labelUrl);
+-
+-        final EditText editUrl = new EditText(getContext());
+-        editUrl.setText(apiClient.getServerUrl());
+-        editUrl.setTextColor(Color.parseColor("#F8FAFC"));
+-        editUrl.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+-        layout.addView(editUrl);
+-
+-        TextView labelToken = new TextView(getContext());
+-        labelToken.setText("Пароль доступа (Токен):");
+-        labelToken.setTextColor(Color.parseColor("#94A3B8"));
+-        labelToken.setTextSize(12);
+-        labelToken.setPadding(0, dp(12), 0, 0);
+-        layout.addView(labelToken);
+-
+-        final EditText editToken = new EditText(getContext());
+-        editToken.setText(apiClient.getAuthToken());
+-        editToken.setTextColor(Color.parseColor("#F8FAFC"));
+-        editToken.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+-        layout.addView(editToken);
+-
+-        Button btnAutoDiscover = createStyledButton("🔍 Автопоиск в сети Wi-Fi", "#1E2530", "#38BDF8", 44);
+-        LinearLayout.LayoutParams adLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+-        adLp.topMargin = dp(16);
+-        btnAutoDiscover.setLayoutParams(adLp);
+-        btnAutoDiscover.setOnClickListener(new OnClickListener() {
+-            @Override
+-            public void onClick(final View v) {
+-                v.setEnabled(false);
+-                Toast.makeText(getContext(), "Сканирование локальной сети...", Toast.LENGTH_SHORT).show();
+-                apiClient.discoverServer(new ApiClient.DiscoveryCallback() {
+-                    @Override
+-                    public void onDiscovered(String foundUrl) {
+-                        v.setEnabled(true);
+-                        editUrl.setText(foundUrl);
+-                        Toast.makeText(getContext(), "Найден сервер: " + foundUrl, Toast.LENGTH_LONG).show();
+-                    }
+-
+-                    @Override
+-                    public void onNotFound() {
+-                        v.setEnabled(true);
+-                        Toast.makeText(getContext(), "Сервер в текущей подсети не найден, введите адрес вручную", Toast.LENGTH_LONG).show();
+-                    }
+-                });
+-            }
+-        });
+-        layout.addView(btnAutoDiscover);
+-
+-        builder.setView(layout);
+-        builder.setPositiveButton("Сохранить", new DialogInterface.OnClickListener() {
+-            @Override
+-            public void onClick(DialogInterface dialog, int which) {
+-                String newUrl = editUrl.getText().toString().trim();
+-                String newToken = editToken.getText().toString().trim();
+-                if (!newUrl.isEmpty()) {
+-                    apiClient.setServerUrl(newUrl);
+-                }
+-                apiClient.setAuthToken(newToken);
+-                refreshStatus();
+-            }
+-        });
+-        builder.setNegativeButton("Отмена", null);
+-        builder.show();
+-    }
+-}
+diff --git a/launch_presets.json b/launch_presets.json
+index c6a6aac..0637a08 100644
+--- a/launch_presets.json
++++ b/launch_presets.json
+@@ -1,15 +1 @@
+-[
+-  {
+-    "id": "preset_1794069207050",
+-    "name": "1",
+-    "icon": "bolt",
+-    "steps": [
+-      {
+-        "type": "url",
+-        "name": "1",
+-        "target": "https://music.youtube.com/watch?v=HFcC849fRA8&si=i4O_wLBcftVr7Kte"
+-      }
+-    ],
+-    "created_at": 1794069207.050141
+-  }
+-]
+\ No newline at end of file
++[]
+\ No newline at end of file
+diff --git a/scripts/build_apk.py b/scripts/build_apk.py
+index 9cd1249..809f26d 100644
+--- a/scripts/build_apk.py
++++ b/scripts/build_apk.py
+@@ -922,8 +922,8 @@ public class MainActivity extends Activity {
+ ANDROID_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     package="com.pccontrol.remote"
+-    android:versionCode="6"
+-    android:versionName="2.4.0">
++    android:versionCode="7"
++    android:versionName="2.3">
+ 
+     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
+ 
+diff --git a/tests/test_native_and_web_control.py b/tests/test_native_and_web_control.py
+deleted file mode 100644
+index 7170efd..0000000
+--- a/tests/test_native_and_web_control.py
++++ /dev/null
+@@ -1,174 +0,0 @@
+-"""
+-tests/test_native_and_web_control.py
+-Тестирование серверной интеграции нативного Android-клиента и веб-режима «Управление ПК»:
+-1. Проверка эндпоинтов /status, /volume, /mute, /action, /media/control, /api/mouse, /api/keyboard.
+-2. Валидация защиты токеном (401 при неверном токене) и идемпотентности.
+-3. Проверка целостности нативных Android-исходников и веб-скрипта управления ПК.
+-"""
+-
+-import json
+-import unittest
+-from pathlib import Path
+-from flask import Flask
+-from core.config import get_auth_token
+-from modules.power import power_bp
+-from modules.volume import volume_bp
+-from modules.media import media_bp
+-from modules.input_controller import input_bp
+-
+-BASE_DIR = Path(__file__).resolve().parent.parent
+-
+-
+-class NativeAndWebControlTests(unittest.TestCase):
+-    @classmethod
+-    def setUpClass(cls):
+-        cls.app = Flask("test_native_and_web_control")
+-        cls.app.config["TESTING"] = True
+-        cls.app.register_blueprint(power_bp)
+-        cls.app.register_blueprint(volume_bp)
+-        cls.app.register_blueprint(media_bp)
+-        cls.app.register_blueprint(input_bp)
+-
+-        @cls.app.route("/status")
+-        def status():
+-            from flask import jsonify
+-            return jsonify({"status": "online", "hostname": "test-pc", "version": "2.4.0"})
+-
+-        cls.client = cls.app.test_client()
+-        cls.token = get_auth_token()
+-
+-    def test_status_endpoint(self):
+-        res = self.client.get("/status")
+-        self.assertEqual(res.status_code, 200)
+-        data = res.get_json()
+-        self.assertEqual(data.get("status"), "online")
+-        self.assertEqual(data.get("version"), "2.4.0")
+-
+-    def test_volume_endpoints(self):
+-        # 401 without token
+-        res_no_auth = self.client.get("/volume")
+-        self.assertEqual(res_no_auth.status_code, 401)
+-
+-        # GET volume
+-        res = self.client.get("/volume", headers={"X-Auth-Token": self.token})
+-        self.assertEqual(res.status_code, 200)
+-        data = res.get_json()
+-        self.assertIn("percent", data)
+-        self.assertIn("muted", data)
+-
+-        # POST volume
+-        res_set = self.client.post(
+-            "/volume",
+-            headers={"X-Auth-Token": self.token},
+-            json={"level": 40}
+-        )
+-        self.assertEqual(res_set.status_code, 200)
+-
+-        # POST mute
+-        res_mute = self.client.post(
+-            "/mute",
+-            headers={"X-Auth-Token": self.token},
+-            json={}
+-        )
+-        self.assertEqual(res_mute.status_code, 200)
+-
+-    def test_power_action_safe_mode(self):
+-        # 401 without token
+-        res_unauth = self.client.post("/action", json={"action": "sleep"})
+-        self.assertEqual(res_unauth.status_code, 401)
+-
+-        # Safe mode execution for critical actions
+-        for act in ("sleep", "lock", "reboot", "shutdown"):
+-            res = self.client.post(
+-                "/action",
+-                headers={"X-Auth-Token": self.token, "X-Safe-Mode": "1"},
+-                json={"action": act}
+-            )
+-            self.assertEqual(res.status_code, 200)
+-            self.assertIn("успешно", res.get_json()["message"])
+-
+-        # Invalid action returns 400
+-        res_bad = self.client.post(
+-            "/action",
+-            headers={"X-Auth-Token": self.token},
+-            json={"action": "invalid_command_xyz"}
+-        )
+-        self.assertEqual(res_bad.status_code, 400)
+-
+-    def test_media_control_endpoints(self):
+-        # 401 without token
+-        res_unauth = self.client.post("/media/control", json={"action": "play_pause"})
+-        self.assertEqual(res_unauth.status_code, 401)
+-
+-        # Valid commands
+-        for cmd in ("play_pause", "next", "prev", "stop"):
+-            res = self.client.post(
+-                "/media/control",
+-                headers={"X-Auth-Token": self.token},
+-                json={"action": cmd}
+-            )
+-            # 200 or 400 if Windows media service is busy, but auth and routing must pass
+-            self.assertIn(res.status_code, (200, 400))
+-
+-        # Invalid command
+-        res_invalid = self.client.post(
+-            "/media/control",
+-            headers={"X-Auth-Token": self.token},
+-            json={"action": "explode"}
+-        )
+-        self.assertEqual(res_invalid.status_code, 400)
+-
+-    def test_mouse_and_keyboard_endpoints(self):
+-        # Mouse relative move
+-        res_mouse = self.client.post(
+-            "/api/mouse",
+-            headers={"X-Auth-Token": self.token},
+-            json={"action": "move_rel", "dx": 5, "dy": -3}
+-        )
+-        self.assertEqual(res_mouse.status_code, 200)
+-        self.assertTrue(res_mouse.get_json()["ok"])
+-
+-        # Mouse click
+-        res_click = self.client.post(
+-            "/api/mouse",
+-            headers={"X-Auth-Token": self.token},
+-            json={"action": "click", "button": "left"}
+-        )
+-        self.assertEqual(res_click.status_code, 200)
+-
+-        # Keyboard text
+-        res_kb = self.client.post(
+-            "/api/keyboard",
+-            headers={"X-Auth-Token": self.token},
+-            json={"action": "text", "text": "Test Native"}
+-        )
+-        self.assertEqual(res_kb.status_code, 200)
+-
+-        # Keyboard hotkey
+-        res_hotkey = self.client.post(
+-            "/api/keyboard",
+-            headers={"X-Auth-Token": self.token},
+-            json={"action": "hotkey", "keys": ["win", "d"]}
+-        )
+-        self.assertEqual(res_hotkey.status_code, 200)
+-
+-    def test_web_stream_pc_control_overlay_exists(self):
+-        stream_js = BASE_DIR / "web" / "js" / "stream.js"
+-        self.assertTrue(stream_js.is_file())
+-        content = stream_js.read_text(encoding="utf-8")
+-        self.assertIn("initWebPcControlOverlay", content)
+-        self.assertIn("destroyWebPcControlOverlay", content)
+-        self.assertIn("stopPcControlMode", content)
+-        self.assertIn("startPcControlMode", content)
+-
+-    def test_native_android_components_exist(self):
+-        src_dir = BASE_DIR / "android_app" / "src" / "com" / "pccontrol" / "remote"
+-        self.assertTrue((src_dir / "ApiClient.java").is_file())
+-        self.assertTrue((src_dir / "NativeDashboardView.java").is_file())
+-        self.assertTrue((src_dir / "NativeScreenView.java").is_file())
+-        self.assertTrue((src_dir / "MainActivity.java").is_file())
+-        self.assertTrue((src_dir / "BackgroundAudioService.java").is_file())
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
+diff --git a/web/js/stream.js b/web/js/stream.js
+index 32cde3d..5f4ed48 100644
+--- a/web/js/stream.js
++++ b/web/js/stream.js
+@@ -536,9 +536,6 @@ let rtcScreenPc = null;
+ 
+ async function stopScreenStream(notifyServer = true){
+   stopScreenTelemetry();
+-  if (typeof stopPcControlMode === 'function') {
+-    stopPcControlMode();
+-  }
+   if (window.AndroidBridge && typeof window.AndroidBridge.stopNativeScreen === 'function'){
+     try { window.AndroidBridge.stopNativeScreen(); } catch (e) {}
+   }
+@@ -605,221 +602,6 @@ window.onNativeScreenClosed = function(){
+   if (pcBtn) pcBtn.classList.remove('active');
+ };
+ 
+-let webPcControlActive = false;
+-let webPcOverlayEl = null;
+-let webPcToolbarEl = null;
+-
+-function initWebPcControlOverlay(){
+-  if (webPcControlActive) return;
+-  webPcControlActive = true;
+-  const stage = document.getElementById('screenStage');
+-  if (!stage) return;
+-
+-  destroyWebPcControlOverlay();
+-  webPcControlActive = true;
+-
+-  webPcOverlayEl = document.createElement('div');
+-  webPcOverlayEl.id = 'webPcControlOverlay';
+-  webPcOverlayEl.style.cssText = 'position:absolute;inset:0;z-index:25;cursor:crosshair;touch-action:none;user-select:none;-webkit-user-select:none;';
+-
+-  webPcToolbarEl = document.createElement('div');
+-  webPcToolbarEl.id = 'webPcControlToolbar';
+-  webPcToolbarEl.style.cssText = 'position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:30;display:flex;gap:8px;background:rgba(18,25,38,0.92);padding:6px 14px;border-radius:24px;border:1px solid #38BDF8;box-shadow:0 4px 16px rgba(0,0,0,0.6);backdrop-filter:blur(8px);';
+-
+-  webPcToolbarEl.innerHTML = `
+-    <button id="webPcBtnText" style="background:#1E293B;color:#38BDF8;border:none;border-radius:14px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;">⌨ Текст</button>
+-    <button id="webPcBtnWinD" style="background:#1E293B;color:#F8FAFC;border:none;border-radius:14px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;">⊞ Win+D</button>
+-    <button id="webPcBtnTask" style="background:#1E293B;color:#F8FAFC;border:none;border-radius:14px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;">📋 Диспетчер</button>
+-    <button id="webPcBtnExit" style="background:#EF4444;color:#FFFFFF;border:none;border-radius:14px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;">✕ Выход</button>
+-  `;
+-
+-  stage.appendChild(webPcOverlayEl);
+-  stage.appendChild(webPcToolbarEl);
+-
+-  document.getElementById('webPcBtnText')?.addEventListener('click', (e) => {
+-    e.stopPropagation();
+-    const str = prompt('Введите текст для отправки на ПК:');
+-    if (str) {
+-      apiFetch('/api/keyboard', {
+-        method: 'POST',
+-        headers: {'Content-Type': 'application/json'},
+-        body: JSON.stringify({action: 'text', text: str})
+-      }).catch(() => {});
+-    }
+-  });
+-
+-  document.getElementById('webPcBtnWinD')?.addEventListener('click', (e) => {
+-    e.stopPropagation();
+-    apiFetch('/api/keyboard', {
+-      method: 'POST',
+-      headers: {'Content-Type': 'application/json'},
+-      body: JSON.stringify({action: 'hotkey', keys: ['win', 'd']})
+-    }).catch(() => {});
+-  });
+-
+-  document.getElementById('webPcBtnTask')?.addEventListener('click', (e) => {
+-    e.stopPropagation();
+-    apiFetch('/api/keyboard', {
+-      method: 'POST',
+-      headers: {'Content-Type': 'application/json'},
+-      body: JSON.stringify({action: 'hotkey', keys: ['ctrl', 'shift', 'esc']})
+-    }).catch(() => {});
+-  });
+-
+-  document.getElementById('webPcBtnExit')?.addEventListener('click', (e) => {
+-    e.stopPropagation();
+-    stopPcControlMode();
+-  });
+-
+-  let lastMoveTime = 0;
+-  let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
+-  let isTwoFinger = false;
+-  let lastTouchY = 0;
+-
+-  function sendMouse(action, data) {
+-    apiFetch('/api/mouse', {
+-      method: 'POST',
+-      headers: {'Content-Type': 'application/json'},
+-      body: JSON.stringify(Object.assign({action}, data))
+-    }).catch(() => {});
+-  }
+-
+-  webPcOverlayEl.addEventListener('pointermove', (e) => {
+-    if (e.pointerType === 'touch') return;
+-    const now = performance.now();
+-    if (now - lastMoveTime < 25) return;
+-    lastMoveTime = now;
+-    const rect = webPcOverlayEl.getBoundingClientRect();
+-    if (rect.width <= 0 || rect.height <= 0) return;
+-    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+-    const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+-    sendMouse('move_norm', {x, y, monitor: screenCfg.monitor || 0});
+-  });
+-
+-  webPcOverlayEl.addEventListener('pointerdown', (e) => {
+-    if (e.pointerType === 'touch') return;
+-    if (e.button === 0) {
+-      sendMouse('down', {button: 'left'});
+-    } else if (e.button === 1) {
+-      sendMouse('click', {button: 'middle'});
+-    }
+-  });
+-
+-  webPcOverlayEl.addEventListener('pointerup', (e) => {
+-    if (e.pointerType === 'touch') return;
+-    if (e.button === 0) {
+-      sendMouse('up', {button: 'left'});
+-    }
+-  });
+-
+-  webPcOverlayEl.addEventListener('contextmenu', (e) => {
+-    e.preventDefault();
+-    sendMouse('click', {button: 'right'});
+-  });
+-
+-  webPcOverlayEl.addEventListener('wheel', (e) => {
+-    e.preventDefault();
+-    const dy = e.deltaY < 0 ? 1 : -1;
+-    sendMouse('scroll', {dy});
+-  }, {passive: false});
+-
+-  webPcOverlayEl.addEventListener('touchstart', (e) => {
+-    if (e.touches.length === 1) {
+-      isTwoFinger = false;
+-      touchStartX = e.touches[0].clientX;
+-      touchStartY = e.touches[0].clientY;
+-      touchStartTime = performance.now();
+-    } else if (e.touches.length === 2) {
+-      isTwoFinger = true;
+-      lastTouchY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+-    }
+-  }, {passive: true});
+-
+-  webPcOverlayEl.addEventListener('touchmove', (e) => {
+-    const now = performance.now();
+-    if (e.touches.length === 1 && !isTwoFinger) {
+-      const cx = e.touches[0].clientX;
+-      const cy = e.touches[0].clientY;
+-      const dx = (cx - touchStartX) * 1.5;
+-      const dy = (cy - touchStartY) * 1.5;
+-      touchStartX = cx;
+-      touchStartY = cy;
+-      if (now - lastMoveTime > 25) {
+-        lastMoveTime = now;
+-        sendMouse('move_rel', {dx: Math.round(dx), dy: Math.round(dy), sensitivity: 1.2, accel: true});
+-      }
+-    } else if (e.touches.length === 2) {
+-      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+-      const dy = cy - lastTouchY;
+-      lastTouchY = cy;
+-      if (Math.abs(dy) > 10 && now - lastMoveTime > 50) {
+-        lastMoveTime = now;
+-        sendMouse('scroll', {dy: dy > 0 ? -1 : 1});
+-      }
+-    }
+-  }, {passive: true});
+-
+-  webPcOverlayEl.addEventListener('touchend', (e) => {
+-    const elapsed = performance.now() - touchStartTime;
+-    if (!isTwoFinger && elapsed < 250 && e.changedTouches.length === 1) {
+-      const dist = Math.hypot(e.changedTouches[0].clientX - touchStartX, e.changedTouches[0].clientY - touchStartY);
+-      if (dist < 15) {
+-        sendMouse('click', {button: 'left'});
+-      }
+-    }
+-  }, {passive: true});
+-
+-  window.addEventListener('keydown', onWebPcKeyDown);
+-}
+-
+-function onWebPcKeyDown(e){
+-  if (!webPcControlActive) return;
+-  if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
+-
+-  const key = e.key.toLowerCase();
+-  const map = {
+-    'arrowleft': 'left', 'arrowright': 'right', 'arrowup': 'up', 'arrowdown': 'down',
+-    'enter': 'enter', 'escape': 'esc', 'tab': 'tab', 'backspace': 'backspace', 'delete': 'del',
+-    ' ': 'space'
+-  };
+-
+-  if (map[key]) {
+-    e.preventDefault();
+-    apiFetch('/api/keyboard', {
+-      method: 'POST',
+-      headers: {'Content-Type': 'application/json'},
+-      body: JSON.stringify({action: 'key_press', key: map[key]})
+-    }).catch(() => {});
+-  } else if (key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+-    apiFetch('/api/keyboard', {
+-      method: 'POST',
+-      headers: {'Content-Type': 'application/json'},
+-      body: JSON.stringify({action: 'text', text: e.key})
+-    }).catch(() => {});
+-  }
+-}
+-
+-function destroyWebPcControlOverlay(){
+-  webPcControlActive = false;
+-  if (webPcOverlayEl) {
+-    webPcOverlayEl.remove();
+-    webPcOverlayEl = null;
+-  }
+-  if (webPcToolbarEl) {
+-    webPcToolbarEl.remove();
+-    webPcToolbarEl = null;
+-  }
+-  window.removeEventListener('keydown', onWebPcKeyDown);
+-}
+-
+-function stopPcControlMode(){
+-  destroyWebPcControlOverlay();
+-  const pcBtn = document.getElementById('pcControlBtn');
+-  if (pcBtn) pcBtn.classList.remove('active');
+-  const statusEl = document.getElementById('statusMsg');
+-  if (statusEl) statusEl.innerText = t('btn_start_screen');
+-}
+-
+ async function startPcControlMode(){
+   const pcBtn = document.getElementById('pcControlBtn');
+   const statusEl = document.getElementById('statusMsg');
+@@ -857,8 +639,7 @@ async function startPcControlMode(){
+   if (!screenStreamOn) {
+     await toggleScreenStream();
+   }
+-  initWebPcControlOverlay();
+-  if (statusEl) statusEl.innerText = 'Режим «Управление ПК» активен (Мышь + Клавиатура)';
++  if (statusEl) statusEl.innerText = 'Режим «Управление ПК» активен';
+ }
+ 
+ window.onNativeScreenParamsUpdated = function(monitor, height, fps, bitrate){
