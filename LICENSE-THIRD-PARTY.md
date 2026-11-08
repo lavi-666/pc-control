@@ -61,3 +61,22 @@ In accordance with transparent open-source practices and the requirements of the
 ## License Notice and Distribution Terms
 
 The adaptations mentioned above respect the open-source spirit and requirements of the GPLv3, AGPLv3, and GPLv2+ licenses. Source code for all modifications made to PC Control is openly maintained in this repository.
+
+---
+
+## Input subsystem (mouse / touchpad / keyboard), November 2026
+
+The mouse, touchpad and on-screen keyboard (`modules/input_engine.py`, `modules/input_controller.py`,
+`android_app/src/com/pccontrol/remote/PcInput*.java`, `PcTouchpadEngine.java`, `PcKeyboard*.java`) were written
+from scratch for PC Control. **No source code from the projects below was copied**: all four are GPL/AGPL,
+PC Control is MIT. Only publicly known design ideas and behaviour were re-implemented:
+
+* **Sunshine** (`src/input.cpp`): server-side key state with duplicate press/release suppression, server-side
+  autorepeat of the held key, accumulation of high-resolution scroll into whole `WHEEL_DELTA` ticks, release of all
+  inputs when the client disconnects.
+* **Moonlight Android** (`RelativeTouchContext` / `AbsoluteTouchContext`): tap/drag/scroll thresholds and gesture
+  rules (tap slop, long press drag, two-finger scroll, absolute "direct touch" mode with long-press right click).
+* **RustDesk** (`src/server/input_service.rs`): tracking of held keys and forced release of keys left pressed
+  (stuck-key protection).
+* **KDE Connect** (`plugins/mousepad/windowsremoteinput.cpp`): sending real virtual-key codes for shortcuts so that
+  Ctrl+C etc. work, with Unicode input as the text path; in PC Control the physical VK is resolved on the phone.

@@ -34,6 +34,7 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.animation.AccelerateDecelerateInterpolator;
+import android.view.animation.AccelerateInterpolator;
 import android.view.animation.AlphaAnimation;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
@@ -120,7 +121,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private TextView quickBtnSound;
     private TextView quickBtnTouchpad;
 
-    private boolean isTouchpadEnabled = true;
+    // Отдельные кнопки «Мышь» и «Клавиатура» (режим «Управление ПК» и панель демонстрации)
+    private TextView floatingMouseBtn;
+    private TextView floatingKbdBtn;
+    private TextView toolbarMouseBtn;
+    private TextView toolbarKbdBtn;
+
+    private boolean isTouchpadEnabled = true;      // мышь в режиме «Управление ПК»
+    private boolean isViewMouseEnabled = false;    // мышь в режиме «Демонстрация экрана»
     private boolean isKeyboardVisible = false;
     private boolean isMicStreaming = false;
 
@@ -139,16 +147,35 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private float mouseSensitivity = 1.0f;
     private boolean mouseAccel = true;
     private boolean isMouseAbsolute = false;
+    private float scrollSpeed = 1.0f;
+    private boolean invertScroll = false;
+    private int opacityTpZone = 18;
 
     // Оверлей визуального редактирования тачпада прямо на экране
     private TouchpadVisualEditorView touchpadVisualEditor;
+    private TouchpadZoneView touchpadZoneView;
     private boolean isTouchpadEditing = false;
 
+    // Ввод: постоянный поток событий на ПК, распознавание жестов, собственная клавиатура
+    private final PcInputClient inputClient = new PcInputClient();
+    private PcTouchpadEngine touchpadEngine;
+    private boolean touchGestureOwned = false;
+    private final int[] tpIds = new int[10];
+    private final float[] tpXs = new float[10];
+    private final float[] tpYs = new float[10];
+
     // Собственная встроенная клавиатура PC Control
-    private CustomKeyboardView customKeyboardView;
+    private PcKeyboardLogic keyboardLogic;
+    private PcKeyboardView keyboardView;
+    private LinearLayout keyboardPanel;
+    private GradientDrawable keyboardPanelBg;
     private int kbdWidthPct = 100;
     private int kbdHeightDp = 220;
-    private int kbdLayoutIdx = 0; // 0=EN, 1=RU, 2=UK, 3=SYM
+    private int kbdLayoutIdx = 0; // 0=EN, 1=RU, 2=UK
+    private float kbdPosX = 0.5f; // центр клавиатуры по горизонтали (доля ширины)
+    private int kbdOffsetYDp = 8; // отступ от нижнего края
+    private boolean kbdHaptics = true;
+    private boolean kbdGameKeys = false;
 
     // Настройки прозрачности элементов (0..100%)
     private int opacityGear = 85;
@@ -188,9 +215,6 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     // Микрофон телефона -> ПК
     private MicSenderThread micSenderThread = null;
     private final Object micLock = new Object();
-
-    // Диспетчер ввода мыши (Coalescing input queue thread)
-    private InputDispatcherThread inputDispatcherThread = null;
 
     // Диагностика
     private FrameLayout diagOverlay;
@@ -259,29 +283,6 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private long estimatedLatencyMs = 8;
     private String activeCodecName = "Hardware H.264";
 
-    // Обработка жестов тачпада
-    private float touchStartX = 0f;
-    private float touchStartY = 0f;
-    private float lastTouchX = 0f;
-    private float lastTouchY = 0f;
-    private long touchDownTime = 0;
-    private long lastTapTime = 0;
-    private boolean isDraggingMouse = false;
-    private boolean isMouseLongPressed = false;
-    private int activePointerCount = 1;
-
-    private final Runnable longPressRunnable = new Runnable() {
-        @Override
-        public void run() {
-            if (operatingMode == MODE_PC_CONTROL && isTouchpadEnabled && !isDraggingMouse) {
-                isMouseLongPressed = true;
-                if (inputDispatcherThread != null) {
-                    inputDispatcherThread.enqueueMouseDown("left");
-                }
-            }
-        }
-    };
-
     private final Runnable hideControlsRunnable = new Runnable() {
         @Override
         public void run() {
@@ -312,10 +313,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void init(Context context) {
         setBackgroundColor(Color.parseColor("#030303"));
         loadPreferences();
-
-        // Запуск неблокирующего диспетчера команд мыши
-        inputDispatcherThread = new InputDispatcherThread();
-        inputDispatcherThread.start();
+        initInputEngine();
 
         // 1. Контейнер для масштабирования видео при сплит-экране настроек
         videoContainer = new FrameLayout(context);
@@ -323,6 +321,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         surfaceHolder = surfaceView.getHolder();
         surfaceHolder.addCallback(this);
         videoContainer.addView(surfaceView, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+
+        // Контур прозрачного тачпада (видимость настраивается)
+        touchpadZoneView = new TouchpadZoneView(context);
+        touchpadZoneView.setVisibility(View.GONE);
+        videoContainer.addView(touchpadZoneView, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
         // Оверлей визуального редактирования зоны тачпада
         touchpadVisualEditor = new TouchpadVisualEditorView(context);
@@ -347,13 +350,151 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         buildDiagnosticsDialog(context);
         buildErrorDialog(context);
 
-        // Сенсорное управление
-        surfaceView.setOnTouchListener(new OnTouchListener() {
+        // Сенсорное управление: слушатель на всём контейнере видео (а не на SurfaceView,
+        // который в режиме Fit меньше экрана — касания в чёрных полях раньше терялись,
+        // а координаты зоны тачпада не совпадали с координатами касания).
+        videoContainer.setOnTouchListener(new OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
                 return handleTouchEvent(event);
             }
         });
+        updateQuickActionStates();
+    }
+
+    // -----------------------------------------------------------------------
+    // ВВОД: ПОТОК СОБЫТИЙ НА ПК, ЖЕСТЫ ТАЧПАДА
+    // -----------------------------------------------------------------------
+    private void initInputEngine() {
+        touchpadEngine = new PcTouchpadEngine(new PcTouchpadEngine.Sink() {
+            @Override public void move(int dx, int dy) { inputClient.mouseMove(dx, dy); }
+            @Override public void moveAbs(float x, float y) { inputClient.mouseAbs(x, y, targetMonitor); }
+            @Override public void button(int button, boolean down) { inputClient.mouseButton(button, down); }
+            @Override public void scroll(int vertical, int horizontal) { inputClient.scroll(vertical, horizontal); }
+            @Override public void feedback(int kind) {
+                if (videoContainer != null) {
+                    videoContainer.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+                }
+            }
+        }, new PcTouchpadEngine.Scheduler() {
+            @Override public void postDelayed(Runnable r, long delayMs) { mainHandler.postDelayed(r, delayMs); }
+            @Override public void cancel(Runnable r) { mainHandler.removeCallbacks(r); }
+        });
+        applyTouchpadConfig();
+
+        inputClient.setListener(new PcInputClient.Listener() {
+            @Override
+            public void onInputStateChanged(int state, String detail) {
+                mainHandler.post(new Runnable() {
+                    @Override public void run() { updateQuickActionStates(); }
+                });
+            }
+
+            @Override
+            public void onInputSessionStarted() {
+                mainHandler.post(new Runnable() {
+                    @Override public void run() {
+                        // После переподключения сервер начинает с чистого состояния:
+                        // повторно отправляем удерживаемые сейчас клавиши и кнопку мыши.
+                        if (keyboardLogic != null) keyboardLogic.resync();
+                        if (touchpadEngine != null) touchpadEngine.resync();
+                    }
+                });
+            }
+        });
+    }
+
+    private void applyTouchpadConfig() {
+        if (touchpadEngine == null) return;
+        float density = getResources().getDisplayMetrics().density;
+        touchpadEngine.configure(density, mouseSensitivity, mouseAccel, scrollSpeed, invertScroll, isMouseAbsolute);
+    }
+
+    private boolean isMouseActive() {
+        return operatingMode == MODE_PC_CONTROL ? isTouchpadEnabled : isViewMouseEnabled;
+    }
+
+    private void toggleMouseControl() {
+        if (operatingMode == MODE_PC_CONTROL) {
+            isTouchpadEnabled = !isTouchpadEnabled;
+        } else {
+            isViewMouseEnabled = !isViewMouseEnabled;
+            if (isViewMouseEnabled) {
+                mainHandler.removeCallbacks(hideControlsRunnable);
+            } else {
+                scheduleControlsAutoHide();
+            }
+        }
+        if (!isMouseActive() && touchpadEngine != null) {
+            touchpadEngine.cancel();
+            touchGestureOwned = false;
+        }
+        if (isMouseActive()) ensureInputClient();
+        updateQuickActionStates();
+        updateTouchpadZoneVisibility();
+        Toast.makeText(getContext(), isMouseActive() ? "Управление мышью включено" : "Управление мышью выключено", Toast.LENGTH_SHORT).show();
+    }
+
+    /** Открывает поток ввода на ПК (если идёт трансляция). */
+    private void ensureInputClient() {
+        if (isStreaming.get() && !inputClient.isRunning()) {
+            inputClient.start();
+        }
+    }
+
+    private void updateTouchpadZoneVisibility() {
+        if (touchpadZoneView == null) return;
+        boolean show = isMouseActive() && !isMouseAbsolute && !isTouchpadEditing && opacityTpZone > 0
+                && !isSplitSettingsOpen;
+        touchpadZoneView.setVisibility(show ? View.VISIBLE : View.GONE);
+        touchpadZoneView.invalidate();
+    }
+
+    /** Полупрозрачный контур зоны тачпада поверх видео. */
+    private class TouchpadZoneView extends View {
+        private final android.graphics.Paint fill = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Paint stroke = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final RectF r = new RectF();
+
+        TouchpadZoneView(Context c) {
+            super(c);
+            stroke.setStyle(android.graphics.Paint.Style.STROKE);
+            stroke.setStrokeWidth(dpToPx(1));
+            setWillNotDraw(false);
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas canvas) {
+            int w = getWidth();
+            int h = getHeight();
+            if (w <= 0 || h <= 0) return;
+            float a = opacityTpZone / 100f;
+            r.set(tpNormX * w, tpNormY * h, (tpNormX + tpNormW) * w, (tpNormY + tpNormH) * h);
+            fill.setColor(Color.parseColor("#38BDF8"));
+            fill.setAlpha((int) (a * 0.35f * 255));
+            canvas.drawRoundRect(r, dpToPx(16), dpToPx(16), fill);
+            stroke.setColor(Color.parseColor("#38BDF8"));
+            stroke.setAlpha((int) (a * 255));
+            canvas.drawRoundRect(r, dpToPx(16), dpToPx(16), stroke);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasWindowFocus) {
+        super.onWindowFocusChanged(hasWindowFocus);
+        if (!hasWindowFocus) {
+            // Шторка уведомлений, системный диалог, переход в другое приложение: не оставляем на ПК
+            // зажатых кнопок мыши, клавиш и зафиксированных модификаторов (Ctrl/Alt/Win/Shift).
+            releaseLocalInputState(true);
+        }
+    }
+
+    /** Отпускает всё, что удерживается пальцами (кнопка мыши, клавиши). */
+    private void releaseLocalInputState(boolean includeLatchedModifiers) {
+        if (touchpadEngine != null) touchpadEngine.cancel();
+        touchGestureOwned = false;
+        if (keyboardView != null) keyboardView.releaseAllPointers();
+        if (includeLatchedModifiers && keyboardLogic != null) keyboardLogic.releaseAll();
     }
 
     public void setOperatingMode(int mode) {
@@ -374,13 +515,19 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 applyOpacities();
             }
             if (titleView != null) titleView.setText("Управление ПК");
+            if (toolbarMouseBtn != null) toolbarMouseBtn.setVisibility(View.GONE);
+            if (toolbarKbdBtn != null) toolbarKbdBtn.setVisibility(View.GONE);
         } else {
             if (floatingControlsGroup != null) floatingControlsGroup.setVisibility(View.GONE);
             if (quickActionsDrawer != null) quickActionsDrawer.setVisibility(View.GONE);
-            if (customKeyboardView != null) customKeyboardView.setVisibility(View.GONE);
+            if (isKeyboardVisible) showCustomKeyboard(false);
             if (topToolbar != null) topToolbar.setVisibility(View.VISIBLE);
             if (titleView != null) titleView.setText("Демонстрация экрана");
+            if (toolbarMouseBtn != null) toolbarMouseBtn.setVisibility(View.VISIBLE);
+            if (toolbarKbdBtn != null) toolbarKbdBtn.setVisibility(View.VISIBLE);
         }
+        updateQuickActionStates();
+        updateTouchpadZoneVisibility();
         requestLayout();
     }
 
@@ -484,9 +631,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         quickBtnTouchpad = createQuickActionButton(context, "🖱", "Тачпад", new Runnable() {
             @Override
             public void run() {
-                isTouchpadEnabled = !isTouchpadEnabled;
-                updateQuickActionStates();
-                Toast.makeText(getContext(), isTouchpadEnabled ? "Тачпад включён" : "Тачпад выключен", Toast.LENGTH_SHORT).show();
+                toggleMouseControl();
             }
         });
 
@@ -499,12 +644,34 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         quickActionsDrawer.addView(quickBtnTouchpad);
 
         // Компоновка плавающего контейнера
+        // Отдельные кнопки: включение/выключение мыши и открытие/закрытие клавиатуры
+        floatingMouseBtn = createCircularButton(context, "🖱", 44, "#EB121622", Color.parseColor("#94A3B8"), 16f);
+        floatingMouseBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleMouseControl();
+            }
+        });
+        floatingKbdBtn = createCircularButton(context, "⌨", 44, "#EB121622", Color.parseColor("#94A3B8"), 16f);
+        floatingKbdBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleCustomKeyboard();
+            }
+        });
+
         LinearLayout headRow = new LinearLayout(context);
         headRow.setOrientation(LinearLayout.HORIZONTAL);
         headRow.setGravity(Gravity.CENTER_VERTICAL);
         headRow.addView(floatingArrowBtn);
         View sp = new View(context);
         headRow.addView(sp, new LinearLayout.LayoutParams(dpToPx(6), 1));
+        headRow.addView(floatingMouseBtn);
+        View sp2 = new View(context);
+        headRow.addView(sp2, new LinearLayout.LayoutParams(dpToPx(6), 1));
+        headRow.addView(floatingKbdBtn);
+        View sp3 = new View(context);
+        headRow.addView(sp3, new LinearLayout.LayoutParams(dpToPx(6), 1));
         headRow.addView(floatingGearBtn);
 
         LinearLayout groupCol = new LinearLayout(context);
@@ -597,10 +764,57 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
 
     private void updateQuickActionStates() {
+        int st = inputClient.getState();
+        boolean inputError = inputClient.isRunning()
+                && (st == PcInputClient.STATE_ERROR || st == PcInputClient.STATE_AUTH_ERROR);
+        boolean mouseOn = isMouseActive();
         setQuickButtonState(quickBtnKeyboard, isKeyboardVisible, false);
         setQuickButtonState(quickBtnMic, isMicStreaming, false);
         setQuickButtonState(quickBtnSound, isAudioEnabled, false);
-        setQuickButtonState(quickBtnTouchpad, isTouchpadEnabled, false);
+        setQuickButtonState(quickBtnTouchpad, mouseOn, mouseOn && inputError);
+        setRoundToggleState(floatingMouseBtn, mouseOn, mouseOn && inputError);
+        setRoundToggleState(floatingKbdBtn, isKeyboardVisible, isKeyboardVisible && inputError);
+        setToolbarToggleState(toolbarMouseBtn, isViewMouseEnabled, isViewMouseEnabled && inputError);
+        setToolbarToggleState(toolbarKbdBtn, isKeyboardVisible, isKeyboardVisible && inputError);
+    }
+
+    /** Состояние круглой плавающей кнопки (те же цвета, что у быстрых кнопок). */
+    private void setRoundToggleState(TextView btn, boolean active, boolean error) {
+        if (btn == null) return;
+        GradientDrawable gd = new GradientDrawable();
+        gd.setCornerRadius(dpToPx(22));
+        if (error) {
+            gd.setColor(Color.parseColor("#3B181E"));
+            gd.setStroke(dpToPx(1), Color.parseColor("#EF4444"));
+            btn.setTextColor(Color.parseColor("#FCA5A5"));
+        } else if (active) {
+            gd.setColor(Color.parseColor("#0C4A6E"));
+            gd.setStroke(dpToPx(1), Color.parseColor("#38BDF8"));
+            btn.setTextColor(Color.parseColor("#38BDF8"));
+        } else {
+            gd.setColor(Color.parseColor("#EB121622"));
+            gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
+            btn.setTextColor(Color.parseColor("#94A3B8"));
+        }
+        btn.setBackground(gd);
+    }
+
+    /** Состояние кнопки верхней панели демонстрации. */
+    private void setToolbarToggleState(TextView btn, boolean active, boolean error) {
+        if (btn == null) return;
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dpToPx(14));
+        if (error) {
+            bg.setColor(Color.parseColor("#3A2024"));
+            btn.setTextColor(Color.parseColor("#FF5252"));
+        } else if (active) {
+            bg.setColor(Color.parseColor("#0C4A6E"));
+            btn.setTextColor(Color.parseColor("#38BDF8"));
+        } else {
+            bg.setColor(Color.parseColor("#242A35"));
+            btn.setTextColor(Color.WHITE);
+        }
+        btn.setBackground(bg);
     }
 
     private void toggleQuickDrawer() {
@@ -662,9 +876,15 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         activeSettingsSection = section;
         renderSplitSettingsContent();
 
-        // Скрываем плавающие кнопки на время настроек
+        // Скрываем плавающие кнопки и клавиатуру на время настроек (клавиши при этом отпускаются)
         if (floatingControlsGroup != null) floatingControlsGroup.setVisibility(View.GONE);
-        if (customKeyboardView != null) customKeyboardView.setVisibility(View.GONE);
+        if (keyboardPanel != null && keyboardPanel.getVisibility() == View.VISIBLE) {
+            if (keyboardView != null) keyboardView.releaseAllPointers();
+            keyboardPanel.animate().cancel();
+            keyboardPanel.setVisibility(View.GONE);
+        }
+        releaseLocalInputState(false);
+        if (touchpadZoneView != null) touchpadZoneView.setVisibility(View.GONE);
 
         splitSettingsContainer.setVisibility(View.VISIBLE);
         splitSettingsContainer.setAlpha(0f);
@@ -720,6 +940,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         if (operatingMode == MODE_PC_CONTROL && floatingControlsGroup != null) {
                             floatingControlsGroup.setVisibility(View.VISIBLE);
                         }
+                        if (isKeyboardVisible && keyboardPanel != null && !isSplitSettingsOpen) {
+                            keyboardPanel.setVisibility(View.VISIBLE);
+                            keyboardPanel.setAlpha(1f);
+                            keyboardPanel.setTranslationY(0f);
+                        }
+                        applyTouchpadConfig();
+                        updateTouchpadZoneVisibility();
                         requestLayout();
                     }
                 })
@@ -835,6 +1062,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         void onBoundsChanged(float x, float y, float w, float h);
     }
     private TouchpadBoundsListener touchpadBoundsListener;
+
+    private void addSmallVSpacer(Context ctx, LinearLayout parent) {
+        View sp = new View(ctx);
+        parent.addView(sp, new LinearLayout.LayoutParams(1, dpToPx(8)));
+    }
 
     private void addSmallSpacer(Context ctx, LinearLayout parent) {
         View sp = new View(ctx);
@@ -1016,6 +1248,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             public void onVal(int val) {
                 mouseSensitivity = val / 10f;
                 sLbl.setText("Чувствительность: " + String.format("%.1f", mouseSensitivity) + "x");
+                applyTouchpadConfig();
             }
         });
         splitSettingsCard.addView(sBar);
@@ -1036,6 +1269,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 isMouseAbsolute = false;
                 setChipActive(relChip, true);
                 setChipActive(absChip, false);
+                applyTouchpadConfig();
             }
         });
         absChip.setOnClickListener(new OnClickListener() {
@@ -1044,11 +1278,95 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 isMouseAbsolute = true;
                 setChipActive(relChip, false);
                 setChipActive(absChip, true);
+                applyTouchpadConfig();
             }
         });
         modeRow.addView(relChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
         modeRow.addView(absChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
         splitSettingsCard.addView(modeRow);
+
+        // Ускорение указателя
+        addSectionHeader(ctx, splitSettingsCard, "УСКОРЕНИЕ И ПРОКРУТКА");
+        LinearLayout accelRow = new LinearLayout(ctx);
+        accelRow.setOrientation(LinearLayout.HORIZONTAL);
+        final TextView accelOn = createChipButton(ctx, "Ускорение: вкл", null);
+        final TextView accelOff = createChipButton(ctx, "Ускорение: выкл", null);
+        setChipActive(accelOn, mouseAccel);
+        setChipActive(accelOff, !mouseAccel);
+        accelOn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                mouseAccel = true;
+                setChipActive(accelOn, true);
+                setChipActive(accelOff, false);
+                applyTouchpadConfig();
+            }
+        });
+        accelOff.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                mouseAccel = false;
+                setChipActive(accelOn, false);
+                setChipActive(accelOff, true);
+                applyTouchpadConfig();
+            }
+        });
+        accelRow.addView(accelOn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        accelRow.addView(accelOff, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        splitSettingsCard.addView(accelRow);
+
+        // Скорость прокрутки двумя пальцами
+        final TextView scLbl = new TextView(ctx);
+        scLbl.setText("Скорость прокрутки: " + String.format("%.1f", scrollSpeed) + "x");
+        scLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        scLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(scLbl);
+        splitSettingsCard.addView(createSlider(ctx, 3, 30, (int) (scrollSpeed * 10), new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                scrollSpeed = val / 10f;
+                scLbl.setText("Скорость прокрутки: " + String.format("%.1f", scrollSpeed) + "x");
+                applyTouchpadConfig();
+            }
+        }));
+
+        LinearLayout invRow = new LinearLayout(ctx);
+        invRow.setOrientation(LinearLayout.HORIZONTAL);
+        final TextView natChip = createChipButton(ctx, "Прокрутка: естественная", null);
+        final TextView invChip = createChipButton(ctx, "Прокрутка: обратная", null);
+        setChipActive(natChip, !invertScroll);
+        setChipActive(invChip, invertScroll);
+        natChip.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                invertScroll = false;
+                setChipActive(natChip, true);
+                setChipActive(invChip, false);
+                applyTouchpadConfig();
+            }
+        });
+        invChip.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                invertScroll = true;
+                setChipActive(natChip, false);
+                setChipActive(invChip, true);
+                applyTouchpadConfig();
+            }
+        });
+        invRow.addView(natChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        invRow.addView(invChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        splitSettingsCard.addView(invRow);
+
+        // Видимость зоны тачпада поверх видео
+        final TextView zLbl = new TextView(ctx);
+        zLbl.setText("Видимость зоны тачпада: " + opacityTpZone + "%");
+        zLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        zLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(zLbl);
+        splitSettingsCard.addView(createSlider(ctx, 0, 100, opacityTpZone, new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                opacityTpZone = val;
+                zLbl.setText("Видимость зоны тачпада: " + val + "%");
+            }
+        }));
 
         addDivider(ctx, splitSettingsCard);
 
@@ -1067,6 +1385,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 mouseSensitivity = 1.0f;
                 mouseAccel = true;
                 isMouseAbsolute = false;
+                scrollSpeed = 1.0f;
+                invertScroll = false;
+                opacityTpZone = 18;
+                applyTouchpadConfig();
                 savePreferences();
                 renderSplitSettingsContent();
             }
@@ -1123,24 +1445,66 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         hLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         splitSettingsCard.addView(hLbl);
 
-        SeekBar hBar = createSlider(ctx, 160, 320, kbdHeightDp, new SeekBarCallback() {
+        SeekBar hBar = createSlider(ctx, 140, 360, kbdHeightDp, new SeekBarCallback() {
             @Override
             public void onVal(int val) {
                 kbdHeightDp = val;
                 hLbl.setText("Высота клавиатуры: " + val + " dp");
-                if (customKeyboardView != null) customKeyboardView.updateLayoutSize();
+                requestLayout();
             }
         });
         splitSettingsCard.addView(hBar);
 
-        // Прозрачность фона клавиатуры
+        final TextView wLbl = new TextView(ctx);
+        wLbl.setText("Ширина клавиатуры: " + kbdWidthPct + "%");
+        wLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        wLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(wLbl);
+        splitSettingsCard.addView(createSlider(ctx, 40, 100, kbdWidthPct, new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                kbdWidthPct = val;
+                wLbl.setText("Ширина клавиатуры: " + val + "%");
+                requestLayout();
+            }
+        }));
+
+        addSectionHeader(ctx, splitSettingsCard, "ПОЛОЖЕНИЕ (также перетаскивание за полоску ━━ сверху клавиатуры)");
+        final TextView xLbl = new TextView(ctx);
+        xLbl.setText("По горизонтали: " + Math.round(kbdPosX * 100) + "%");
+        xLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        xLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(xLbl);
+        splitSettingsCard.addView(createSlider(ctx, 0, 100, Math.round(kbdPosX * 100), new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                kbdPosX = val / 100f;
+                xLbl.setText("По горизонтали: " + val + "%");
+                requestLayout();
+            }
+        }));
+        final TextView yLbl = new TextView(ctx);
+        yLbl.setText("Отступ снизу: " + kbdOffsetYDp + " dp");
+        yLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        yLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(yLbl);
+        splitSettingsCard.addView(createSlider(ctx, 0, 400, kbdOffsetYDp, new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                kbdOffsetYDp = val;
+                yLbl.setText("Отступ снизу: " + val + " dp");
+                requestLayout();
+            }
+        }));
+
+        addSectionHeader(ctx, splitSettingsCard, "ПРОЗРАЧНОСТЬ");
         final TextView opLbl = new TextView(ctx);
         opLbl.setText("Прозрачность подложки: " + opacityKbdBg + "%");
         opLbl.setTextColor(Color.parseColor("#CBD5E1"));
         opLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         splitSettingsCard.addView(opLbl);
 
-        SeekBar opBar = createSlider(ctx, 20, 100, opacityKbdBg, new SeekBarCallback() {
+        SeekBar opBar = createSlider(ctx, 0, 100, opacityKbdBg, new SeekBarCallback() {
             @Override
             public void onVal(int val) {
                 opacityKbdBg = val;
@@ -1150,7 +1514,105 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         });
         splitSettingsCard.addView(opBar);
 
+        final TextView kOpLbl = new TextView(ctx);
+        kOpLbl.setText("Прозрачность клавиш: " + opacityKbdKeys + "%");
+        kOpLbl.setTextColor(Color.parseColor("#CBD5E1"));
+        kOpLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        splitSettingsCard.addView(kOpLbl);
+        splitSettingsCard.addView(createSlider(ctx, 15, 100, opacityKbdKeys, new SeekBarCallback() {
+            @Override
+            public void onVal(int val) {
+                opacityKbdKeys = val;
+                kOpLbl.setText("Прозрачность клавиш: " + val + "%");
+                applyOpacities();
+            }
+        }));
+
+        addSectionHeader(ctx, splitSettingsCard, "ЯЗЫК ВВОДА (переключение — клавиша EN/RU/UK)");
+        LinearLayout langRow = new LinearLayout(ctx);
+        langRow.setOrientation(LinearLayout.HORIZONTAL);
+        final String[] langNames = {"EN", "RU", "UK"};
+        final TextView[] langChips = new TextView[3];
+        for (int i = 0; i < 3; i++) {
+            final int li = i;
+            langChips[i] = createChipButton(ctx, langNames[i], null);
+            setChipActive(langChips[i], kbdLayoutIdx == i);
+            langChips[i].setOnClickListener(new OnClickListener() {
+                @Override public void onClick(View v) {
+                    kbdLayoutIdx = li;
+                    if (keyboardLogic != null) keyboardLogic.setLang(li);
+                    for (int j = 0; j < 3; j++) setChipActive(langChips[j], j == li);
+                }
+            });
+            langRow.addView(langChips[i], new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        }
+        splitSettingsCard.addView(langRow);
+
+        addSectionHeader(ctx, splitSettingsCard, "РЕЖИМ БУКВЕННЫХ КЛАВИШ");
+        LinearLayout modeRow = new LinearLayout(ctx);
+        modeRow.setOrientation(LinearLayout.HORIZONTAL);
+        final TextView textChip = createChipButton(ctx, "Текст (Unicode)", null);
+        final TextView gameChip = createChipButton(ctx, "Клавиши (игры)", null);
+        setChipActive(textChip, !kbdGameKeys);
+        setChipActive(gameChip, kbdGameKeys);
+        textChip.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                kbdGameKeys = false;
+                if (keyboardLogic != null) keyboardLogic.setGameKeys(false);
+                setChipActive(textChip, true);
+                setChipActive(gameChip, false);
+            }
+        });
+        gameChip.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                kbdGameKeys = true;
+                if (keyboardLogic != null) keyboardLogic.setGameKeys(true);
+                setChipActive(textChip, false);
+                setChipActive(gameChip, true);
+            }
+        });
+        modeRow.addView(textChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        modeRow.addView(gameChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        splitSettingsCard.addView(modeRow);
+
+        LinearLayout hapRow = new LinearLayout(ctx);
+        hapRow.setOrientation(LinearLayout.HORIZONTAL);
+        final TextView hapOn = createChipButton(ctx, "Вибрация: вкл", null);
+        final TextView hapOff = createChipButton(ctx, "Вибрация: выкл", null);
+        setChipActive(hapOn, kbdHaptics);
+        setChipActive(hapOff, !kbdHaptics);
+        hapOn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                kbdHaptics = true;
+                if (keyboardView != null) keyboardView.setHaptics(true);
+                setChipActive(hapOn, true);
+                setChipActive(hapOff, false);
+            }
+        });
+        hapOff.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                kbdHaptics = false;
+                if (keyboardView != null) keyboardView.setHaptics(false);
+                setChipActive(hapOn, false);
+                setChipActive(hapOff, true);
+            }
+        });
+        hapRow.addView(hapOn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        hapRow.addView(hapOff, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
+        splitSettingsCard.addView(hapRow);
+
         addDivider(ctx, splitSettingsCard);
+
+        TextView saveKbdBtn = createToolbarButton(ctx, "✓ Сохранить настройки клавиатуры", "#16A34A", Color.WHITE, 12f);
+        saveKbdBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                savePreferences();
+                Toast.makeText(getContext(), "Настройки клавиатуры сохранены", Toast.LENGTH_SHORT).show();
+            }
+        });
+        splitSettingsCard.addView(saveKbdBtn);
+        addSmallVSpacer(ctx, splitSettingsCard);
 
         TextView testKbdBtn = createToolbarButton(ctx, "⌨ Открыть клавиатуру для проверки", "#1E2530", Color.parseColor("#38BDF8"), 13f);
         testKbdBtn.setOnClickListener(new OnClickListener() {
@@ -1269,8 +1731,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (quickBtnTouchpad != null) quickBtnTouchpad.setAlpha(opacityBtnTouchpad / 100f);
         if (splitSettingsCard != null) splitSettingsCard.setAlpha(opacitySettings / 100f);
         if (diagCard != null) diagCard.setAlpha(opacityDiag / 100f);
-        if (customKeyboardView != null) customKeyboardView.applyOpacity(opacityKbdBg / 100f, opacityKbdKeys / 100f);
+        if (keyboardPanelBg != null) keyboardPanelBg.setAlpha(Math.round(opacityKbdBg / 100f * 255));
+        if (keyboardView != null) keyboardView.setKeyOpacity(opacityKbdKeys / 100f, opacityKbdSpecial / 100f);
         if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+        if (touchpadZoneView != null) touchpadZoneView.invalidate();
     }
 
     private void resetDefaultOpacities() {
@@ -1444,309 +1908,128 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     // СОБСТВЕННАЯ ЭКРАННАЯ КЛАВИАТУРА PC CONTROL
     // -----------------------------------------------------------------------
     private void buildCustomKeyboard(Context context) {
-        customKeyboardView = new CustomKeyboardView(context);
-        customKeyboardView.setVisibility(View.GONE);
-        addView(customKeyboardView, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
+        keyboardLogic = new PcKeyboardLogic(new PcKeyboardLogic.Output() {
+            @Override public void key(int vk, boolean down) { inputClient.key(vk, down); }
+            @Override public void unicode(int codePoint, boolean down) { inputClient.unicode(codePoint, down); }
+            @Override public void hotkey(int[] vks) { inputClient.hotkey(vks); }
+            @Override public void onKeyboardChanged() {
+                if (keyboardView != null) keyboardView.rebuild();
+                if (keyboardLogic != null && keyboardLogic.getLang() != kbdLayoutIdx) {
+                    kbdLayoutIdx = keyboardLogic.getLang();
+                    savePreferences(); // язык, выбранный клавишей EN/RU/UK, сохраняется между сеансами
+                }
+            }
+            @Override public void onHideRequested() { showCustomKeyboard(false); }
+        });
+        keyboardLogic.setLang(Math.max(0, Math.min(2, kbdLayoutIdx)));
+        keyboardLogic.setGameKeys(kbdGameKeys);
+
+        keyboardPanel = new LinearLayout(context);
+        keyboardPanel.setOrientation(LinearLayout.VERTICAL);
+        keyboardPanelBg = new GradientDrawable();
+        keyboardPanelBg.setColor(Color.parseColor("#E6121622"));
+        keyboardPanelBg.setCornerRadius(dpToPx(16));
+        keyboardPanelBg.setStroke(dpToPx(1), Color.parseColor("#334155"));
+        keyboardPanel.setBackground(keyboardPanelBg);
+        int pad = dpToPx(6);
+        keyboardPanel.setPadding(pad, 0, pad, pad);
+        keyboardPanel.setVisibility(View.GONE);
+
+        // Полоска-ручка: перетаскивание клавиатуры по экрану
+        FrameLayout handle = new FrameLayout(context);
+        View grip = new View(context);
+        GradientDrawable gripBg = new GradientDrawable();
+        gripBg.setColor(Color.parseColor("#64748B"));
+        gripBg.setCornerRadius(dpToPx(2));
+        grip.setBackground(gripBg);
+        handle.addView(grip, new FrameLayout.LayoutParams(dpToPx(44), dpToPx(4), Gravity.CENTER));
+        handle.setOnTouchListener(new OnTouchListener() {
+            private float startRawX, startRawY, startPosX;
+            private int startOffset;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent ev) {
+                int parentW = Math.max(1, getWidth());
+                switch (ev.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        startRawX = ev.getRawX();
+                        startRawY = ev.getRawY();
+                        startPosX = kbdPosX;
+                        startOffset = kbdOffsetYDp;
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        float density = getResources().getDisplayMetrics().density;
+                        kbdPosX = Math.max(0f, Math.min(1f, startPosX + (ev.getRawX() - startRawX) / parentW));
+                        kbdOffsetYDp = Math.max(0, Math.min(Math.round(getHeight() / density),
+                                startOffset - Math.round((ev.getRawY() - startRawY) / density)));
+                        requestLayout();
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        savePreferences();
+                        return true;
+                }
+                return true;
+            }
+        });
+        keyboardPanel.addView(handle, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, dpToPx(20)));
+
+        keyboardView = new PcKeyboardView(context, keyboardLogic);
+        keyboardView.setHaptics(kbdHaptics);
+        keyboardPanel.addView(keyboardView, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f));
+
+        addView(keyboardPanel, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM));
+        applyOpacities();
     }
 
     private void toggleCustomKeyboard() {
         showCustomKeyboard(!isKeyboardVisible);
     }
 
+    /** Плавное открытие (выезд снизу + проявление) и закрытие клавиатуры. */
     private void showCustomKeyboard(boolean show) {
         isKeyboardVisible = show;
-        if (customKeyboardView != null) {
-            if (!show) {
-                // При закрытии клавиатуры обязательно отпускаем модификаторы, чтобы они не зависали в Windows
-                customKeyboardView.releaseHeldModifiers();
-            }
-            customKeyboardView.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (keyboardPanel != null) {
+            keyboardPanel.animate().cancel();
             if (show) {
-                customKeyboardView.setAlpha(0f);
-                customKeyboardView.animate().alpha(1f).setDuration(200).start();
+                ensureInputClient();
+                if (keyboardView != null) keyboardView.rebuild();
+                keyboardPanel.setVisibility(View.VISIBLE);
+                float h = keyboardPanel.getHeight() > 0 ? keyboardPanel.getHeight() : dpToPx(kbdHeightDp);
+                keyboardPanel.setAlpha(0f);
+                keyboardPanel.setTranslationY(h * 0.35f);
+                keyboardPanel.animate()
+                        .alpha(1f)
+                        .translationY(0f)
+                        .setDuration(220)
+                        .setInterpolator(new DecelerateInterpolator())
+                        .setListener(null)
+                        .start();
+            } else {
+                // При закрытии отпускаем всё: и клавиши под пальцами, и зафиксированные модификаторы
+                if (keyboardView != null) keyboardView.releaseAllPointers();
+                if (keyboardLogic != null) keyboardLogic.releaseAll();
+                if (keyboardPanel.getVisibility() == View.VISIBLE) {
+                    keyboardPanel.animate()
+                            .alpha(0f)
+                            .translationY(keyboardPanel.getHeight() * 0.35f)
+                            .setDuration(180)
+                            .setInterpolator(new AccelerateInterpolator())
+                            .setListener(new AnimatorListenerAdapter() {
+                                @Override
+                                public void onAnimationEnd(Animator animation) {
+                                    if (!isKeyboardVisible) {
+                                        keyboardPanel.setVisibility(View.GONE);
+                                        keyboardPanel.setTranslationY(0f);
+                                    }
+                                }
+                            })
+                            .start();
+                }
             }
         }
         updateQuickActionStates();
-    }
-
-    /**
-     * Компонент экранной клавиатуры с поддержкой раскладок EN, RU, UK, Symbols и горячих клавиш.
-     */
-    private class CustomKeyboardView extends LinearLayout {
-        private LinearLayout specialBar;
-        private LinearLayout keyContainer;
-        private boolean isShiftActive = false;
-        private boolean isCtrlActive = false;
-        private boolean isAltActive = false;
-        private boolean isWinActive = false;
-
-        public CustomKeyboardView(Context context) {
-            super(context);
-            setOrientation(LinearLayout.VERTICAL);
-            initKbd(context);
-        }
-
-        private void initKbd(Context context) {
-            GradientDrawable gd = new GradientDrawable();
-            gd.setColor(Color.parseColor("#E6121622"));
-            gd.setCornerRadius(dpToPx(16));
-            gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
-            setBackground(gd);
-            int pad = dpToPx(6);
-            setPadding(pad, pad, pad, pad);
-
-            // Панель специальных клавиш (Esc, Tab, Del, Home, End, PgUp/Down, Arrows, F-keys) с горизонтальной прокруткой
-            HorizontalScrollView specialScroll = new HorizontalScrollView(context);
-            specialScroll.setHorizontalScrollBarEnabled(false);
-            specialScroll.setFillViewport(true);
-
-            specialBar = new LinearLayout(context);
-            specialBar.setOrientation(LinearLayout.HORIZONTAL);
-            specialBar.setGravity(Gravity.CENTER_VERTICAL);
-            buildSpecialBar(context);
-
-            specialScroll.addView(specialBar, new FrameLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
-            addView(specialScroll);
-
-            // Контейнер алфавитных рядов
-            keyContainer = new LinearLayout(context);
-            keyContainer.setOrientation(LinearLayout.VERTICAL);
-            addView(keyContainer);
-
-            renderKeyboardRows();
-            applyOpacity(opacityKbdBg / 100f, opacityKbdKeys / 100f);
-        }
-
-        public void updateLayoutSize() {
-            if (keyContainer != null) renderKeyboardRows();
-        }
-
-        public void applyOpacity(float bgOp, float keyOp) {
-            setAlpha(bgOp);
-        }
-
-        public void releaseHeldModifiers() {
-            if (isCtrlActive) {
-                isCtrlActive = false;
-                sendModifierKey("ctrl", false);
-            }
-            if (isAltActive) {
-                isAltActive = false;
-                sendModifierKey("alt", false);
-            }
-            if (isWinActive) {
-                isWinActive = false;
-                sendModifierKey("win", false);
-            }
-            if (isShiftActive) {
-                isShiftActive = false;
-                sendModifierKey("shift", false);
-            }
-            renderKeyboardRows();
-        }
-
-        private void buildSpecialBar(Context ctx) {
-            specialBar.removeAllViews();
-            addSpecialKey(ctx, "ESC", new Runnable() { @Override public void run() { sendKeyPress("esc"); } });
-            addSpecialKey(ctx, "TAB", new Runnable() { @Override public void run() { sendKeyPress("tab"); } });
-            addSpecialKey(ctx, "DEL", new Runnable() { @Override public void run() { sendKeyPress("delete"); } });
-            addSpecialKey(ctx, "HOME", new Runnable() { @Override public void run() { sendKeyPress("home"); } });
-            addSpecialKey(ctx, "END", new Runnable() { @Override public void run() { sendKeyPress("end"); } });
-            addSpecialKey(ctx, "PGUP", new Runnable() { @Override public void run() { sendKeyPress("pageup"); } });
-            addSpecialKey(ctx, "PGDN", new Runnable() { @Override public void run() { sendKeyPress("pagedown"); } });
-            addSpecialKey(ctx, "↑", new Runnable() { @Override public void run() { sendKeyPress("up"); } });
-            addSpecialKey(ctx, "↓", new Runnable() { @Override public void run() { sendKeyPress("down"); } });
-            addSpecialKey(ctx, "←", new Runnable() { @Override public void run() { sendKeyPress("left"); } });
-            addSpecialKey(ctx, "→", new Runnable() { @Override public void run() { sendKeyPress("right"); } });
-            addSpecialKey(ctx, "F1", new Runnable() { @Override public void run() { sendKeyPress("f1"); } });
-            addSpecialKey(ctx, "F2", new Runnable() { @Override public void run() { sendKeyPress("f2"); } });
-            addSpecialKey(ctx, "F5", new Runnable() { @Override public void run() { sendKeyPress("f5"); } });
-            addSpecialKey(ctx, "F11", new Runnable() { @Override public void run() { sendKeyPress("f11"); } });
-            addSpecialKey(ctx, "F12", new Runnable() { @Override public void run() { sendKeyPress("f12"); } });
-            addSpecialKey(ctx, "✕", new Runnable() { @Override public void run() { showCustomKeyboard(false); } });
-        }
-
-        private void addSpecialKey(Context ctx, String text, final Runnable act) {
-            TextView btn = createKeyView(ctx, text, 1.0f, false, act);
-            btn.setTextColor(Color.parseColor("#38BDF8"));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, dpToPx(36));
-            lp.setMargins(dpToPx(2), dpToPx(2), dpToPx(2), dpToPx(4));
-            int padX = dpToPx(10);
-            btn.setPadding(padX, 0, padX, 0);
-            btn.setLayoutParams(lp);
-            specialBar.addView(btn);
-        }
-
-        private void renderKeyboardRows() {
-            keyContainer.removeAllViews();
-            Context ctx = getContext();
-
-            String[][] rows;
-            if (kbdLayoutIdx == 1) {
-                // RU раскладка с Shift
-                rows = new String[][] {
-                    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х", "Ъ"},
-                    {"Ф", "Ы", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Э"},
-                    {"⇧", "Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "⌫"},
-                    {"123", "CTRL", "ALT", "WIN", " ", "ENTER", "RU"}
-                };
-            } else if (kbdLayoutIdx == 2) {
-                // UK раскладка с Shift
-                rows = new String[][] {
-                    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х", "Ї"},
-                    {"Ф", "І", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Є"},
-                    {"⇧", "Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "⌫"},
-                    {"123", "CTRL", "ALT", "WIN", " ", "ENTER", "UK"}
-                };
-            } else if (kbdLayoutIdx == 3) {
-                // Цифры и спецсимволы
-                rows = new String[][] {
-                    {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
-                    {"@", "#", "$", "%", "&", "*", "-", "+", "(", ")"},
-                    {"⇧", "!", "\"", "'", ":", ";", "/", "\\", "?", "⌫"},
-                    {"ABC", "CTRL", "ALT", "WIN", " ", "ENTER", "SYM"}
-                };
-            } else {
-                // EN раскладка с Shift
-                rows = new String[][] {
-                    {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"},
-                    {"A", "S", "D", "F", "G", "H", "J", "K", "L"},
-                    {"⇧", "Z", "X", "C", "V", "B", "N", "M", "⌫"},
-                    {"123", "CTRL", "ALT", "WIN", " ", "ENTER", "EN"}
-                };
-            }
-
-            for (String[] rowKeys : rows) {
-                LinearLayout rowLayout = new LinearLayout(ctx);
-                rowLayout.setOrientation(LinearLayout.HORIZONTAL);
-                rowLayout.setGravity(Gravity.CENTER);
-
-                for (final String key : rowKeys) {
-                    float weight = 1.0f;
-                    if (" ".equals(key)) weight = 3.5f;
-                    else if ("ENTER".equals(key)) weight = 1.8f;
-                    else if ("⌫".equals(key)) weight = 1.4f;
-                    else if ("⇧".equals(key)) weight = 1.4f;
-
-                    boolean isMod = "CTRL".equals(key) || "ALT".equals(key) || "WIN".equals(key) || "⇧".equals(key);
-                    boolean isModActive = ("CTRL".equals(key) && isCtrlActive)
-                            || ("ALT".equals(key) && isAltActive)
-                            || ("WIN".equals(key) && isWinActive)
-                            || ("⇧".equals(key) && isShiftActive);
-
-                    String displayKey = key;
-                    if (key.length() == 1 && Character.isLetter(key.charAt(0))) {
-                        displayKey = isShiftActive ? key.toUpperCase() : key.toLowerCase();
-                    }
-
-                    TextView kView = createKeyView(ctx, displayKey, weight, isModActive, new Runnable() {
-                        @Override
-                        public void run() {
-                            handleKeyTap(key);
-                        }
-                    });
-                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dpToPx(38), weight);
-                    lp.setMargins(dpToPx(2), dpToPx(2), dpToPx(2), dpToPx(2));
-                    kView.setLayoutParams(lp);
-                    rowLayout.addView(kView);
-                }
-                keyContainer.addView(rowLayout);
-            }
-        }
-
-        private TextView createKeyView(Context ctx, String text, float weight, boolean active, final Runnable act) {
-            TextView btn = new TextView(ctx);
-            btn.setText(" ".equals(text) ? "ПРОБЕЛ" : text);
-            btn.setTextColor(active ? Color.parseColor("#38BDF8") : Color.WHITE);
-            btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, text.length() > 2 ? 11f : 14f);
-            btn.setTypeface(Typeface.DEFAULT_BOLD);
-            btn.setGravity(Gravity.CENTER);
-
-            GradientDrawable gd = new GradientDrawable();
-            gd.setColor(active ? Color.parseColor("#0C4A6E") : Color.parseColor("#1E2530"));
-            gd.setCornerRadius(dpToPx(8));
-            gd.setStroke(dpToPx(1), active ? Color.parseColor("#38BDF8") : Color.parseColor("#334155"));
-            btn.setBackground(gd);
-
-            btn.setOnClickListener(new OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    if (act != null) act.run();
-                }
-            });
-            return btn;
-        }
-
-        private void handleKeyTap(String key) {
-            if ("⌫".equals(key)) {
-                sendKeyPress("backspace");
-            } else if ("ENTER".equals(key)) {
-                sendKeyPress("enter");
-            } else if (" ".equals(key)) {
-                sendKeyPress("space");
-            } else if ("123".equals(key)) {
-                kbdLayoutIdx = 3;
-                renderKeyboardRows();
-            } else if ("ABC".equals(key)) {
-                kbdLayoutIdx = 0;
-                renderKeyboardRows();
-            } else if ("EN".equals(key)) {
-                kbdLayoutIdx = 1; // переход на RU
-                renderKeyboardRows();
-            } else if ("RU".equals(key)) {
-                kbdLayoutIdx = 2; // переход на UK
-                renderKeyboardRows();
-            } else if ("UK".equals(key)) {
-                kbdLayoutIdx = 0; // переход на EN
-                renderKeyboardRows();
-            } else if ("SYM".equals(key)) {
-                kbdLayoutIdx = 0;
-                renderKeyboardRows();
-            } else if ("⇧".equals(key)) {
-                isShiftActive = !isShiftActive;
-                sendModifierKey("shift", isShiftActive);
-                renderKeyboardRows();
-            } else if ("CTRL".equals(key)) {
-                isCtrlActive = !isCtrlActive;
-                sendModifierKey("ctrl", isCtrlActive);
-                renderKeyboardRows();
-            } else if ("ALT".equals(key)) {
-                isAltActive = !isAltActive;
-                sendModifierKey("alt", isAltActive);
-                renderKeyboardRows();
-            } else if ("WIN".equals(key)) {
-                isWinActive = !isWinActive;
-                sendModifierKey("win", isWinActive);
-                renderKeyboardRows();
-            } else {
-                // Обычный символ (Unicode)
-                String charToSend = isShiftActive ? key.toUpperCase() : key.toLowerCase();
-                sendUnicodeText(charToSend);
-                if (isShiftActive) {
-                    isShiftActive = false;
-                    sendModifierKey("shift", false);
-                    renderKeyboardRows();
-                }
-            }
-        }
-    }
-
-    private void sendKeyPress(final String keyName) {
-        if (inputDispatcherThread != null) {
-            inputDispatcherThread.enqueueKeyPress(keyName);
-        }
-    }
-
-    private void sendModifierKey(final String keyName, final boolean isDown) {
-        if (inputDispatcherThread != null) {
-            inputDispatcherThread.enqueueKeyModifier(keyName, isDown);
-        }
-    }
-
-    private void sendUnicodeText(final String text) {
-        if (inputDispatcherThread != null) {
-            inputDispatcherThread.enqueueUnicodeText(text);
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -1911,280 +2194,67 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
 
     // -----------------------------------------------------------------------
-    // МУЛЬТИТАЧ СЕНСОРНЫЙ КОНТРОЛЛЕР МЫШИ (ПРОЗРАЧНЫЙ ТАЧПАД)
+    // МУЛЬТИТАЧ: ПРОЗРАЧНЫЙ ТАЧПАД / ПРЯМОЕ КАСАНИЕ (жесты — PcTouchpadEngine)
     // -----------------------------------------------------------------------
     private boolean handleTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
-        activePointerCount = event.getPointerCount();
-        float x = event.getX();
-        float y = event.getY();
+        int w = videoContainer.getWidth();
+        int h = videoContainer.getHeight();
 
-        if (operatingMode == MODE_VIEW) {
-            // В режиме просмотра тапы скрывают/показывают тулбар
-            if (action == MotionEvent.ACTION_UP) {
-                setControlsVisible(!isControlsVisible, true);
-            }
+        // Открыта панель настроек: касание живого видео закрывает её
+        if (isSplitSettingsOpen && !isTouchpadEditing) {
+            if (action == MotionEvent.ACTION_UP) closeSplitSettingsWithAnimation();
             return true;
         }
 
-        // В режиме Управление ПК: если открыта панель настроек слева, клик по живому видео справа закрывает настройки
-        int pW = getWidth();
-        int pH = getHeight();
-        if (isSplitSettingsOpen && !isTouchpadEditing) {
-            if (action == MotionEvent.ACTION_UP && x > pW * 0.48f) {
-                closeSplitSettingsWithAnimation();
+        if (!isMouseActive() || isTouchpadEditing || w <= 0 || h <= 0) {
+            touchGestureOwned = false;
+            if (operatingMode == MODE_VIEW) {
+                // В режиме просмотра тапы скрывают/показывают тулбар
+                if (action == MotionEvent.ACTION_UP) setControlsVisible(!isControlsVisible, true);
                 return true;
             }
             return false;
         }
 
-        if (pW <= 0 || pH <= 0 || !isTouchpadEnabled || isTouchpadEditing) {
-            return false;
-        }
-
-        float tpLeft = tpNormX * pW;
-        float tpTop = tpNormY * pH;
-        float tpRight = (tpNormX + tpNormW) * pW;
-        float tpBottom = (tpNormY + tpNormH) * pH;
-
-        // Если касание вне зоны тачпада — пропускаем для остальных элементов
         if (action == MotionEvent.ACTION_DOWN) {
-            if (x < tpLeft || x > tpRight || y < tpTop || y > tpBottom) {
-                return false;
+            float x = event.getX();
+            float y = event.getY();
+            boolean inside;
+            if (isMouseAbsolute) {
+                // Прямое касание: рабочая область = видимая картинка ПК
+                inside = videoViewportRect.width() > 0 && videoViewportRect.contains((int) x, (int) y);
+                touchpadEngine.setViewport(videoViewportRect.left, videoViewportRect.top,
+                        videoViewportRect.width(), videoViewportRect.height());
+            } else {
+                inside = x >= tpNormX * w && x <= (tpNormX + tpNormW) * w
+                        && y >= tpNormY * h && y <= (tpNormY + tpNormH) * h;
             }
+            touchGestureOwned = inside;
+            if (inside) ensureInputClient();
         }
 
-        switch (action) {
-            case MotionEvent.ACTION_DOWN:
-                touchStartX = x;
-                touchStartY = y;
-                lastTouchX = x;
-                lastTouchY = y;
-                touchDownTime = SystemClock.uptimeMillis();
-                isDraggingMouse = false;
-                isMouseLongPressed = false;
-                mainHandler.postDelayed(longPressRunnable, 350);
-                break;
+        if (!touchGestureOwned) {
+            if (operatingMode == MODE_VIEW && action == MotionEvent.ACTION_UP) {
+                setControlsVisible(!isControlsVisible, true);
+            }
+            return operatingMode == MODE_VIEW;
+        }
 
-            case MotionEvent.ACTION_MOVE:
-                float dx = x - lastTouchX;
-                float dy = y - lastTouchY;
-                lastTouchX = x;
-                lastTouchY = y;
+        int n = Math.min(event.getPointerCount(), tpIds.length);
+        for (int i = 0; i < n; i++) {
+            tpIds[i] = event.getPointerId(i);
+            tpXs[i] = event.getX(i);
+            tpYs[i] = event.getY(i);
+        }
+        int actionIndex = Math.min(event.getActionIndex(), n - 1);
+        // Константы ACTION_* движка совпадают с MotionEvent
+        touchpadEngine.onTouch(action, actionIndex, n, tpIds, tpXs, tpYs, event.getEventTime());
 
-                if (Math.abs(x - touchStartX) > dpToPx(6) || Math.abs(y - touchStartY) > dpToPx(6)) {
-                    isDraggingMouse = true;
-                    mainHandler.removeCallbacks(longPressRunnable);
-                }
-
-                if (activePointerCount == 1) {
-                    if (isMouseAbsolute) {
-                        float normX = Math.max(0f, Math.min(1f, (x - tpLeft) / (tpRight - tpLeft)));
-                        float normY = Math.max(0f, Math.min(1f, (y - tpTop) / (tpBottom - tpTop)));
-                        if (inputDispatcherThread != null) {
-                            inputDispatcherThread.enqueueMouseMoveNorm(normX, normY, targetMonitor);
-                        }
-                    } else {
-                        if (inputDispatcherThread != null) {
-                            inputDispatcherThread.enqueueMouseMoveRel(dx, dy, mouseSensitivity, mouseAccel);
-                        }
-                    }
-                } else if (activePointerCount >= 2) {
-                    mainHandler.removeCallbacks(longPressRunnable);
-                    int scrollDelta = (int) (-dy / dpToPx(6));
-                    if (scrollDelta != 0 && inputDispatcherThread != null) {
-                        inputDispatcherThread.enqueueMouseScroll(scrollDelta);
-                    }
-                }
-                break;
-
-            case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
-                mainHandler.removeCallbacks(longPressRunnable);
-                long duration = SystemClock.uptimeMillis() - touchDownTime;
-
-                if (isMouseLongPressed) {
-                    isMouseLongPressed = false;
-                    if (inputDispatcherThread != null) {
-                        inputDispatcherThread.enqueueMouseUp("left");
-                    }
-                } else if (action != MotionEvent.ACTION_CANCEL && !isDraggingMouse && duration < 280) {
-                    long now = SystemClock.uptimeMillis();
-                    if (now - lastTapTime < 280) {
-                        // Двойной клик
-                        if (inputDispatcherThread != null) {
-                            inputDispatcherThread.enqueueMouseClick("left", true);
-                        }
-                        lastTapTime = 0;
-                    } else {
-                        // Одиночный левый клик
-                        if (inputDispatcherThread != null) {
-                            inputDispatcherThread.enqueueMouseClick("left", false);
-                        }
-                        lastTapTime = now;
-                    }
-                }
-                break;
-
-            case MotionEvent.ACTION_POINTER_UP:
-                mainHandler.removeCallbacks(longPressRunnable);
-                if (activePointerCount == 2 && !isDraggingMouse) {
-                    // Касание двумя пальцами — Правый клик
-                    if (inputDispatcherThread != null) {
-                        inputDispatcherThread.enqueueMouseClick("right", false);
-                    }
-                }
-                break;
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            touchGestureOwned = false;
         }
         return true;
-    }
-
-    // -----------------------------------------------------------------------
-    // НЕБЛОКИРУЮЩИЙ ДИСПЕТЧЕР КОМАНД ВВОДА (InputDispatcherThread)
-    // -----------------------------------------------------------------------
-    private static class InputCmd {
-        String json;
-        float relDx, relDy;
-        boolean isCoalescedMove = false;
-    }
-
-    private class InputDispatcherThread extends Thread {
-        private final LinkedBlockingQueue<InputCmd> queue = new LinkedBlockingQueue<>(250);
-        private final AtomicBoolean running = new AtomicBoolean(true);
-        private HttpURLConnection keepAliveConn = null;
-
-        public InputDispatcherThread() {
-            super("pc-control-input-dispatcher");
-        }
-
-        public void enqueueMouseMoveRel(float dx, float dy, float sens, boolean accel) {
-            InputCmd cmd = new InputCmd();
-            cmd.relDx = dx;
-            cmd.relDy = dy;
-            cmd.isCoalescedMove = true;
-            cmd.json = "{\"action\":\"move_rel\",\"dx\":" + dx + ",\"dy\":" + dy + ",\"sensitivity\":" + sens + ",\"accel\":" + accel + "}";
-            queue.offer(cmd);
-        }
-
-        public void enqueueMouseMoveNorm(float nx, float ny, int mon) {
-            InputCmd cmd = new InputCmd();
-            cmd.json = "{\"action\":\"move_norm\",\"x\":" + nx + ",\"y\":" + ny + ",\"monitor\":" + mon + "}";
-            queue.offer(cmd);
-        }
-
-        public void enqueueMouseClick(String btn, boolean dbl) {
-            InputCmd cmd = new InputCmd();
-            cmd.json = "{\"action\":\"" + (dbl ? "double_click" : "click") + "\",\"button\":\"" + btn + "\"}";
-            queue.offer(cmd);
-        }
-
-        public void enqueueMouseDown(String btn) {
-            InputCmd cmd = new InputCmd();
-            cmd.json = "{\"action\":\"down\",\"button\":\"" + btn + "\"}";
-            queue.offer(cmd);
-        }
-
-        public void enqueueMouseUp(String btn) {
-            InputCmd cmd = new InputCmd();
-            cmd.json = "{\"action\":\"up\",\"button\":\"" + btn + "\"}";
-            queue.offer(cmd);
-        }
-
-        public void enqueueMouseScroll(int dy) {
-            InputCmd cmd = new InputCmd();
-            cmd.json = "{\"action\":\"scroll\",\"dy\":" + dy + "}";
-            queue.offer(cmd);
-        }
-
-        public void enqueueKeyPress(String key) {
-            InputCmd cmd = new InputCmd();
-            cmd.json = "{\"action\":\"key_press\",\"key\":\"" + key + "\"}";
-            queue.offer(cmd);
-        }
-
-        public void enqueueKeyModifier(String key, boolean down) {
-            InputCmd cmd = new InputCmd();
-            cmd.json = "{\"action\":\"" + (down ? "key_down" : "key_up") + "\",\"key\":\"" + key + "\"}";
-            queue.offer(cmd);
-        }
-
-        public void enqueueUnicodeText(String text) {
-            InputCmd cmd = new InputCmd();
-            cmd.json = "{\"action\":\"text\",\"text\":\"" + text.replace("\"", "\\\"") + "\"}";
-            queue.offer(cmd);
-        }
-
-        public void enqueueReleaseAll() {
-            InputCmd cmd = new InputCmd();
-            cmd.json = "{\"action\":\"release_all\"}";
-            queue.offer(cmd);
-        }
-
-        @Override
-        public void run() {
-            while (running.get()) {
-                try {
-                    InputCmd cmd = queue.poll(500, TimeUnit.MILLISECONDS);
-                    if (cmd == null) continue;
-
-                    // Коалесцирование быстрых перемещений мыши: объединяем накопившиеся дельты
-                    if (cmd.isCoalescedMove) {
-                        float sumDx = cmd.relDx;
-                        float sumDy = cmd.relDy;
-                        while (!queue.isEmpty()) {
-                            InputCmd next = queue.peek();
-                            if (next != null && next.isCoalescedMove) {
-                                queue.poll();
-                                sumDx += next.relDx;
-                                sumDy += next.relDy;
-                            } else {
-                                break;
-                            }
-                        }
-                        cmd.json = "{\"action\":\"move_rel\",\"dx\":" + sumDx + ",\"dy\":" + sumDy + ",\"sensitivity\":" + mouseSensitivity + ",\"accel\":" + mouseAccel + "}";
-                    }
-
-                    sendJson(cmd.json);
-                } catch (InterruptedException e) {
-                    break;
-                } catch (Exception ignored) {}
-            }
-        }
-
-        private void sendJson(String json) {
-            if (serverUrl == null || serverUrl.isEmpty()) return;
-            try {
-                String targetPath = json.contains("\"text\"") || json.contains("\"key_") || json.contains("\"hotkey\"")
-                        ? "/api/keyboard"
-                        : "/api/mouse";
-
-                URL u = new URL(serverUrl + targetPath);
-                HttpURLConnection c = (HttpURLConnection) u.openConnection();
-                c.setRequestMethod("POST");
-                c.setConnectTimeout(400);
-                c.setReadTimeout(400);
-                c.setDoOutput(true);
-                c.setRequestProperty("Content-Type", "application/json");
-                c.setRequestProperty("Connection", "keep-alive");
-                if (!authToken.isEmpty()) {
-                    c.setRequestProperty("X-Auth-Token", authToken);
-                }
-
-                byte[] body = json.getBytes(StandardCharsets.UTF_8);
-                c.setFixedLengthStreamingMode(body.length);
-                try (OutputStream os = c.getOutputStream()) {
-                    os.write(body);
-                    os.flush();
-                }
-                c.getResponseCode();
-                c.disconnect();
-            } catch (Exception ignored) {}
-        }
-
-        public void shutdown() {
-            running.set(false);
-            interrupt();
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -2479,9 +2549,18 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             opacityTpBorder = sp.getInt("op_tp_bord", 80);
             opacityTpCenter = sp.getInt("op_tp_cent", 80);
 
-            kbdWidthPct = sp.getInt("kbd_w", 100);
-            kbdHeightDp = sp.getInt("kbd_h", 220);
+            scrollSpeed = sp.getFloat("scroll_speed", 1.0f);
+            invertScroll = sp.getBoolean("scroll_invert", false);
+            opacityTpZone = sp.getInt("op_tp_zone", 18);
+
+            kbdWidthPct = Math.max(40, Math.min(100, sp.getInt("kbd_w", 100)));
+            kbdHeightDp = Math.max(140, Math.min(360, sp.getInt("kbd_h", 220)));
             kbdLayoutIdx = sp.getInt("kbd_layout", 0);
+            if (kbdLayoutIdx < 0 || kbdLayoutIdx > 2) kbdLayoutIdx = 0; // старое значение 3 = символы
+            kbdPosX = sp.getFloat("kbd_x", 0.5f);
+            kbdOffsetYDp = sp.getInt("kbd_off_y", 8);
+            kbdHaptics = sp.getBoolean("kbd_haptics", true);
+            kbdGameKeys = sp.getBoolean("kbd_game_keys", false);
 
             gearPosX = sp.getFloat("gear_x", -1f);
             gearPosY = sp.getFloat("gear_y", -1f);
@@ -2523,6 +2602,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     .putInt("kbd_w", kbdWidthPct)
                     .putInt("kbd_h", kbdHeightDp)
                     .putInt("kbd_layout", kbdLayoutIdx)
+                    .putFloat("kbd_x", kbdPosX)
+                    .putInt("kbd_off_y", kbdOffsetYDp)
+                    .putBoolean("kbd_haptics", kbdHaptics)
+                    .putBoolean("kbd_game_keys", kbdGameKeys)
+                    .putFloat("scroll_speed", scrollSpeed)
+                    .putBoolean("scroll_invert", invertScroll)
+                    .putInt("op_tp_zone", opacityTpZone)
                     .putFloat("gear_x", gearPosX)
                     .putFloat("gear_y", gearPosY)
                     .apply();
@@ -2549,6 +2635,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         this.videoHeight = (targetHeight > 0) ? targetHeight : 1080;
         this.videoWidth = (int) Math.round(this.videoHeight * (16.0 / 9.0));
         updateSubtitle();
+        inputClient.configure(this.serverUrl, this.authToken);
     }
 
     private void updateSubtitle() {
@@ -2569,12 +2656,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             scheduleControlsAutoHide();
         }
 
-        synchronized (this) {
-            if (inputDispatcherThread == null || !inputDispatcherThread.isAlive()) {
-                inputDispatcherThread = new InputDispatcherThread();
-                inputDispatcherThread.start();
-            }
+        // Поток ввода: сразу в режиме «Управление ПК», в демонстрации — при включении мыши/клавиатуры
+        if (operatingMode == MODE_PC_CONTROL || isMouseActive() || isKeyboardVisible) {
+            inputClient.start();
         }
+        applyTouchpadConfig();
+        updateTouchpadZoneVisibility();
 
         if (isAudioEnabled) {
             startAudioStream();
@@ -2599,16 +2686,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         stopAudioStream();
         stopMicStreaming();
 
-        if (inputDispatcherThread != null) {
-            inputDispatcherThread.enqueueReleaseAll();
-            final InputDispatcherThread idt = inputDispatcherThread;
-            inputDispatcherThread = null;
-            mainHandler.postDelayed(new Runnable() {
-                @Override public void run() {
-                    idt.shutdown();
-                }
-            }, 250);
-        }
+        // Отпускаем всё на телефоне, затем клиент шлёт RELEASE_ALL + END и закрывает поток;
+        // даже при обрыве сервер сам отпустит клавиши/кнопки по разрыву соединения или сторожевому таймеру.
+        releaseLocalInputState(true);
+        inputClient.stop();
 
         synchronized (surfaceLock) {
             surfaceLock.notifyAll();
@@ -2733,6 +2814,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void scheduleControlsAutoHide() {
         mainHandler.removeCallbacks(hideControlsRunnable);
         if (isDiagVisible || isErrorVisible) return;
+        // При включённой мыши касания уходят на ПК, поэтому панель с кнопками 🖱/⌨ не прячем
+        if (operatingMode == MODE_VIEW && isViewMouseEnabled) return;
         mainHandler.postDelayed(hideControlsRunnable, 5000);
     }
 
@@ -3024,7 +3107,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         subtitleView.setTextColor(Color.parseColor("#94A3B8"));
         subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
         titleBox.addView(subtitleView);
-        topToolbar.addView(titleBox);
+        // На узком экране сжимается заголовок (с многоточием), а не кнопки справа
+        titleView.setSingleLine(true);
+        titleView.setEllipsize(TextUtils.TruncateAt.END);
+        subtitleView.setSingleLine(true);
+        subtitleView.setEllipsize(TextUtils.TruncateAt.END);
+        topToolbar.addView(titleBox, new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, 1f));
 
         scaleModeBtn = createToolbarButton(context, "Fit", "#242A35", Color.parseColor("#E2E8F0"), 13f);
         scaleModeBtn.setOnClickListener(new OnClickListener() {
@@ -3034,7 +3122,24 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         addToolbarSpacer(context, topToolbar, 8);
 
-        fullscreenBtn = createToolbarButton(context, "⛶", "#242A35", Color.WHITE, 17f);
+        // Отдельные кнопки управления мышью и клавиатурой во время демонстрации
+        toolbarMouseBtn = createToolbarButton(context, "🖱", "#242A35", Color.WHITE, 16f);
+        toolbarMouseBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { toggleMouseControl(); }
+        });
+        topToolbar.addView(toolbarMouseBtn);
+
+        addToolbarSpacer(context, topToolbar, 8);
+
+        toolbarKbdBtn = createToolbarButton(context, "⌨", "#242A35", Color.WHITE, 16f);
+        toolbarKbdBtn.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { toggleCustomKeyboard(); }
+        });
+        topToolbar.addView(toolbarKbdBtn);
+
+        addToolbarSpacer(context, topToolbar, 8);
+
+        fullscreenBtn =createToolbarButton(context, "⛶", "#242A35", Color.WHITE, 17f);
         fullscreenBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { toggleFullscreen(); }
         });
@@ -3278,10 +3383,15 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY));
         }
 
-        if (customKeyboardView != null && customKeyboardView.getVisibility() != View.GONE) {
+        if (keyboardPanel != null && keyboardPanel.getVisibility() != View.GONE) {
             int kWidth = (int) (widthSize * (kbdWidthPct / 100f));
-            customKeyboardView.measure(MeasureSpec.makeMeasureSpec(kWidth, MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(dpToPx(kbdHeightDp), MeasureSpec.EXACTLY));
+            int kHeight = Math.min(heightSize, dpToPx(kbdHeightDp) + dpToPx(20));
+            keyboardPanel.measure(MeasureSpec.makeMeasureSpec(kWidth, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(kHeight, MeasureSpec.EXACTLY));
+        }
+        if (touchpadZoneView != null) {
+            touchpadZoneView.measure(MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY));
         }
 
         if (diagOverlay != null && diagOverlay.getVisibility() != View.GONE) {
@@ -3343,11 +3453,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             splitSettingsContainer.layout(0, 0, sW, sH);
         }
 
-        if (customKeyboardView != null && customKeyboardView.getVisibility() != View.GONE) {
-            int kW = customKeyboardView.getMeasuredWidth();
-            int kH = customKeyboardView.getMeasuredHeight();
-            int kLeft = (parentW - kW) / 2;
-            customKeyboardView.layout(kLeft, parentH - kH - dpToPx(8), kLeft + kW, parentH - dpToPx(8));
+        if (keyboardPanel != null && keyboardPanel.getVisibility() != View.GONE) {
+            int kW = keyboardPanel.getMeasuredWidth();
+            int kH = keyboardPanel.getMeasuredHeight();
+            int kLeft = Math.round(kbdPosX * parentW - kW / 2f);
+            kLeft = Math.max(0, Math.min(parentW - kW, kLeft));
+            int kBottom = parentH - dpToPx(kbdOffsetYDp);
+            kBottom = Math.max(kH, Math.min(parentH, kBottom));
+            keyboardPanel.layout(kLeft, kBottom - kH, kLeft + kW, kBottom);
         }
 
         if (diagOverlay != null && diagOverlay.getVisibility() != View.GONE) {

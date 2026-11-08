@@ -3,11 +3,13 @@ PC Control — Модуль удалённого управления мышью
 Обеспечивает низколатентный ввод SendInput для Windows и приём звука микрофона Android-телефона.
 """
 
+import atexit
 import ctypes
 from ctypes import wintypes
 import json
 import os
 import platform
+import socket
 import struct
 import sys
 import threading
@@ -18,6 +20,18 @@ from flask import Blueprint, Response, jsonify, request
 from core.auth import check_token
 from core.logger import log_action, log_error
 from modules.system import _attach_input_desktop
+from modules.input_engine import (
+    DEFAULT_REPEAT_DELAY,
+    DEFAULT_REPEAT_PERIOD,
+    DEFAULT_WATCHDOG_TIMEOUT,
+    PROTOCOL_VERSION,
+    InputBackend,
+    InputSession,
+    ProtocolError,
+    RecordingBackend,
+    SessionTicker,
+    run_stream,
+)
 
 input_bp = Blueprint("input_controller", __name__)
 
@@ -152,22 +166,53 @@ def _get_virtual_desktop_metrics() -> tuple[int, int, int, int]:
     return (0, 0, 1920, 1080)
 
 
-def _get_monitor_bounds(monitor_idx: int) -> tuple[int, int, int, int]:
-    """Возвращает прямоугольник (left, top, width, height) для указанного монитора MSS."""
+_monitor_cache: dict[str, Any] = {"t": 0.0, "mons": None}
+_monitor_cache_lock = threading.Lock()
+_MONITOR_CACHE_TTL = 2.0
+
+
+def _get_mss_monitors() -> list | None:
+    """Список мониторов MSS (тот же порядок, что и у захвата экрана) с кэшем на 2 с.
+    Раньше mss.MSS() создавался на КАЖДОЕ абсолютное движение мыши (несколько мс на событие)."""
+    now = time.monotonic()
+    with _monitor_cache_lock:
+        if _monitor_cache["mons"] is not None and now - _monitor_cache["t"] < _MONITOR_CACHE_TTL:
+            return _monitor_cache["mons"]
     try:
         import mss
         with mss.MSS() as sct:
-            mons = sct.monitors
-            if monitor_idx > 0 and monitor_idx < len(mons):
-                m = mons[monitor_idx]
-                return (m["left"], m["top"], m["width"], m["height"])
-            elif len(mons) > 0:
-                # 0 = All monitors (bounding box)
-                m = mons[0]
-                return (m["left"], m["top"], m["width"], m["height"])
+            mons = [dict(m) for m in sct.monitors]
     except Exception:
-        pass
+        mons = None
+    with _monitor_cache_lock:
+        _monitor_cache["mons"] = mons
+        _monitor_cache["t"] = now
+    return mons
+
+
+def _get_monitor_bounds(monitor_idx: int) -> tuple[int, int, int, int]:
+    """Возвращает прямоугольник (left, top, width, height) для указанного монитора MSS."""
+    mons = _get_mss_monitors()
+    if mons:
+        if 0 < monitor_idx < len(mons):
+            m = mons[monitor_idx]
+        else:
+            m = mons[0]  # 0 = все мониторы (общий прямоугольник)
+        return (m["left"], m["top"], m["width"], m["height"])
     return _get_virtual_desktop_metrics()
+
+
+def _normalized_to_absolute(nx: float, ny: float, monitor_idx: int) -> tuple[int, int]:
+    """Нормализованная точка монитора (0..1) -> координаты SendInput 0..65535 виртуального стола."""
+    # Мониторы запрашиваются первыми: mss включает DPI-awareness процесса,
+    # после чего GetSystemMetrics возвращает физические пиксели в той же системе координат.
+    m_left, m_top, m_w, m_h = _get_monitor_bounds(monitor_idx)
+    vx, vy, vw, vh = _get_virtual_desktop_metrics()
+    pixel_x = m_left + max(0.0, min(1.0, nx)) * max(0, m_w - 1)
+    pixel_y = m_top + max(0.0, min(1.0, ny)) * max(0, m_h - 1)
+    norm_x = int(round(((pixel_x - vx) * 65535.0) / max(1.0, float(vw - 1))))
+    norm_y = int(round(((pixel_y - vy) * 65535.0) / max(1.0, float(vh - 1))))
+    return max(0, min(65535, norm_x)), max(0, min(65535, norm_y))
 
 
 def mouse_move_relative(dx: float, dy: float, sensitivity: float = 1.0, accel: bool = True) -> bool:
@@ -207,21 +252,8 @@ def mouse_move_normalized(nx: float, ny: float, monitor_idx: int = 1) -> bool:
     """Абсолютное перемещение курсора мыши с точной нормализацией виртуального экрана."""
     if not IS_WINDOWS:
         return True
+    norm_x, norm_y = _normalized_to_absolute(nx, ny, monitor_idx)
     with _input_lock:
-        vx, vy, vw, vh = _get_virtual_desktop_metrics()
-        m_left, m_top, m_w, m_h = _get_monitor_bounds(monitor_idx)
-
-        # Вычисляем абсолютные пиксельные координаты точки касания
-        pixel_x = m_left + max(0.0, min(1.0, nx)) * m_w
-        pixel_y = m_top + max(0.0, min(1.0, ny)) * m_h
-
-        # Преобразуем в нормализованные координаты Windows SendInput (0..65535)
-        norm_x = int(round(((pixel_x - vx) * 65535.0) / max(1.0, float(vw - 1))))
-        norm_y = int(round(((pixel_y - vy) * 65535.0) / max(1.0, float(vh - 1))))
-
-        norm_x = max(0, min(65535, norm_x))
-        norm_y = max(0, min(65535, norm_y))
-
         inp = INPUT(
             type=INPUT_MOUSE,
             u=_INPUTUnion(
@@ -396,6 +428,234 @@ def release_all_inputs():
 
         if seq:
             _send_inputs(seq)
+
+
+# ---------------------------------------------------------------------------
+# БИНАРНЫЙ ПОТОК ВВОДА (одно постоянное соединение на клиента, см. modules/input_engine.py)
+# ---------------------------------------------------------------------------
+MOUSEEVENTF_XDOWN = 0x0080
+MOUSEEVENTF_XUP = 0x0100
+MOUSEEVENTF_HWHEEL = 0x01000
+MAPVK_VK_TO_VSC_EX = 4
+
+INPUT_STREAM_IDLE_TIMEOUT = 12.0  # клиент шлёт PING каждую секунду; тишина 12 с = мёртвое соединение
+
+
+class SendInputBackend(InputBackend):
+    """Реальный ввод Windows через SendInput.
+    Клавиши отправляются с VK и аппаратным скан-кодом (MapVirtualKeyW), как у физической
+    клавиатуры: так комбинации и клавиши работают и в обычных приложениях, и в играх."""
+
+    def __init__(self):
+        self._scan_cache: dict[int, tuple[int, bool]] = {}
+
+    @staticmethod
+    def _mouse(flags: int, dx: int = 0, dy: int = 0, data: int = 0):
+        return INPUT(type=INPUT_MOUSE, u=_INPUTUnion(mi=MOUSEINPUT(dx=dx, dy=dy, mouseData=data & 0xFFFFFFFF, dwFlags=flags, time=0, dwExtraInfo=0)))
+
+    def _send(self, inputs: list):
+        with _input_lock:
+            _send_inputs(inputs)
+
+    def move_rel(self, dx, dy):
+        self._send([self._mouse(MOUSEEVENTF_MOVE, dx, dy)])
+
+    def move_abs(self, x, y, monitor):
+        ax, ay = _normalized_to_absolute(x / 65535.0, y / 65535.0, monitor)
+        self._send([self._mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, ax, ay)])
+
+    def button(self, button, down):
+        data = 0
+        if button == 1:
+            flags = MOUSEEVENTF_LEFTDOWN if down else MOUSEEVENTF_LEFTUP
+        elif button == 2:
+            flags = MOUSEEVENTF_RIGHTDOWN if down else MOUSEEVENTF_RIGHTUP
+        elif button == 3:
+            flags = MOUSEEVENTF_MIDDLEDOWN if down else MOUSEEVENTF_MIDDLEUP
+        else:
+            flags = MOUSEEVENTF_XDOWN if down else MOUSEEVENTF_XUP
+            data = 1 if button == 4 else 2
+        self._send([self._mouse(flags, data=data)])
+
+    def wheel(self, vertical, horizontal):
+        seq = []
+        if vertical:
+            seq.append(self._mouse(MOUSEEVENTF_WHEEL, data=vertical))
+        if horizontal:
+            seq.append(self._mouse(MOUSEEVENTF_HWHEEL, data=horizontal))
+        if seq:
+            self._send(seq)
+
+    def _scan_for(self, vk: int) -> tuple[int, bool]:
+        cached = self._scan_cache.get(vk)
+        if cached is None:
+            sc = 0
+            try:
+                sc = int(ctypes.windll.user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX))
+            except Exception:
+                sc = 0
+            ext = (sc & 0xFF00) in (0xE000, 0xE100)
+            cached = (sc & 0xFF, ext)
+            self._scan_cache[vk] = cached
+        return cached
+
+    def key(self, vk, down, extended):
+        scan, scan_ext = self._scan_for(vk)
+        flags = 0 if down else KEYEVENTF_KEYUP
+        if extended or scan_ext or vk in EXTENDED_VKS:
+            flags |= KEYEVENTF_EXTENDEDKEY
+        if down:
+            _held_keys.add(vk)
+        else:
+            _held_keys.discard(vk)
+        self._send([INPUT(type=INPUT_KEYBOARD, u=_INPUTUnion(ki=KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=0)))])
+
+    def unicode(self, code_point, down):
+        units = chr(code_point).encode("utf-16-le")
+        flags = KEYEVENTF_UNICODE | (0 if down else KEYEVENTF_KEYUP)
+        seq = []
+        for i in range(0, len(units), 2):
+            code = int.from_bytes(units[i:i + 2], "little")
+            seq.append(INPUT(type=INPUT_KEYBOARD, u=_INPUTUnion(ki=KEYBDINPUT(wVk=0, wScan=code, dwFlags=flags, time=0, dwExtraInfo=0))))
+        self._send(seq)
+
+
+_input_backend_factory = None
+_active_input_sessions: set = set()
+_active_input_sessions_lock = threading.Lock()
+
+
+def set_input_backend_factory(factory) -> None:
+    """Подмена бэкенда ввода (тесты / сухой прогон). None = реальный SendInput."""
+    global _input_backend_factory
+    _input_backend_factory = factory
+
+
+def _make_input_backend() -> InputBackend:
+    if _input_backend_factory is not None:
+        return _input_backend_factory()
+    if IS_WINDOWS:
+        return SendInputBackend()
+    return RecordingBackend()
+
+
+def _keyboard_repeat_timing() -> tuple[float, float]:
+    """Задержка и частота автоповтора как в настройках клавиатуры Windows."""
+    delay, period = DEFAULT_REPEAT_DELAY, DEFAULT_REPEAT_PERIOD
+    if IS_WINDOWS:
+        try:
+            val = wintypes.DWORD()
+            spi = ctypes.windll.user32.SystemParametersInfoW
+            if spi(0x0016, 0, ctypes.byref(val), 0):  # SPI_GETKEYBOARDDELAY: 0..3
+                delay = 0.25 * (min(3, val.value) + 1)
+            if spi(0x000A, 0, ctypes.byref(val), 0):  # SPI_GETKEYBOARDSPEED: 0..31 -> ~2.5..30 cps
+                cps = 2.5 + (min(31, val.value) / 31.0) * 27.5
+                period = 1.0 / cps
+        except Exception:
+            pass
+    return delay, period
+
+
+def _release_all_input_sessions():
+    with _active_input_sessions_lock:
+        sessions = list(_active_input_sessions)
+    for s in sessions:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+atexit.register(_release_all_input_sessions)
+
+
+@input_bp.route("/api/input/info", methods=["GET"])
+def api_input_info():
+    """Возможности потока ввода. Клиент вызывает перед открытием /api/input/stream."""
+    if not check_token():
+        return jsonify({"message": "Unauthorized"}), 401
+    delay, period = _keyboard_repeat_timing()
+    mons = _get_mss_monitors() or []
+    with _active_input_sessions_lock:
+        n = len(_active_input_sessions)
+    return jsonify({
+        "protocol": PROTOCOL_VERSION,
+        "stream": "/api/input/stream",
+        "repeat_delay_ms": int(delay * 1000),
+        "repeat_period_ms": int(period * 1000),
+        "watchdog_ms": int(DEFAULT_WATCHDOG_TIMEOUT * 1000),
+        "idle_timeout_ms": int(INPUT_STREAM_IDLE_TIMEOUT * 1000),
+        "monitors": [{"index": i, "left": m["left"], "top": m["top"], "width": m["width"], "height": m["height"]} for i, m in enumerate(mons)],
+        "active_sessions": n,
+    })
+
+
+@input_bp.route("/api/input/stream", methods=["POST"])
+def api_input_stream():
+    """Постоянный поток событий ввода (chunked POST, бинарные кадры input_engine).
+    Тело читается напрямую из wsgi.input: request.stream ограничен MAX_CONTENT_LENGTH (1 МБ)
+    и оборвал бы долгую сессию управления."""
+    if not check_token():
+        return jsonify({"message": "Unauthorized"}), 401
+
+    env = request.environ
+    raw = env.get("wsgi.input")
+    remaining = None
+    if not env.get("wsgi.input_terminated"):
+        remaining = request.content_length
+        if remaining is None:
+            return jsonify({"message": "Chunked transfer encoding or Content-Length required"}), 411
+
+    sock = env.get("werkzeug.socket")
+    if sock is not None:
+        try:
+            sock.settimeout(INPUT_STREAM_IDLE_TIMEOUT)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception:
+            pass
+
+    def read_exact(n: int):
+        nonlocal remaining
+        if remaining is not None and remaining < n:
+            return None
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = raw.read(n - len(buf))
+            if not chunk:
+                return None
+            buf += chunk
+        if remaining is not None:
+            remaining -= n
+        return bytes(buf)
+
+    delay, period = _keyboard_repeat_timing()
+    session = InputSession(_make_input_backend(), repeat_delay=delay, repeat_period=period)
+    ticker = SessionTicker(session)
+    with _active_input_sessions_lock:
+        _active_input_sessions.add(session)
+    ticker.start()
+    started = time.monotonic()
+    reason = "error"
+    status = 200
+    try:
+        reason = run_stream(read_exact, session)
+    except ProtocolError as e:
+        reason = f"protocol_error: {e}"
+        status = 400
+    except (OSError, ValueError) as e:  # socket timeout / reset / closed stream
+        reason = f"connection: {type(e).__name__}"
+    finally:
+        session.close()
+        ticker.stop()
+        with _active_input_sessions_lock:
+            _active_input_sessions.discard(session)
+        log_action("input_stream_closed", {
+            "reason": reason,
+            "frames": session.frames,
+            "seconds": round(time.monotonic() - started, 1),
+            "watchdog_releases": session.watchdog_releases,
+        })
+    return jsonify({"ok": status == 200, "reason": reason, "frames": session.frames}), status
 
 
 # ---------------------------------------------------------------------------
