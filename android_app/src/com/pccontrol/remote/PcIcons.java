@@ -59,9 +59,13 @@ public final class PcIcons {
     public static final String[] PC = {"F",
             "M20 18c1.1 0 1.99-.9 1.99-2L22 5c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2H0c0 1.1.9 2 2 2h20c1.1 0 2-.9 2-2h-4zM4 5h16v11H4V5zm8 14c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1z"};
 
+    /** Material "tune" (settings inside the floating menu; the gear itself opens the menu). */
+    public static final String[] TUNE = {"F",
+            "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"};
+
     public static String[][] all() {
         return new String[][]{GEAR, CLOSE, CHEVRON_DOWN, CHEVRON_LEFT, CHEVRON_RIGHT, CHECK, EYE, RESET,
                 KEYBOARD, MOUSE, MIC, HEADPHONES, MONITOR, IMAGE, CLOCK, FULLSCREEN, FULLSCREEN_EXIT,
-                CHART, ARROW_BACK, PC};
+                CHART, ARROW_BACK, PC, TUNE};
     }
 }

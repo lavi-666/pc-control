@@ -112,14 +112,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private FrameLayout floatingControlsGroup;
     private PcUi.IconBtn floatingGearBtn;
     private PcUi.IconBtn floatingArrowBtn;
-    private LinearLayout quickActionsDrawer;
     private boolean isQuickDrawerOpen = false;
 
-    // 4 быстрые кнопки
-    private PcUi.Btn quickBtnKeyboard;
-    private PcUi.Btn quickBtnMic;
-    private PcUi.Btn quickBtnSound;
-    private PcUi.Btn quickBtnTouchpad;
 
     // Отдельные кнопки «Мышь» и «Клавиатура» (режим «Управление ПК» и панель демонстрации)
     private PcUi.IconBtn floatingMouseBtn;
@@ -149,7 +143,17 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private boolean isMouseAbsolute = false;
     private float scrollSpeed = 1.0f;
     private boolean invertScroll = false;
-    private int opacityTpZone = 18;
+    private int opacityTpZone = 0;   // зона тачпада по умолчанию полностью прозрачна (но работает)
+
+    // Цвет (оттенок) отдельных элементов интерфейса — настраивается в «Прозрачность и цвета»
+    private static final int DEF_COL_TP_ZONE = PcUi.PC_ACCENT;
+    private static final int DEF_COL_TP_BORDER = PcUi.PC_ACCENT;
+    private int colTpZone = DEF_COL_TP_ZONE;
+    private int colGear = PcUi.TEXT;
+    private int colArrow = PcUi.TEXT;
+    private int colMenu = PcUi.TEXT;
+    private int colKbdText = PcUi.TEXT;
+    private int colTpBorder = DEF_COL_TP_BORDER;
 
     // Оверлей визуального редактирования тачпада прямо на экране
     private TouchpadVisualEditorView touchpadVisualEditor;
@@ -461,10 +465,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             if (w <= 0 || h <= 0) return;
             float a = opacityTpZone / 100f;
             r.set(tpNormX * w, tpNormY * h, (tpNormX + tpNormW) * w, (tpNormY + tpNormH) * h);
-            fill.setColor(Color.parseColor("#38BDF8"));
+            fill.setColor(colTpZone);
             fill.setAlpha((int) (a * 0.35f * 255));
             canvas.drawRoundRect(r, dpToPx(16), dpToPx(16), fill);
-            stroke.setColor(Color.parseColor("#38BDF8"));
+            stroke.setColor(colTpZone);
             stroke.setAlpha((int) (a * 255));
             canvas.drawRoundRect(r, dpToPx(16), dpToPx(16), stroke);
         }
@@ -510,7 +514,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         } else {
             // Демонстрация экрана — только просмотр: никакого ввода на ПК
             if (floatingControlsGroup != null) floatingControlsGroup.setVisibility(View.GONE);
-            if (quickActionsDrawer != null) quickActionsDrawer.setVisibility(View.GONE);
+            if (floatingMenuStrip != null) floatingMenuStrip.setVisibility(View.GONE);
+            if (floatingArrowBtn != null) floatingArrowBtn.setRotation(0f);
             isQuickDrawerOpen = false;
             if (isKeyboardVisible) showCustomKeyboard(false);
             releaseLocalInputState(true);
@@ -527,23 +532,34 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     // -----------------------------------------------------------------------
     // ПЛАВАЮЩИЕ КНОПКИ И ВЫДВИЖНОЕ МЕНЮ БЫСТРЫХ ФУНКЦИЙ (MODE_PC_CONTROL)
     // -----------------------------------------------------------------------
+    /**
+     * Плавающее управление «Управления ПК» (правый верхний угол):
+     *   [Настройки][Звук ПК][Микрофон][Полный экран][Клавиатура][Мышь] [◀] [⚙]
+     * Меню по умолчанию закрыто; шестерёнка или стрелка плавно выдвигают его влево.
+     */
+    private LinearLayout floatingMenuStrip;
+    private PcUi.IconBtn floatingSettingsBtn;
+    private PcUi.IconBtn floatingFsBtn;
+    private PcUi.IconBtn floatingMicBtn;
+    private PcUi.IconBtn floatingSoundBtn;
+
     private void buildFloatingControls(Context context) {
         floatingControlsGroup = new FrameLayout(context);
         floatingControlsGroup.setVisibility(View.GONE);
         floatingControlsGroup.setClipChildren(false);
         floatingControlsGroup.setClipToPadding(false);
 
-        // Шестерёнка настроек (по умолчанию — правый верхний угол; можно перетащить)
-        floatingGearBtn = new PcUi.IconBtn(context, PcIcons.GEAR, 46, 22, true, "Настройки");
+        // Шестерёнка: открывает/закрывает меню; можно перетащить в другое место
+        floatingGearBtn = new PcUi.IconBtn(context, PcIcons.GEAR, 46, 22, true, "Меню управления");
         floatingGearBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
-                toggleSplitSettings();
+                toggleQuickDrawer();
             }
         });
         floatingGearBtn.setOnTouchListener(new OnTouchListener() {
             private float startRawX, startRawY;
-            private int initialLeft, initialTop;
+            private int initialRight, initialTop;
             private boolean isMoving = false;
 
             @Override
@@ -553,7 +569,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     case MotionEvent.ACTION_DOWN:
                         startRawX = ev.getRawX();
                         startRawY = ev.getRawY();
-                        initialLeft = floatingControlsGroup.getLeft();
+                        initialRight = floatingControlsGroup.getRight();
                         initialTop = floatingControlsGroup.getTop();
                         isMoving = false;
                         return false;
@@ -568,9 +584,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                             }
                             int gW = floatingControlsGroup.getWidth();
                             int gH = floatingControlsGroup.getHeight();
-                            // Позиция задаётся только через layout (без setX/translation),
-                            // иначе после следующего requestLayout смещение удваивалось.
-                            gearPosX = Math.max(dpToPx(8), Math.min(getWidth() - gW - dpToPx(8), initialLeft + dx));
+                            // Позиция = ПРАВЫЙ край группы (меню растёт влево, шестерёнка стоит на месте)
+                            gearPosX = Math.max(gW + dpToPx(8), Math.min(getWidth() - dpToPx(8), initialRight + dx));
                             gearPosY = Math.max(dpToPx(8), Math.min(getHeight() - gH - dpToPx(8), initialTop + dy));
                             requestLayout();
                         }
@@ -589,8 +604,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
 
-        // Кнопка раскрытия/сворачивания меню быстрых действий (шеврон поворачивается на 180°)
-        floatingArrowBtn = new PcUi.IconBtn(context, PcIcons.CHEVRON_DOWN, 40, 20, true, "Быстрое меню");
+        // Стрелка слева от шестерёнки, направлена влево (куда выдвигается меню)
+        floatingArrowBtn = new PcUi.IconBtn(context, PcIcons.CHEVRON_LEFT, 40, 20, true, "Развернуть меню");
         floatingArrowBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -598,109 +613,62 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
 
-        // Панель быстрых действий (выдвижная)
-        quickActionsDrawer = new LinearLayout(context);
-        quickActionsDrawer.setOrientation(LinearLayout.VERTICAL);
-        quickActionsDrawer.setVisibility(View.GONE);
-        quickActionsDrawer.setBackground(PcUi.shape(PcUi.FLOAT_BG, dpToPx(18), PcUi.BORDER_STRONG, dpToPx(1)));
-        int pad = dpToPx(6);
-        quickActionsDrawer.setPadding(pad, pad, pad, pad);
+        // Выдвижное меню (по умолчанию скрыто)
+        floatingMenuStrip = new LinearLayout(context);
+        floatingMenuStrip.setOrientation(LinearLayout.HORIZONTAL);
+        floatingMenuStrip.setGravity(Gravity.CENTER_VERTICAL);
+        floatingMenuStrip.setClipChildren(false);
+        floatingMenuStrip.setVisibility(View.GONE);
 
-        quickBtnKeyboard = createQuickActionButton(context, PcIcons.KEYBOARD, "Клавиатура", new Runnable() {
-            @Override
-            public void run() {
-                toggleCustomKeyboard();
-            }
+        floatingSettingsBtn = menuButton(context, PcIcons.TUNE, "Настройки", new Runnable() {
+            @Override public void run() { toggleSplitSettings(); }
         });
-        quickBtnMic = createQuickActionButton(context, PcIcons.MIC, "Микрофон", new Runnable() {
-            @Override
-            public void run() {
-                toggleMicStreaming();
-            }
+        floatingSoundBtn = menuButton(context, PcIcons.HEADPHONES, "Звук ПК", new Runnable() {
+            @Override public void run() { setAudioEnabled(!isAudioEnabled); updateQuickActionStates(); }
         });
-        quickBtnSound = createQuickActionButton(context, PcIcons.HEADPHONES, "Звук ПК", new Runnable() {
-            @Override
-            public void run() {
-                setAudioEnabled(!isAudioEnabled);
-                updateQuickActionStates();
-            }
+        floatingMicBtn = menuButton(context, PcIcons.MIC, "Микрофон", new Runnable() {
+            @Override public void run() { toggleMicStreaming(); }
         });
-        quickBtnTouchpad = createQuickActionButton(context, PcIcons.MOUSE, "Тачпад", new Runnable() {
-            @Override
-            public void run() {
-                toggleMouseControl();
-            }
+        floatingFsBtn = menuButton(context, isFullscreen ? PcIcons.FULLSCREEN_EXIT : PcIcons.FULLSCREEN, "Полноэкранный режим", new Runnable() {
+            @Override public void run() { toggleFullscreen(); }
         });
+        floatingKbdBtn = menuButton(context, PcIcons.KEYBOARD, "Клавиатура", new Runnable() {
+            @Override public void run() { toggleCustomKeyboard(); }
+        });
+        floatingMouseBtn = menuButton(context, PcIcons.MOUSE, "Мышь (тачпад)", new Runnable() {
+            @Override public void run() { toggleMouseControl(); }
+        });
+        View[] items = {floatingSettingsBtn, floatingSoundBtn, floatingMicBtn, floatingFsBtn, floatingKbdBtn, floatingMouseBtn};
+        for (View b : items) {
+            floatingMenuStrip.addView(b);
+            addToolbarSpacer(context, floatingMenuStrip, 8);
+        }
 
-        quickActionsDrawer.addView(quickBtnKeyboard);
-        addQuickSpacer(context, quickActionsDrawer);
-        quickActionsDrawer.addView(quickBtnMic);
-        addQuickSpacer(context, quickActionsDrawer);
-        quickActionsDrawer.addView(quickBtnSound);
-        addQuickSpacer(context, quickActionsDrawer);
-        quickActionsDrawer.addView(quickBtnTouchpad);
-
-        // Отдельные кнопки: включение/выключение мыши и открытие/закрытие клавиатуры
-        floatingMouseBtn = new PcUi.IconBtn(context, PcIcons.MOUSE, 44, 20, true, "Мышь");
-        floatingMouseBtn.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                toggleMouseControl();
-            }
-        });
-        floatingKbdBtn = new PcUi.IconBtn(context, PcIcons.KEYBOARD, 44, 20, true, "Клавиатура");
-        floatingKbdBtn.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                toggleCustomKeyboard();
-            }
-        });
-
-        // Ряд кнопок: [меню] [мышь] [клавиатура] [шестерёнка] — шестерёнка крайняя справа
         LinearLayout headRow = new LinearLayout(context);
         headRow.setOrientation(LinearLayout.HORIZONTAL);
         headRow.setGravity(Gravity.CENTER_VERTICAL);
         headRow.setClipChildren(false);
+        headRow.addView(floatingMenuStrip);
         headRow.addView(floatingArrowBtn);
-        addToolbarSpacer(context, headRow, 8);
-        headRow.addView(floatingMouseBtn);
-        addToolbarSpacer(context, headRow, 8);
-        headRow.addView(floatingKbdBtn);
         addToolbarSpacer(context, headRow, 8);
         headRow.addView(floatingGearBtn);
 
-        LinearLayout groupCol = new LinearLayout(context);
-        groupCol.setOrientation(LinearLayout.VERTICAL);
-        groupCol.setGravity(Gravity.RIGHT);
-        groupCol.setClipChildren(false);
-        groupCol.addView(headRow);
-
-        LinearLayout.LayoutParams drawerLp = new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
-        drawerLp.topMargin = dpToPx(8);
-        groupCol.addView(quickActionsDrawer, drawerLp);
-
-        floatingControlsGroup.addView(groupCol);
+        floatingControlsGroup.addView(headRow);
         addView(floatingControlsGroup, new FrameLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
 
+        applyUserTints();
         updateQuickActionStates();
     }
 
-    private PcUi.Btn createQuickActionButton(Context context, String[] icon, String label, final Runnable onClick) {
-        PcUi.Btn btn = new PcUi.Btn(context, icon, label, true);
-        btn.setMinimumWidth(dpToPx(168));
-        btn.setOnClickListener(new OnClickListener() {
+    private PcUi.IconBtn menuButton(Context context, String[] icon, String description, final Runnable action) {
+        PcUi.IconBtn b = new PcUi.IconBtn(context, icon, 44, 20, true, description);
+        b.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (onClick != null) onClick.run();
+                action.run();
             }
         });
-        btn.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
-        return btn;
-    }
-
-    private void addQuickSpacer(Context context, LinearLayout parent) {
-        View sp = new View(context);
-        parent.addView(sp, new LinearLayout.LayoutParams(1, dpToPx(6)));
+        return b;
     }
 
     private static int toggleState(boolean active, boolean error, int idle) {
@@ -713,15 +681,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         boolean inputError = inputClient.isRunning()
                 && (st == PcInputClient.STATE_ERROR || st == PcInputClient.STATE_AUTH_ERROR);
         boolean mouseOn = isMouseActive();
-        if (quickBtnKeyboard != null) quickBtnKeyboard.setState(toggleState(isKeyboardVisible, false, PcUi.ST_NORMAL));
-        if (quickBtnMic != null) quickBtnMic.setState(toggleState(isMicStreaming, false, PcUi.ST_NORMAL));
-        if (quickBtnSound != null) quickBtnSound.setState(toggleState(isAudioEnabled, false, PcUi.ST_NORMAL));
-        if (quickBtnTouchpad != null) quickBtnTouchpad.setState(toggleState(mouseOn, mouseOn && inputError, PcUi.ST_NORMAL));
         if (floatingMouseBtn != null) floatingMouseBtn.setState(toggleState(mouseOn, mouseOn && inputError, PcUi.ST_FLOATING));
         if (floatingKbdBtn != null) floatingKbdBtn.setState(toggleState(isKeyboardVisible, isKeyboardVisible && inputError, PcUi.ST_FLOATING));
-        if (toolbarMouseBtn != null) toolbarMouseBtn.setState(toggleState(isViewMouseEnabled, isViewMouseEnabled && inputError, PcUi.ST_NORMAL));
-        if (toolbarKbdBtn != null) toolbarKbdBtn.setState(toggleState(isKeyboardVisible, isKeyboardVisible && inputError, PcUi.ST_NORMAL));
+        if (floatingMicBtn != null) floatingMicBtn.setState(toggleState(isMicStreaming, false, PcUi.ST_FLOATING));
+        if (floatingSoundBtn != null) floatingSoundBtn.setState(toggleState(isAudioEnabled, false, PcUi.ST_FLOATING));
+        if (floatingFsBtn != null) floatingFsBtn.setState(toggleState(isFullscreen, false, PcUi.ST_FLOATING));
+        if (floatingSettingsBtn != null) floatingSettingsBtn.setState(toggleState(isSplitSettingsOpen, false, PcUi.ST_FLOATING));
         if (floatingArrowBtn != null) floatingArrowBtn.setState(isQuickDrawerOpen ? PcUi.ST_ACTIVE : PcUi.ST_FLOATING);
+        if (floatingGearBtn != null) floatingGearBtn.setState(isQuickDrawerOpen ? PcUi.ST_ACTIVE : PcUi.ST_FLOATING);
         maybeWarnLegacyServer(st);
     }
 
@@ -736,27 +703,57 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         }
     }
 
+    /** Плавно выдвигает меню влево (кнопки выезжают из-под стрелки по очереди) или задвигает обратно. */
     private void toggleQuickDrawer() {
+        if (floatingMenuStrip == null) return;
         isQuickDrawerOpen = !isQuickDrawerOpen;
-        quickActionsDrawer.animate().cancel();
-        floatingArrowBtn.animate().rotation(isQuickDrawerOpen ? 180f : 0f).setDuration(220)
+        floatingArrowBtn.animate().rotation(isQuickDrawerOpen ? 180f : 0f).setDuration(240)
                 .setInterpolator(new DecelerateInterpolator()).start();
         floatingArrowBtn.setContentDescription(isQuickDrawerOpen ? "Свернуть меню" : "Развернуть меню");
+        final int n = floatingMenuStrip.getChildCount();
+        final float step = dpToPx(52);
+        floatingMenuStrip.animate().cancel();
         if (isQuickDrawerOpen) {
-            quickActionsDrawer.setVisibility(View.VISIBLE);
-            quickActionsDrawer.setAlpha(0f);
-            quickActionsDrawer.setTranslationY(-dpToPx(10));
-            quickActionsDrawer.animate().alpha(1f).translationY(0f).setDuration(200)
-                    .setInterpolator(new DecelerateInterpolator()).setListener(null).start();
+            floatingMenuStrip.setVisibility(View.VISIBLE);
+            floatingMenuStrip.setAlpha(0f);
+            floatingMenuStrip.animate().alpha(opacityQuickDrawer / 100f).setDuration(200).setListener(null).start();
+            int k = 0;
+            for (int i = n - 1; i >= 0; i--) {
+                View c = floatingMenuStrip.getChildAt(i);
+                if (!(c instanceof PcUi.IconBtn)) continue;
+                c.animate().cancel();
+                // выезжает из-под стрелки: чем дальше кнопка, тем больше путь
+                c.setTranslationX(step * (k + 1));
+                c.setScaleX(0.6f);
+                c.setScaleY(0.6f);
+                c.animate().translationX(0f).scaleX(1f).scaleY(1f)
+                        .setStartDelay(k * 25L).setDuration(260)
+                        .setInterpolator(new DecelerateInterpolator(1.6f)).start();
+                k++;
+            }
         } else {
-            quickActionsDrawer.animate().alpha(0f).translationY(-dpToPx(8)).setDuration(150)
-                    .setInterpolator(new AccelerateInterpolator())
+            int k = 0;
+            for (int i = n - 1; i >= 0; i--) {
+                View c = floatingMenuStrip.getChildAt(i);
+                if (!(c instanceof PcUi.IconBtn)) continue;
+                c.animate().cancel();
+                c.animate().translationX(step * (k + 1)).scaleX(0.6f).scaleY(0.6f)
+                        .setStartDelay(0).setDuration(200)
+                        .setInterpolator(new AccelerateInterpolator()).start();
+                k++;
+            }
+            floatingMenuStrip.animate().alpha(0f).setDuration(200)
                     .setListener(new AnimatorListenerAdapter() {
                         @Override
                         public void onAnimationEnd(Animator animation) {
                             if (!isQuickDrawerOpen) {
-                                quickActionsDrawer.setVisibility(View.GONE);
-                                quickActionsDrawer.setTranslationY(0f);
+                                floatingMenuStrip.setVisibility(View.GONE);
+                                for (int i = 0; i < floatingMenuStrip.getChildCount(); i++) {
+                                    View c = floatingMenuStrip.getChildAt(i);
+                                    c.setTranslationX(0f);
+                                    c.setScaleX(1f);
+                                    c.setScaleY(1f);
+                                }
                             }
                         }
                     }).start();
@@ -887,6 +884,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         }
                         applyTouchpadConfig();
                         updateTouchpadZoneVisibility();
+                        updateQuickActionStates();
                         requestLayout();
                     }
                 })
@@ -983,7 +981,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             case 3: return "Частота кадров";
             case 4: return "Тачпад и мышь";
             case 5: return "Клавиатура ПК";
-            case 6: return "Прозрачность и кнопки";
+            case 6: return "Прозрачность и цвета";
             default: return "Настройки";
         }
     }
@@ -995,7 +993,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             case 3: return "Частота кадров трансляции.";
             case 4: return "Перетаскивайте зону и её маркеры прямо на видео справа.";
             case 5: return "Собственная клавиатура PC Control — системная клавиатура Android не используется.";
-            case 6: return "Видимость плавающих кнопок, панелей и клавиатуры.";
+            case 6: return "Прозрачность и цвет каждого элемента управления.";
             default: return operatingMode == MODE_PC_CONTROL ? "Управление ПК · трансляция, мышь и клавиатура" : "Демонстрация экрана · трансляция";
         }
     }
@@ -1008,7 +1006,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             // Ввод настраивается только в «Управлении ПК»; в демонстрации — лишь параметры видео
             addNav(ctx, PcIcons.MOUSE, "Тачпад и мышь", "Зона, чувствительность, прокрутка", 4);
             addNav(ctx, PcIcons.KEYBOARD, "Клавиатура ПК", "Размер, положение, язык", 5);
-            addNav(ctx, PcIcons.EYE, "Прозрачность и кнопки", "Видимость элементов интерфейса", 6);
+            addNav(ctx, PcIcons.EYE, "Прозрачность и цвета", "Зона тачпада, шестерёнка, меню, клавиатура", 6);
         }
 
         settingsBody.addView(PcUi.divider(ctx));
@@ -1253,6 +1251,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
         zone.row.set(opacityTpZone + "%");
+        addHint("0% — зона не видна поверх изображения ПК, но работает.");
+        addColorRow("Цвет зоны", colTpZone, new PcUi.ColorListener() {
+            @Override public void onColor(int c) { colTpZone = c; applyUserTints(); }
+        });
 
         settingsBody.addView(PcUi.divider(ctx));
         addButtonRow(
@@ -1268,7 +1270,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         isMouseAbsolute = false;
                         scrollSpeed = 1.0f;
                         invertScroll = false;
-                        opacityTpZone = 18;
+                        opacityTpZone = 0;
                         applyTouchpadConfig();
                         savePreferences();
                         renderSplitSettingsContent();
@@ -1405,26 +1407,68 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         void set(int v);
     }
 
+    private void addColorRow(String label, int selected, PcUi.ColorListener l) {
+        TextView t = PcUi.text(getContext(), label, 12.5f, PcUi.SUBTEXT, PcUi.medium());
+        t.setPadding(dpToPx(2), dpToPx(10), 0, 0);
+        settingsBody.addView(t);
+        settingsBody.addView(PcUi.colorPicker(getContext(), selected, l));
+    }
+
     private void buildOpacitySettingsSection(Context ctx) {
-        addTitle("Плавающие кнопки");
-        addOpacitySlider("Шестерёнка настроек", opacityGear, new OpacitySetter() { @Override public void set(int v) { opacityGear = v; } });
-        addOpacitySlider("Кнопка меню", opacityArrow, new OpacitySetter() { @Override public void set(int v) { opacityArrow = v; } });
-        addTitle("Быстрое меню");
-        addOpacitySlider("Панель быстрых действий", opacityQuickDrawer, new OpacitySetter() { @Override public void set(int v) { opacityQuickDrawer = v; } });
+        addTitle("Зона тачпада");
+        addHint("По умолчанию 0% — зона не видна поверх изображения ПК, но работает.");
+        addValueSlider("Видимость зоны", 0, 100, opacityTpZone, new SliderChange() {
+            @Override
+            public String onChange(int val) {
+                opacityTpZone = val;
+                updateTouchpadZoneVisibility();
+                return val + "%";
+            }
+        }).row.set(opacityTpZone + "%");
+        addColorRow("Цвет зоны", colTpZone, new PcUi.ColorListener() {
+            @Override public void onColor(int c) { colTpZone = c; applyUserTints(); }
+        });
+
+        addTitle("Шестерёнка");
+        addOpacitySlider("Прозрачность", opacityGear, new OpacitySetter() { @Override public void set(int v) { opacityGear = v; } });
+        addColorRow("Цвет", colGear, new PcUi.ColorListener() {
+            @Override public void onColor(int c) { colGear = c; applyUserTints(); }
+        });
+
+        addTitle("Стрелка меню");
+        addOpacitySlider("Прозрачность", opacityArrow, new OpacitySetter() { @Override public void set(int v) { opacityArrow = v; } });
+        addColorRow("Цвет", colArrow, new PcUi.ColorListener() {
+            @Override public void onColor(int c) { colArrow = c; applyUserTints(); }
+        });
+
+        addTitle("Выдвижное меню");
+        addOpacitySlider("Всё меню", opacityQuickDrawer, new OpacitySetter() { @Override public void set(int v) { opacityQuickDrawer = v; } });
+        addOpacitySlider("Кнопка «Мышь»", opacityBtnTouchpad, new OpacitySetter() { @Override public void set(int v) { opacityBtnTouchpad = v; } });
         addOpacitySlider("Кнопка «Клавиатура»", opacityBtnKeyboard, new OpacitySetter() { @Override public void set(int v) { opacityBtnKeyboard = v; } });
         addOpacitySlider("Кнопка «Микрофон»", opacityBtnMic, new OpacitySetter() { @Override public void set(int v) { opacityBtnMic = v; } });
         addOpacitySlider("Кнопка «Звук ПК»", opacityBtnSound, new OpacitySetter() { @Override public void set(int v) { opacityBtnSound = v; } });
-        addOpacitySlider("Кнопка «Тачпад»", opacityBtnTouchpad, new OpacitySetter() { @Override public void set(int v) { opacityBtnTouchpad = v; } });
-        addTitle("Панели");
-        addOpacitySlider("Фон панели настроек", opacitySettings, new OpacitySetter() { @Override public void set(int v) { opacitySettings = v; } });
-        addOpacitySlider("Панель диагностики", opacityDiag, new OpacitySetter() { @Override public void set(int v) { opacityDiag = v; } });
+        addColorRow("Цвет значков меню", colMenu, new PcUi.ColorListener() {
+            @Override public void onColor(int c) { colMenu = c; applyUserTints(); }
+        });
+
         addTitle("Клавиатура");
         addOpacitySlider("Подложка клавиатуры", opacityKbdBg, new OpacitySetter() { @Override public void set(int v) { opacityKbdBg = v; } });
         addOpacitySlider("Клавиши", opacityKbdKeys, new OpacitySetter() { @Override public void set(int v) { opacityKbdKeys = v; } });
         addOpacitySlider("Ряд спец-клавиш", opacityKbdSpecial, new OpacitySetter() { @Override public void set(int v) { opacityKbdSpecial = v; } });
+        addColorRow("Цвет букв", colKbdText, new PcUi.ColorListener() {
+            @Override public void onColor(int c) { colKbdText = c; applyUserTints(); }
+        });
+
+        addTitle("Панели");
+        addOpacitySlider("Фон панели настроек", opacitySettings, new OpacitySetter() { @Override public void set(int v) { opacitySettings = v; } });
+        addOpacitySlider("Панель диагностики", opacityDiag, new OpacitySetter() { @Override public void set(int v) { opacityDiag = v; } });
+
         addTitle("Редактор тачпада");
         addOpacitySlider("Рамка зоны", opacityTpBorder, new OpacitySetter() { @Override public void set(int v) { opacityTpBorder = v; } });
         addOpacitySlider("Значок перемещения", opacityTpCenter, new OpacitySetter() { @Override public void set(int v) { opacityTpCenter = v; } });
+        addColorRow("Цвет рамки", colTpBorder, new PcUi.ColorListener() {
+            @Override public void onColor(int c) { colTpBorder = c; applyUserTints(); }
+        });
 
         settingsBody.addView(PcUi.divider(ctx));
         addButtonRow(actionBtn(PcIcons.GEAR, "Кнопки в правый верхний угол", PcUi.ST_NORMAL, new Runnable() {
@@ -1437,10 +1481,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 Toast.makeText(getContext(), "Кнопки возвращены в правый верхний угол", Toast.LENGTH_SHORT).show();
             }
         }));
-        addButtonRow(actionBtn(PcIcons.RESET, "Сбросить прозрачность", PcUi.ST_NORMAL, new Runnable() {
+        addButtonRow(actionBtn(PcIcons.RESET, "Сбросить прозрачность и цвета", PcUi.ST_NORMAL, new Runnable() {
             @Override
             public void run() {
                 resetDefaultOpacities();
+                resetDefaultColors();
+                opacityTpZone = 0;
+                updateTouchpadZoneVisibility();
                 savePreferences();
                 renderSplitSettingsContent();
             }
@@ -1461,13 +1508,16 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void applyOpacities() {
         if (floatingGearBtn != null) floatingGearBtn.setAlpha(opacityGear / 100f);
         if (floatingArrowBtn != null) floatingArrowBtn.setAlpha(opacityArrow / 100f);
-        if (floatingMouseBtn != null) floatingMouseBtn.setAlpha(opacityGear / 100f);
-        if (floatingKbdBtn != null) floatingKbdBtn.setAlpha(opacityGear / 100f);
-        if (quickActionsDrawer != null) quickActionsDrawer.setAlpha(opacityQuickDrawer / 100f);
-        if (quickBtnKeyboard != null) quickBtnKeyboard.setAlpha(opacityBtnKeyboard / 100f);
-        if (quickBtnMic != null) quickBtnMic.setAlpha(opacityBtnMic / 100f);
-        if (quickBtnSound != null) quickBtnSound.setAlpha(opacityBtnSound / 100f);
-        if (quickBtnTouchpad != null) quickBtnTouchpad.setAlpha(opacityBtnTouchpad / 100f);
+        // Выдвижное меню: общая прозрачность + отдельная у каждой кнопки
+        if (floatingMenuStrip != null && floatingMenuStrip.getVisibility() == View.VISIBLE) {
+            floatingMenuStrip.animate().cancel();
+            floatingMenuStrip.setAlpha(opacityQuickDrawer / 100f);
+        }
+        if (floatingKbdBtn != null) floatingKbdBtn.setAlpha(opacityBtnKeyboard / 100f);
+        if (floatingMicBtn != null) floatingMicBtn.setAlpha(opacityBtnMic / 100f);
+        if (floatingSoundBtn != null) floatingSoundBtn.setAlpha(opacityBtnSound / 100f);
+        if (floatingMouseBtn != null) floatingMouseBtn.setAlpha(opacityBtnTouchpad / 100f);
+        applyUserTints();
         // Прозрачность панели настроек — только у фона, текст и ползунки остаются читаемыми
         if (settingsCardBg != null) settingsCardBg.setAlpha(Math.round(opacitySettings / 100f * 255));
         if (diagCard != null) diagCard.setAlpha(opacityDiag / 100f);
@@ -1475,6 +1525,27 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (keyboardView != null) keyboardView.setKeyOpacity(opacityKbdKeys / 100f, opacityKbdSpecial / 100f);
         if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
         if (touchpadZoneView != null) touchpadZoneView.invalidate();
+    }
+
+    /** Применяет выбранные пользователем цвета к элементам интерфейса. */
+    private void applyUserTints() {
+        if (floatingGearBtn != null) floatingGearBtn.setTint(colGear);
+        if (floatingArrowBtn != null) floatingArrowBtn.setTint(colArrow);
+        PcUi.IconBtn[] menu = {floatingSettingsBtn, floatingSoundBtn, floatingMicBtn, floatingFsBtn, floatingKbdBtn, floatingMouseBtn};
+        for (PcUi.IconBtn b : menu) if (b != null) b.setTint(colMenu);
+        if (keyboardView != null) keyboardView.setKeyTextColor(colKbdText);
+        if (touchpadZoneView != null) touchpadZoneView.invalidate();
+        if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+    }
+
+    private void resetDefaultColors() {
+        colTpZone = DEF_COL_TP_ZONE;
+        colGear = PcUi.TEXT;
+        colArrow = PcUi.TEXT;
+        colMenu = PcUi.TEXT;
+        colKbdText = PcUi.TEXT;
+        colTpBorder = DEF_COL_TP_BORDER;
+        applyUserTints();
     }
 
     private void resetDefaultOpacities() {
@@ -1687,13 +1758,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
             // Полупрозрачная заливка рабочей области
             android.graphics.Paint fillPaint = new android.graphics.Paint();
-            fillPaint.setColor(Color.parseColor("#2638BDF8"));
+            fillPaint.setColor((colTpBorder & 0x00FFFFFF) | 0x26000000);
             fillPaint.setStyle(android.graphics.Paint.Style.FILL);
             canvas.drawRoundRect(zoneRect, dpToPx(16), dpToPx(16), fillPaint);
 
             // Рамка зоны тачпада
             android.graphics.Paint borderPaint = new android.graphics.Paint();
-            borderPaint.setColor(Color.parseColor("#38BDF8"));
+            borderPaint.setColor(colTpBorder);
             borderPaint.setAlpha((int) ((opacityTpBorder / 100f) * 255));
             borderPaint.setStyle(android.graphics.Paint.Style.STROKE);
             borderPaint.setStrokeWidth(dpToPx(2));
@@ -2183,7 +2254,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
             scrollSpeed = sp.getFloat("scroll_speed", 1.0f);
             invertScroll = sp.getBoolean("scroll_invert", false);
-            opacityTpZone = sp.getInt("op_tp_zone", 18);
+            opacityTpZone = sp.getInt("op_tp_zone", 0);
+            colTpZone = sp.getInt("col_tp_zone", DEF_COL_TP_ZONE);
+            colGear = sp.getInt("col_gear", PcUi.TEXT);
+            colArrow = sp.getInt("col_arrow", PcUi.TEXT);
+            colMenu = sp.getInt("col_menu", PcUi.TEXT);
+            colKbdText = sp.getInt("col_kbd", PcUi.TEXT);
+            colTpBorder = sp.getInt("col_tp_bord", DEF_COL_TP_BORDER);
 
             kbdWidthPct = Math.max(40, Math.min(100, sp.getInt("kbd_w", 100)));
             kbdHeightDp = Math.max(140, Math.min(360, sp.getInt("kbd_h", 220)));
@@ -2202,6 +2279,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 gearPosX = -1f;
                 gearPosY = -1f;
                 sp.edit().putInt("ui_rev", 3).remove("gear_x").remove("gear_y").apply();
+            }
+            if (sp.getInt("ui_rev", 0) < 4) {
+                // v2.3.4: зона тачпада по умолчанию невидима; позиция шестерёнки теперь хранится
+                // по правому краю (меню выдвигается влево) — возвращаем в правый верхний угол.
+                opacityTpZone = 0;
+                gearPosX = -1f;
+                gearPosY = -1f;
+                sp.edit().putInt("ui_rev", 4).putInt("op_tp_zone", 0).remove("gear_x").remove("gear_y").apply();
             }
         } catch (Exception ignored) {}
     }
@@ -2248,6 +2333,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     .putFloat("scroll_speed", scrollSpeed)
                     .putBoolean("scroll_invert", invertScroll)
                     .putInt("op_tp_zone", opacityTpZone)
+                    .putInt("col_tp_zone", colTpZone)
+                    .putInt("col_gear", colGear)
+                    .putInt("col_arrow", colArrow)
+                    .putInt("col_menu", colMenu)
+                    .putInt("col_kbd", colKbdText)
+                    .putInt("col_tp_bord", colTpBorder)
                     .putFloat("gear_x", gearPosX)
                     .putFloat("gear_y", gearPosY)
                     .apply();
@@ -2350,6 +2441,19 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         releaseDecoder();
         releaseStreamWifiLock();
+        // Окно выходит из полноэкранного режима вместе с плеером (MainActivity) — сбрасываем флаг,
+        // иначе в следующем сеансе кнопка показывала бы неверное состояние.
+        if (isFullscreen) {
+            isFullscreen = false;
+            post(new Runnable() {
+                @Override
+                public void run() {
+                    if (fullscreenBtn != null) fullscreenBtn.setIcon(PcIcons.FULLSCREEN);
+                    if (floatingFsBtn != null) floatingFsBtn.setIcon(PcIcons.FULLSCREEN);
+                    updateQuickActionStates();
+                }
+            });
+        }
 
         post(new Runnable() {
             @Override
@@ -2442,6 +2546,16 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (fullscreenBtn != null) {
             fullscreenBtn.setIcon(isFullscreen ? PcIcons.FULLSCREEN_EXIT : PcIcons.FULLSCREEN);
         }
+        if (floatingFsBtn != null) {
+            floatingFsBtn.setIcon(isFullscreen ? PcIcons.FULLSCREEN_EXIT : PcIcons.FULLSCREEN);
+            floatingFsBtn.setContentDescription(isFullscreen ? "Выйти из полноэкранного режима" : "Полноэкранный режим");
+        }
+        updateQuickActionStates();
+        // Системные панели и вырез камеры меняются после перехода — пересчитываем раскладку,
+        // чтобы шестерёнка, меню и клавиатура остались в доступной области экрана.
+        post(new Runnable() {
+            @Override public void run() { requestLayout(); }
+        });
         if (playerCallback != null) {
             playerCallback.onFullscreenToggled(isFullscreen);
         }
@@ -3119,14 +3233,18 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (floatingControlsGroup != null && floatingControlsGroup.getVisibility() != View.GONE) {
             int gW = floatingControlsGroup.getMeasuredWidth();
             int gH = floatingControlsGroup.getMeasuredHeight();
-            // Гарантируем, что плавающие кнопки никогда не уйдут за экран при повороте телефона
-            float defX = (gearPosX >= 0)
-                    ? Math.min(parentW - gW - dpToPx(8), Math.max(dpToPx(8), gearPosX))
-                    : (parentW - gW - dpToPx(16));
-            float defY = (gearPosY >= 0)
-                    ? Math.min(parentH - gH - dpToPx(8), Math.max(dpToPx(8), gearPosY))
-                    : dpToPx(16);
-            floatingControlsGroup.layout((int) defX, (int) defY, (int) (defX + gW), (int) (defY + gH));
+            Rect safe = getSafeInsets();
+            int minX = safe.left + dpToPx(8);
+            int maxRight = parentW - safe.right - dpToPx(8);
+            int minY = safe.top + dpToPx(8);
+            int maxBottom = parentH - safe.bottom - dpToPx(8);
+            // Позиция хранится по ПРАВОМУ краю: меню выдвигается влево, шестерёнка остаётся на месте.
+            // По умолчанию — правый верхний угол (с учётом выреза камеры и системных панелей).
+            float gRight = (gearPosX >= 0) ? gearPosX : (parentW - safe.right - dpToPx(16));
+            gRight = Math.max(minX + gW, Math.min(maxRight, gRight));
+            float gTop = (gearPosY >= 0) ? gearPosY : (safe.top + dpToPx(16));
+            gTop = Math.max(minY, Math.min(maxBottom - gH, gTop));
+            floatingControlsGroup.layout((int) (gRight - gW), (int) gTop, (int) gRight, (int) (gTop + gH));
         }
 
         if (splitSettingsContainer != null && splitSettingsContainer.getVisibility() != View.GONE) {
@@ -3140,7 +3258,10 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             int kW = keyboardPanel.getMeasuredWidth();
             int kH = keyboardPanel.getMeasuredHeight();
             int kLeft = Math.round(kbdPosX * parentW - kW / 2f);
-            kLeft = Math.max(0, Math.min(parentW - kW, kLeft));
+            Rect ks = getSafeInsets();
+            int kMin = (kW <= parentW - ks.left - ks.right) ? ks.left : 0;
+            int kMax = (kW <= parentW - ks.left - ks.right) ? parentW - ks.right - kW : parentW - kW;
+            kLeft = Math.max(kMin, Math.min(kMax, kLeft));
             int kBottom = parentH - dpToPx(kbdOffsetYDp);
             kBottom = Math.max(kH, Math.min(parentH, kBottom));
             keyboardPanel.layout(kLeft, kBottom - kH, kLeft + kW, kBottom);
@@ -3152,6 +3273,33 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (errorOverlay != null && errorOverlay.getVisibility() != View.GONE) {
             errorOverlay.layout(0, 0, parentW, parentH);
         }
+    }
+
+    private final Rect safeInsets = new Rect();
+
+    /**
+     * Безопасная область в полноэкранном режиме: окно рисуется под вырезом камеры
+     * (LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES), поэтому кнопки и клавиатуру отодвигаем от выреза.
+     * Вне полноэкранного режима окно и так не заходит под вырез и системные панели.
+     */
+    private Rect getSafeInsets() {
+        safeInsets.set(0, 0, 0, 0);
+        if (isFullscreen && Build.VERSION.SDK_INT >= 28) {
+            try {
+                android.view.WindowInsets wi = getRootWindowInsets();
+                android.view.DisplayCutout dc = wi != null ? wi.getDisplayCutout() : null;
+                if (dc != null) {
+                    safeInsets.set(dc.getSafeInsetLeft(), dc.getSafeInsetTop(), dc.getSafeInsetRight(), dc.getSafeInsetBottom());
+                }
+            } catch (Exception ignored) {}
+        }
+        return safeInsets;
+    }
+
+    @Override
+    public android.view.WindowInsets onApplyWindowInsets(android.view.WindowInsets insets) {
+        requestLayout();
+        return super.onApplyWindowInsets(insets);
     }
 
     private int dpToPx(int dp) {

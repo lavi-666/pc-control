@@ -35,6 +35,7 @@ public class PcKeyboardView extends View {
     private float keyAlpha = 0.95f;
     private float specialAlpha = 0.95f;
     private boolean haptics = true;
+    private int keyTextColor = Color.WHITE;
     private final float density;
 
     // Palette = PC Control app tokens (assets/css/styles.css): surface2/surface3 keys,
@@ -66,6 +67,12 @@ public class PcKeyboardView extends View {
     public void setKeyOpacity(float keys, float special) {
         keyAlpha = Math.max(0.1f, Math.min(1f, keys));
         specialAlpha = Math.max(0.1f, Math.min(1f, special));
+        invalidate();
+    }
+
+    /** Colour of the character labels (user setting; service keys stay grey). */
+    public void setKeyTextColor(int color) {
+        keyTextColor = color;
         invalidate();
     }
 
@@ -135,7 +142,7 @@ public class PcKeyboardView extends View {
                 boolean isPressed = isKeyPressed(k);
                 int bg = k.special ? C_SPECIAL : C_KEY;
                 int stroke = C_STROKE;
-                int fg = (k.special && k.kind != PcKeyboardLogic.K_CHAR) ? C_SERVICE_TEXT : C_TEXT;
+                int fg = (k.special && k.kind != PcKeyboardLogic.K_CHAR) ? C_SERVICE_TEXT : keyTextColor;
                 if (k.kind == PcKeyboardLogic.K_MOD) {
                     int st = logic.getModState(k.mod);
                     if (st == PcKeyboardLogic.ST_LOCKED) {

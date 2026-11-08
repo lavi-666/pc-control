@@ -148,6 +148,20 @@ final class PcUi {
         final boolean round;
         final int sizePx;
         private int state = -1;
+        private int tint = TEXT;
+
+        /** User-chosen icon colour (normal/active/floating states; errors stay red). */
+        void setTint(int color) {
+            if (tint == color) return;
+            tint = color;
+            int st = state;
+            state = -1;
+            setState(st);
+        }
+
+        int getState() {
+            return state;
+        }
 
         IconBtn(Context c, String[] iconData, int sizeDp, int iconDp, boolean round, String description) {
             super(c);
@@ -173,7 +187,7 @@ final class PcUi {
             switch (st) {
                 case ST_ACTIVE:
                     setBackground(shape(round ? FLOAT_ACTIVE_BG : ACTIVE_BG, r, ACTIVE_BORDER, stroke));
-                    icon.setColor(TEXT);
+                    icon.setColor(tint);
                     break;
                 case ST_ERROR:
                 case ST_DANGER:
@@ -186,11 +200,11 @@ final class PcUi {
                     break;
                 case ST_FLOATING:
                     setBackground(shape(FLOAT_BG, r, BORDER_STRONG, stroke));
-                    icon.setColor(TEXT);
+                    icon.setColor(tint);
                     break;
                 default:
                     setBackground(shape(SURFACE2, r, BORDER, stroke));
-                    icon.setColor(TEXT);
+                    icon.setColor(tint);
                     break;
             }
         }
@@ -371,6 +385,57 @@ final class PcUi {
             }
         });
         return sb;
+    }
+
+    // ------------------------------------------------------------------ colour picker
+    /** Palette for user-tinted elements: white, app red, PC-control sky, ok green, amber, violet, pink. */
+    static final int[] TINTS = {0xFFFFFFFF, RED, PC_ACCENT, 0xFF2BA640, 0xFFFFB300, 0xFFA855F7, 0xFFFF4FA3};
+    static final String[] TINT_NAMES = {"Белый", "Красный", "Голубой", "Зелёный", "Янтарный", "Фиолетовый", "Розовый"};
+
+    interface ColorListener {
+        void onColor(int color);
+    }
+
+    /** Row of colour swatches (28dp circles), the selected one gets a white ring. */
+    static LinearLayout colorPicker(final Context c, int selected, final ColorListener l) {
+        final LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(c, 2), dp(c, 6), 0, dp(c, 2));
+        final View[] dots = new View[TINTS.length];
+        for (int i = 0; i < TINTS.length; i++) {
+            final int color = TINTS[i];
+            View dot = new View(c);
+            dot.setContentDescription(TINT_NAMES[i]);
+            dot.setClickable(true);
+            dots[i] = dot;
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(c, 28), dp(c, 28));
+            if (i > 0) lp.leftMargin = dp(c, 10);
+            row.addView(dot, lp);
+            dot.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    paintSwatches(c, dots, color);
+                    v.animate().scaleX(1.15f).scaleY(1.15f).setDuration(90).start();
+                    v.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            for (View d : dots) d.animate().scaleX(1f).scaleY(1f).setDuration(120).start();
+                        }
+                    }, 100);
+                    if (l != null) l.onColor(color);
+                }
+            });
+        }
+        paintSwatches(c, dots, selected);
+        return row;
+    }
+
+    private static void paintSwatches(Context c, View[] dots, int selected) {
+        for (int i = 0; i < dots.length; i++) {
+            boolean on = TINTS[i] == selected;
+            dots[i].setBackground(oval(TINTS[i], on ? TEXT : BORDER_STRONG, dp(c, on ? 3 : 1)));
+        }
     }
 
     /** Label (12sp subtext) on the left and its value (mono) on the right. */
