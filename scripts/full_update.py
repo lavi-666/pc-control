@@ -273,9 +273,12 @@ def extract_package(archive, stage, manifest, raw_manifest):
             raise ValueError('File checksum mismatch: ' + name)
 
 
-def prune_finished_jobs(base):
-    """Retain one prior completed update; never touch another installation's jobs."""
+def prune_finished_jobs(base, keep=0):
+    """Remove completed update workspaces of this installation (never another installation's jobs,
+    never an unfinished one that recovery may need). After 'complete' or 'rolled_back' nothing reads
+    them any more, but each holds ~0.7 GB (runtime copy, staged files, ZIP, backup)."""
     import psutil
+    base = Path(base).resolve()
     completed = []
     for candidate in base.parent.glob('.pccontrol-update-*'):
         if candidate.is_symlink() or candidate.resolve().parent != base.parent or not candidate.is_dir():
@@ -286,7 +289,7 @@ def prune_finished_jobs(base):
                 completed.append((finished['time'], candidate))
         except (OSError, ValueError, KeyError):
             continue
-    for _, candidate in sorted(completed, reverse=True)[1:]:
+    for _, candidate in sorted(completed, reverse=True)[keep:]:
         if candidate.resolve().parent != base.parent or not candidate.name.startswith('.pccontrol-update-'):
             raise ValueError('Invalid completed update workspace')
         shutil.rmtree(candidate)

@@ -1366,6 +1366,19 @@ def check_github_updates() -> dict:
     return LATEST_UPDATE_INFO
 
 
+def cleanup_update_workspaces():
+    """Удаляет рабочие папки завершённых обновлений (~0.7 ГБ каждая) рядом с программой."""
+    try:
+        from scripts import full_update
+        before = {p.name for p in BASE_DIR.parent.glob('.pccontrol-update-*')}
+        full_update.prune_finished_jobs(BASE_DIR)
+        removed = before - {p.name for p in BASE_DIR.parent.glob('.pccontrol-update-*')}
+        if removed:
+            append_log(f"[UPDATE] Removed {len(removed)} finished update workspace(s) next to the program.")
+    except Exception as e:
+        append_log(f"[WARNING] Could not clean finished update workspaces: {e}")
+
+
 def apply_github_update() -> dict:
     global _is_busy, _busy_action
     from scripts import full_update
@@ -2897,6 +2910,8 @@ def main():
 
     # Фоновая автоматическая проверка обновлений при старте лаунчера
     threading.Timer(2.0, check_github_updates).start()
+    # Через минуту (процесс-исполнитель обновления к этому времени завершён) убираем его рабочую папку
+    threading.Timer(60.0, cleanup_update_workspaces).start()
 
     if "--no-browser" not in sys.argv:
         threading.Timer(0.4, lambda: launch_browser_gui(gui_url)).start()
