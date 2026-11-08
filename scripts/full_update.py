@@ -24,7 +24,7 @@ DIRECTORIES = {'core', 'modules', 'scripts', 'web', 'tools', 'runtime', 'docs'}
 ROOT_FILES = {'Launcher.exe', 'Uninstall.exe', 'PC_Control.apk', 'pc_control.ico', 'server.py', 'open_app.pyw',
               'requirements.txt', 'requirements-runtime.lock', 'runtime-source.json', 'config.example.json',
               'README.md', 'README.ru.md', 'LICENSE', 'launcher.bat', 'start_server.bat',
-              'stop_server.bat', 'change_password.bat', 'uninstall.bat', 'START_HERE.txt'}
+              'stop_server.bat', 'change_password.bat', 'uninstall.bat', 'START_HERE.txt', 'build-info.json'}
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _lock = threading.Lock()
 _check_lock = threading.Lock()
@@ -159,6 +159,39 @@ def compare(base, manifest, use_cache=True):
     return changed, removed, old
 
 
+def _parse_iso(value):
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+
+
+def local_build(base):
+    """Коммит и дата установленного кода: build-info.json (ZIP с GitHub / git archive подставляют
+    их через export-subst) или git-репозиторий. None, если определить нельзя."""
+    base = Path(base)
+    try:
+        info = json.loads((base / 'build-info.json').read_text(encoding='utf-8'))
+        commit, date = str(info.get('commit', '')), str(info.get('date', ''))
+        if commit and '$Format' not in commit and _parse_iso(date):
+            return {'commit': commit, 'date': date}
+    except (OSError, ValueError):
+        pass
+    if (base / '.git').exists():
+        git = shutil.which('git')
+        if git:
+            try:
+                out = subprocess.run([git, '-C', str(base), 'log', '-1', '--format=%H|%cI'], capture_output=True,
+                                     text=True, timeout=10, creationflags=NO_WINDOW).stdout.strip()
+                commit, _, date = out.partition('|')
+                if commit and _parse_iso(date):
+                    return {'commit': commit, 'date': date}
+            except (OSError, subprocess.SubprocessError):
+                pass
+    return None
+
+
 def check(base):
     with _check_lock:
         return _check(base)
@@ -168,6 +201,19 @@ def _check(base):
     try:
         remote = remote_release()
         changed, removed, old = compare(base, remote['manifest'])
+        local = local_build(base)
+        remote_date = _parse_iso(remote['date'])
+        if (local and remote_date and _parse_iso(local['date']) >= remote_date
+                and local['commit'] != remote['manifest'].get('revision')):
+            # Установленный код НОВЕЕ опубликованного релиза (например, ZIP ветки main после
+            # релиза или локальная разработка). Раньше любое расхождение считалось «обновлением»,
+            # и кнопка «Обновить» откатывала программу на старую версию.
+            return {'ok': True, 'has_update': False, 'local_newer': True, 'changed_count': 0, 'removed_count': 0,
+                    'changed_files': [], 'removed_files': [], 'current_version': local['commit'][:12],
+                    'current_commit': local['commit'][:12], 'latest_commit': remote['manifest'].get('revision', '')[:12],
+                    'commit_message': remote['title'], 'commit_date': remote['date'],
+                    'release_url': REPOSITORY + '/releases/latest',
+                    'message': 'Установлена более новая версия, чем последний опубликованный релиз. Обновление не требуется.'}
         different = bool(changed or removed or old.get('build_id') != remote['manifest']['build_id'])
         return {'ok': True, 'has_update': different, 'changed_count': len(changed), 'removed_count': len(removed),
                 'changed_files': changed[:100], 'removed_files': removed[:100],
@@ -250,6 +296,13 @@ def prepare(base, port, restart_server=False, log=lambda message: None, open_bro
         changed, removed, old = compare(base, remote['manifest'], use_cache=False)
         if not changed and not removed and old.get('build_id') == remote['manifest']['build_id']:
             return {'ok': True, 'restarting': False, 'message': 'Все файлы уже актуальны.'}
+        local = local_build(base)
+        remote_date = _parse_iso(remote['date'])
+        if (local and remote_date and _parse_iso(local['date']) >= remote_date
+                and local['commit'] != remote['manifest'].get('revision')):
+            return {'ok': False, 'error_code': 'ERR_LOCAL_NEWER',
+                    'message': 'Установлена более новая версия, чем опубликованный релиз — обновление отменено, '
+                               'чтобы не откатить программу на старую версию.'}
         if shutil.disk_usage(base.parent).free < 3 * 1024**3:
             raise RuntimeError('Для безопасного обновления нужно не менее 3 ГБ свободного места.')
         job = base.parent / ('.pccontrol-update-' + uuid.uuid4().hex)

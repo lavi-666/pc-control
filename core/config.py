@@ -117,7 +117,7 @@ def load_app_config() -> dict:
                 mtime = cfg_file.stat().st_mtime_ns
                 if _cached_config is not None and mtime == _cached_config_mtime:
                     return dict(_cached_config)
-                with open(cfg_file, "r", encoding="utf-8") as f:
+                with open(cfg_file, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                     if isinstance(data, dict):
                         _cached_config = data

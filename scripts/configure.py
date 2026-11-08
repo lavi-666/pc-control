@@ -79,7 +79,7 @@ def load_config():
     }
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                 saved = json.load(f)
                 defaults.update(saved)
         except Exception:

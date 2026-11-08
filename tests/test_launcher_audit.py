@@ -231,8 +231,9 @@ class LauncherAudit(unittest.TestCase):
         self.assertTrue(popen_mock.called)
 
     def test_apply_firewall_polls_and_passes_no_pause(self):
-        with patch.object(panel, 'run_elevated_command', return_value=(True, '', 'OK')) as elev_mock, \
-             patch.object(panel, 'is_firewall_configured', side_effect=[False, True, True]):
+        # Сценарий запускается с повышением прав и с ожиданием завершения; успех — только если правило есть.
+        with patch.object(panel, 'run_elevated_and_wait', return_value=(True, 'OK', 'exit code 0', 0)) as elev_mock, \
+             patch.object(panel, 'is_firewall_configured', return_value=True):
             status, data, _ = self.request({'action': 'apply_firewall'})
         self.assertEqual(status, 200)
         self.assertTrue(data['ok'])

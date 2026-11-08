@@ -33,7 +33,7 @@ BUILD_APK_SCRIPT = BASE_DIR / "scripts" / "build_apk.py"
 def get_current_token() -> str:
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
                 return str(data.get("token", "")).strip()
         except Exception:
@@ -135,7 +135,7 @@ def main():
     port = 5000
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                 c = json.load(f)
                 lan_ip = c.get("lan_ip", lan_ip)
                 vpn_ip = c.get("vpn_ip", vpn_ip)

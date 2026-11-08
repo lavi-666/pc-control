@@ -72,18 +72,26 @@ Most remote desktop utilities (TeamViewer, AnyDesk) require internet connectivit
 
 ### 📦 Choose Your Download Format
 
-PC Control is available in **two official distribution formats**:
+PC Control is available in **three formats** — in every case everything after that is done in the app window: no console, no BAT files, no JSON editing:
 
 | Format | File | Recommended For | How to Launch |
 | :--- | :--- | :--- | :--- |
 | **1. Windows Setup Wizard** *(Recommended)* | [`PC-Control-Setup.exe`](https://github.com/lavi-666/pc-control/releases/latest/download/PC-Control-Setup.exe) | Most desktop users | Download, run setup wizard, pick directory, click Install. Creates desktop & start menu shortcuts, registers in Windows Add/Remove Programs. |
 | **2. Portable ZIP Folder** *(No installation)* | [`PC_Control_Windows.zip`](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control_Windows.zip) | Portable use / USB drive | Download ZIP, extract to **any directory** on your PC and run `Launcher.exe`. Leaves no system changes; to remove, simply delete the folder. |
+| **3. Source code from GitHub** | **Code → Download ZIP** on the repository page | Latest version | Extract to any folder (spaces and non-Latin characters in the path are fine) and run `Launcher.exe`. On first start it downloads an isolated Python into `runtime\` (checksum verified) and installs the libraries — needs internet, usually 1–3 minutes. |
 
 ---
 
 ### Connect with Your Phone
 
-1. **Launch Console**: Open `Launcher.exe` (or the desktop shortcut). The panel detects your active Wi-Fi IP, starts the local server, and displays a secure QR pairing code.
+1. **Run `Launcher.exe`** (or the PC Control shortcut). On first start the **setup wizard** opens by itself and checks — and fixes where possible — each step in turn:
+   - **Components** — installs missing libraries (progress is shown in the panel console);
+   - **Network** — detects the PC's local IP address;
+   - **Server** — starts it; if port 5000 is taken by another program or reserved by Windows, a free port is chosen and saved automatically;
+   - **Windows Firewall** — explains why the rule is needed and creates it after you agree (Windows asks for administrator confirmation); it only counts as done when the rule really exists;
+   - **Network access** — checks that the server answers on its network address.
+
+   If a step fails the wizard stops, shows the reason and a **Retry** button. Reopen it any time with **Setup wizard** above the checklist.
 2. **Connect Phone**:
    - **Option A (Web App)**: Scan the QR code with your phone camera to instantly open the remote in Safari, Chrome, or Firefox.
    - **Option B (Android APK)**: Install [`PC_Control.apk`](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control.apk) on Android (8.0+) and scan the QR code to pair.
@@ -335,7 +343,8 @@ Yes! Simply install <a href="https://tailscale.com">Tailscale</a> on your Window
 <summary><b>My phone cannot connect to the server. What should I check?</b></summary>
 1. Verify both your phone and PC are connected to the same Wi-Fi router.<br/>
 2. Ensure your Wi-Fi router does not have "AP Isolation" / "Client Isolation" enabled.<br/>
-3. Check Windows Firewall: allow port 5000 for private networks (the installer and launcher configure this automatically).
+3. Run the **Setup wizard** in the panel — it checks the server, firewall and network access and shows which step fails. The port number is shown in the panel header ("Server online (port …)").<br/>
+4. Turn off any VPN on the PC (except Tailscale) and check that a third-party antivirus/firewall does not block incoming connections.
 </details>
 
 <details>

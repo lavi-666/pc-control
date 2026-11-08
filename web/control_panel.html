@@ -1247,6 +1247,24 @@
   .modal-input:focus { border-color: var(--brand-red); }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
+  /* Мастер первоначальной настройки */
+  .wiz-open-btn { margin-left: auto; font-size: 12px; padding: 5px 12px; text-transform: none; letter-spacing: 0; }
+  .wiz-dialog { max-width: 540px; }
+  .wiz-sub { font-size: 13px; color: var(--text-muted); line-height: 1.45; }
+  .wiz-steps { display: flex; flex-direction: column; gap: 8px; }
+  .wiz-step { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg); }
+  .wiz-ico { width: 22px; height: 22px; flex: 0 0 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; border: 1px solid var(--border-strong); color: var(--text-muted); }
+  .wiz-step.run .wiz-ico { border-color: #f59e0b; border-top-color: transparent; animation: toastSpinAnim 0.85s linear infinite; }
+  .wiz-step.ok .wiz-ico { background: var(--ok-bg); border-color: var(--ok-green); color: var(--ok-green); }
+  .wiz-step.warn .wiz-ico { background: rgba(245, 158, 11, 0.12); border-color: #f59e0b; color: #f59e0b; }
+  .wiz-step.fail { border-color: rgba(239, 68, 68, 0.55); }
+  .wiz-step.fail .wiz-ico { background: var(--danger-bg); border-color: var(--danger-red); color: var(--danger-red); }
+  .wiz-body { flex: 1; min-width: 0; }
+  .wiz-name { font-size: 13.5px; font-weight: 600; }
+  .wiz-msg { font-size: 12.5px; color: var(--text-muted); line-height: 1.45; margin-top: 3px; word-break: break-word; white-space: pre-line; }
+  .wiz-step.fail .wiz-msg { color: #fca5a5; }
+  .wiz-inline-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+
   /* Модальное окно ошибки */
   .modal-dialog.error-dialog {
     border-color: rgba(239, 68, 68, 0.55);
@@ -1773,6 +1791,7 @@
     <div class="section-title">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
       <span id="txtChecklistTitle" data-i18n="checklist_title">Pre-launch Checklist</span>
+      <button class="btn btn-primary wiz-open-btn" id="btnOpenWizard" onclick="openSetupWizard(false)" data-i18n="wiz_open_btn">Setup wizard</button>
     </div>
     <!-- Баннер доступного обновления (немодальный, отключаемый) -->
     <div id="updateBanner" class="update-banner" style="display:none;">
@@ -1866,7 +1885,7 @@
               <span class="badge badge-rec" id="badgeReqStep4" data-i18n="step4_rec">NOT REQUIRED (Recommended)</span>
               <span class="badge" id="badgeFirewall">...</span>
             </div>
-            <div class="step-desc" id="txtStep4Desc" data-i18n="step4_desc">Not strictly required for initial launch, but highly recommended for security. Restricts port 5000 to home network and Tailscale, isolating the server from external threats.</div>
+            <div class="step-desc" id="txtStep4Desc" data-i18n="step4_desc">Not strictly required for initial launch, but highly recommended for security. Restricts the server port to home network and Tailscale, isolating the server from external threats.</div>
           </div>
         </div>
         <div class="step-actions">
@@ -2180,6 +2199,21 @@
   </div>
 </div>
 
+<!-- Мастер первоначальной настройки: каждый шаг проверяется перед переходом к следующему -->
+<div class="modal-backdrop" id="setupWizard">
+  <div class="modal-dialog wiz-dialog">
+    <div class="modal-title" data-i18n="wiz_title">PC Control setup</div>
+    <div class="wiz-sub" id="wizSub" data-i18n="wiz_sub">The wizard checks every step and only moves on when it really works.</div>
+    <div class="wiz-steps" id="wizSteps"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="wizBtnClose" onclick="closeSetupWizard()" data-i18n="wiz_close">Close</button>
+      <button class="btn btn-secondary" id="wizBtnRetry" onclick="runSetupWizard()" style="display:none;" data-i18n="wiz_retry">Retry</button>
+      <button class="btn btn-primary" id="wizBtnStart" onclick="runSetupWizard()" data-i18n="wiz_start">Start</button>
+      <button class="btn btn-primary" id="wizBtnPhone" onclick="closeSetupWizard(); openPhoneSetup(document.getElementById('btnOpenWizard'));" style="display:none;" data-i18n="wiz_phone">Connect phone (QR)</button>
+    </div>
+  </div>
+</div>
+
 <!-- Модальное окно смены пароля -->
 <div class="modal-backdrop" id="pwdModal">
   <div class="modal-dialog">
@@ -2357,7 +2391,7 @@
       btn_change_pwd: "Change Password",
       step4_title: "Windows Defender Firewall",
       step4_rec: "NOT REQUIRED (Recommended)",
-      step4_desc: "Not strictly required for initial launch, but highly recommended for security. Restricts port 5000 to home network and Tailscale, isolating the server from external threats.",
+      step4_desc: "Not strictly required for initial launch, but highly recommended for security. Restricts the server port to home network and Tailscale, isolating the server from external threats.",
       btn_apply_rule: "Apply Rule",
       step5_title: "Windows Automatic Sign-In",
       step5_opt: "NOT REQUIRED",
@@ -2531,7 +2565,7 @@
       btn_change_pwd: "Сменить пароль",
       step4_title: "Брандмауэр Windows (Фаервол)",
       step4_rec: "НЕ ОБЯЗАТЕЛЬНО (Рекомендуется)",
-      step4_desc: "Не обязательно для базового запуска, но желательно для безопасности. Ограничивает порт 5000 только домашней сетью и Tailscale, изолируя сервер от внешних подключений.",
+      step4_desc: "Не обязательно для базового запуска, но желательно для безопасности. Ограничивает порт сервера только домашней сетью и Tailscale, изолируя сервер от внешних подключений.",
       btn_apply_rule: "Применить правило",
       step5_title: "Автоматический вход Windows",
       step5_opt: "НЕ ОБЯЗАТЕЛЬНО",
@@ -2705,7 +2739,7 @@
       btn_change_pwd: "Змінити пароль",
       step4_title: "Брандмауер Windows (Фаєрвол)",
       step4_rec: "НЕ ОБОВ'ЯЗКОВО (Рекомендовано)",
-      step4_desc: "Не обов'язково для базового запуску, але бажано для безпеки. Обмежує порт 5000 лише домашньою мережею та Tailscale, ізолюючи сервер від зовнішніх загроз.",
+      step4_desc: "Не обов'язково для базового запуску, але бажано для безпеки. Обмежує порт сервера лише домашньою мережею та Tailscale, ізолюючи сервер від зовнішніх загроз.",
       btn_apply_rule: "Застосувати правило",
       step5_title: "Автоматичний вхід Windows",
       step5_opt: "НЕ ОБОВ'ЯЗКОВО",
@@ -2841,6 +2875,285 @@
     }
   };
 
+  // ---- Мастер первоначальной настройки ----
+  Object.assign(I18N.en, {
+    wiz_open_btn: 'Setup wizard', wiz_title: 'PC Control setup',
+    wiz_sub: 'The wizard checks every step and only moves on when it really works. Nothing has to be done in a console or in config files.',
+    wiz_close: 'Close', wiz_retry: 'Retry', wiz_start: 'Start', wiz_phone: 'Connect phone (QR)',
+    wiz_allow: 'Allow', wiz_skip: 'Skip',
+    wiz_s_deps: 'Components', wiz_s_net: 'Network', wiz_s_srv: 'Server', wiz_s_fw: 'Windows Firewall', wiz_s_lan: 'Network access check',
+    wiz_wait: 'Waiting…',
+    wiz_deps_ok: 'All required libraries are installed.',
+    wiz_deps_run: 'Installing libraries (progress is in the console below). This may take a few minutes…',
+    wiz_deps_fail: 'Libraries could not be installed: {d}\nCheck the internet connection and press Retry. Details are in the console below.',
+    wiz_deps_timeout: 'Installation takes too long (over 15 minutes). Check the console below and press Retry.',
+    wiz_net_ok: 'PC address in the local network: {ip}', wiz_net_fail: 'No active network adapter found. Connect the PC to Wi-Fi or Ethernet (the same network as the phone) and press Retry.',
+    wiz_srv_ok: 'The server is running on port {port}.', wiz_srv_run: 'Starting the server…',
+    wiz_srv_fail: 'The server did not start: {m}', wiz_srv_noresp: 'The server process started but does not answer on port {port}. See the console below and press Retry.',
+    wiz_fw_ok: 'Inbound rule for port {port} is present.',
+    wiz_fw_ask: 'For the phone to reach this PC, Windows Firewall must allow incoming connections to port {port} (private networks only). Windows will ask for administrator confirmation.',
+    wiz_fw_run: 'Creating the firewall rule — confirm the Windows prompt if it appears…',
+    wiz_fw_skipped: 'Skipped. The phone may be unable to connect over Wi-Fi until the rule is added (button «Apply» in the checklist).',
+    wiz_fw_fail: 'Firewall rule was not created: {m}',
+    wiz_lan_ok: 'The server accepts connections at its network address {url}. The final check is connecting the phone.',
+    wiz_lan_warn: 'The server did not answer at {url}. A VPN, a third-party firewall/antivirus or a guest Wi-Fi with client isolation can block the phone. The phone may still work — check it with the QR code.',
+    wiz_done: 'Setup is complete. Scan the QR code with the phone to connect.',
+    wiz_failed: 'Setup stopped at the step marked in red. Fix the reason shown there and press Retry.',
+    wiz_conn_lost: 'No connection to the control panel: {m}'
+  });
+  Object.assign(I18N.ru, {
+    wiz_open_btn: 'Мастер настройки', wiz_title: 'Настройка PC Control',
+    wiz_sub: 'Мастер проверяет каждый шаг и переходит к следующему, только если всё действительно работает. Ничего не нужно делать в консоли или в файлах настроек.',
+    wiz_close: 'Закрыть', wiz_retry: 'Повторить', wiz_start: 'Начать', wiz_phone: 'Подключить телефон (QR)',
+    wiz_allow: 'Разрешить', wiz_skip: 'Пропустить',
+    wiz_s_deps: 'Компоненты', wiz_s_net: 'Сеть', wiz_s_srv: 'Сервер', wiz_s_fw: 'Брандмауэр Windows', wiz_s_lan: 'Проверка доступа из сети',
+    wiz_wait: 'Ожидание…',
+    wiz_deps_ok: 'Все необходимые библиотеки установлены.',
+    wiz_deps_run: 'Устанавливаются библиотеки (ход установки — в консоли ниже). Это может занять несколько минут…',
+    wiz_deps_fail: 'Не удалось установить библиотеки: {d}\nПроверьте подключение к интернету и нажмите «Повторить». Подробности — в консоли ниже.',
+    wiz_deps_timeout: 'Установка идёт слишком долго (более 15 минут). Проверьте консоль ниже и нажмите «Повторить».',
+    wiz_net_ok: 'Адрес ПК в локальной сети: {ip}', wiz_net_fail: 'Не найден активный сетевой адаптер. Подключите ПК к Wi-Fi или Ethernet (к той же сети, что и телефон) и нажмите «Повторить».',
+    wiz_srv_ok: 'Сервер работает на порту {port}.', wiz_srv_run: 'Запуск сервера…',
+    wiz_srv_fail: 'Сервер не запустился: {m}', wiz_srv_noresp: 'Процесс сервера запущен, но не отвечает на порту {port}. Смотрите консоль ниже и нажмите «Повторить».',
+    wiz_fw_ok: 'Входящее правило для порта {port} есть.',
+    wiz_fw_ask: 'Чтобы телефон мог подключиться к ПК, брандмауэр Windows должен разрешить входящие подключения к порту {port} (только в частных сетях). Windows запросит подтверждение администратора.',
+    wiz_fw_run: 'Создаётся правило брандмауэра — подтвердите запрос Windows, если он появится…',
+    wiz_fw_skipped: 'Пропущено. Пока правило не добавлено (кнопка «Применить» в чек-листе), телефон может не подключиться по Wi-Fi.',
+    wiz_fw_fail: 'Правило брандмауэра не создано: {m}',
+    wiz_lan_ok: 'Сервер принимает подключения по сетевому адресу {url}. Окончательная проверка — подключение телефона.',
+    wiz_lan_warn: 'Сервер не ответил по адресу {url}. Подключению телефона может мешать VPN, сторонний брандмауэр/антивирус или гостевой Wi-Fi с изоляцией клиентов. Телефон всё равно может работать — проверьте по QR-коду.',
+    wiz_done: 'Настройка завершена. Отсканируйте QR-код телефоном, чтобы подключиться.',
+    wiz_failed: 'Настройка остановлена на шаге, отмеченном красным. Устраните указанную причину и нажмите «Повторить».',
+    wiz_conn_lost: 'Нет связи с панелью управления: {m}'
+  });
+  Object.assign(I18N.uk, {
+    wiz_open_btn: 'Майстер налаштування', wiz_title: 'Налаштування PC Control',
+    wiz_sub: 'Майстер перевіряє кожен крок і переходить до наступного, лише якщо все справді працює. Нічого не потрібно робити в консолі чи у файлах налаштувань.',
+    wiz_close: 'Закрити', wiz_retry: 'Повторити', wiz_start: 'Почати', wiz_phone: 'Підключити телефон (QR)',
+    wiz_allow: 'Дозволити', wiz_skip: 'Пропустити',
+    wiz_s_deps: 'Компоненти', wiz_s_net: 'Мережа', wiz_s_srv: 'Сервер', wiz_s_fw: 'Брандмауер Windows', wiz_s_lan: 'Перевірка доступу з мережі',
+    wiz_wait: 'Очікування…',
+    wiz_deps_ok: 'Усі необхідні бібліотеки встановлено.',
+    wiz_deps_run: 'Встановлюються бібліотеки (хід встановлення — у консолі нижче). Це може зайняти кілька хвилин…',
+    wiz_deps_fail: 'Не вдалося встановити бібліотеки: {d}\nПеревірте підключення до інтернету й натисніть «Повторити». Подробиці — у консолі нижче.',
+    wiz_deps_timeout: 'Встановлення триває надто довго (понад 15 хвилин). Перевірте консоль нижче й натисніть «Повторити».',
+    wiz_net_ok: 'Адреса ПК у локальній мережі: {ip}', wiz_net_fail: 'Не знайдено активного мережевого адаптера. Підключіть ПК до Wi-Fi або Ethernet (до тієї ж мережі, що й телефон) і натисніть «Повторити».',
+    wiz_srv_ok: 'Сервер працює на порту {port}.', wiz_srv_run: 'Запуск сервера…',
+    wiz_srv_fail: 'Сервер не запустився: {m}', wiz_srv_noresp: 'Процес сервера запущено, але він не відповідає на порту {port}. Дивіться консоль нижче й натисніть «Повторити».',
+    wiz_fw_ok: 'Вхідне правило для порту {port} є.',
+    wiz_fw_ask: 'Щоб телефон міг підключитися до ПК, брандмауер Windows має дозволити вхідні підключення до порту {port} (лише в приватних мережах). Windows попросить підтвердження адміністратора.',
+    wiz_fw_run: 'Створюється правило брандмауера — підтвердьте запит Windows, якщо він з’явиться…',
+    wiz_fw_skipped: 'Пропущено. Поки правило не додано (кнопка «Застосувати» в чек-листі), телефон може не підключитися через Wi-Fi.',
+    wiz_fw_fail: 'Правило брандмауера не створено: {m}',
+    wiz_lan_ok: 'Сервер приймає підключення за мережевою адресою {url}. Остаточна перевірка — підключення телефона.',
+    wiz_lan_warn: 'Сервер не відповів за адресою {url}. Підключенню телефона може заважати VPN, сторонній брандмауер/антивірус або гостьовий Wi-Fi з ізоляцією клієнтів. Телефон усе одно може працювати — перевірте за QR-кодом.',
+    wiz_done: 'Налаштування завершено. Відскануйте QR-код телефоном, щоб підключитися.',
+    wiz_failed: 'Налаштування зупинено на кроці, позначеному червоним. Усуньте вказану причину й натисніть «Повторити».',
+    wiz_conn_lost: 'Немає зв’язку з панеллю керування: {m}'
+  });
+
+  const WIZ_STEPS = ['deps', 'net', 'srv', 'fw', 'lan'];
+  let wizRunning = false;
+  let wizAutoChecked = false;
+  let wizStates = {};
+  let wizFwChoice = null;
+
+  function wzt(key, vars) {
+    const d = I18N[currentLang] || I18N.en;
+    let s = d[key] || I18N.en[key] || key;
+    if (vars) for (const k in vars) s = s.split('{' + k + '}').join(vars[k] == null ? '' : String(vars[k]));
+    return s;
+  }
+  function wizEsc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+  }
+  function wizRender() {
+    const box = document.getElementById('wizSteps');
+    if (!box) return;
+    box.innerHTML = WIZ_STEPS.map((id, i) => {
+      const st = wizStates[id] || {state: 'idle', msg: ''};
+      const icon = st.state === 'ok' ? '✓' : st.state === 'fail' ? '✕' : st.state === 'warn' ? '!' : st.state === 'run' ? '' : String(i + 1);
+      const actions = st.ask ? `<div class="wiz-inline-actions">
+          <button class="btn btn-primary" onclick="wizAnswerFirewall(true)">${wizEsc(wzt('wiz_allow'))}</button>
+          <button class="btn btn-secondary" onclick="wizAnswerFirewall(false)">${wizEsc(wzt('wiz_skip'))}</button></div>` : '';
+      return `<div class="wiz-step ${st.state}"><div class="wiz-ico">${icon}</div><div class="wiz-body">
+        <div class="wiz-name">${wizEsc(wzt('wiz_s_' + id))}</div>
+        ${st.msg ? `<div class="wiz-msg">${wizEsc(st.msg)}</div>` : ''}${actions}</div></div>`;
+    }).join('');
+  }
+  function wizSet(id, state, msg, extra) {
+    wizStates[id] = Object.assign({state, msg: msg || ''}, extra || {});
+    wizRender();
+  }
+  function wizButtons(mode) {
+    // mode: 'idle' | 'running' | 'failed' | 'done'
+    document.getElementById('wizBtnStart').style.display = mode === 'idle' ? '' : 'none';
+    document.getElementById('wizBtnRetry').style.display = mode === 'failed' ? '' : 'none';
+    document.getElementById('wizBtnPhone').style.display = mode === 'done' ? '' : 'none';
+    document.getElementById('wizBtnClose').disabled = mode === 'running';
+  }
+  function openSetupWizard(auto) {
+    if (!wizRunning) {
+      wizStates = {};
+      document.getElementById('wizSub').textContent = wzt('wiz_sub');
+      wizRender();
+      wizButtons('idle');
+    }
+    document.getElementById('setupWizard').classList.add('open');
+    if (auto && !wizRunning) runSetupWizard();
+  }
+  function closeSetupWizard() {
+    if (wizRunning) return;
+    document.getElementById('setupWizard').classList.remove('open');
+  }
+  function wizAnswerFirewall(allow) {
+    if (wizFwChoice) { const r = wizFwChoice; wizFwChoice = null; r(allow); }
+  }
+  async function wizStatus() {
+    const r = await fetch('/api/status', {cache: 'no-store'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    currentStatus = d;
+    return d;
+  }
+  async function wizAction(action, payload) {
+    const r = await fetch('/api/action', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(Object.assign({action}, payload || {}))
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok && d.ok === undefined) d.ok = false;
+    d._http = r.status;
+    return d;
+  }
+  const wizSleep = ms => new Promise(r => setTimeout(r, ms));
+  function wizErrText(d) {
+    return [d.message, d.details].filter(Boolean).join('\n') || ('HTTP ' + d._http);
+  }
+
+  async function wizStepDeps() {
+    let st = await wizStatus();
+    if (st.python_deps && st.python_deps.installed && !st.setup_in_progress) {
+      wizSet('deps', 'ok', wzt('wiz_deps_ok')); return true;
+    }
+    wizSet('deps', 'run', wzt('wiz_deps_run'));
+    if (consoleCollapsed) toggleConsole();
+    if (!st.setup_in_progress) {
+      const d = await wizAction('install_deps');
+      // 409 = установка уже идёт (например, запущена автоматически при первом старте) — просто ждём её.
+      if (!d.ok && d._http !== 409) { wizSet('deps', 'fail', wzt('wiz_deps_fail', {d: wizErrText(d)})); return false; }
+    }
+    const deadline = Date.now() + 15 * 60 * 1000;
+    await wizSleep(1500);
+    while (Date.now() < deadline) {
+      st = await wizStatus();
+      if (!st.is_busy) break;
+      await wizSleep(1500);
+    }
+    if (st.is_busy) { wizSet('deps', 'fail', wzt('wiz_deps_timeout')); return false; }
+    if (st.python_deps && st.python_deps.installed) { wizSet('deps', 'ok', wzt('wiz_deps_ok')); return true; }
+    wizSet('deps', 'fail', wzt('wiz_deps_fail', {d: (st.python_deps && st.python_deps.details) || '?'}));
+    return false;
+  }
+
+  async function wizStepNet() {
+    wizSet('net', 'run', wzt('wiz_wait'));
+    let st = await wizStatus();
+    let ip = (st.lan_ip || '').trim();
+    if (!ip || ip === '127.0.0.1') {
+      // Адрес не определён — повторное автоопределение (сохраняется в config.json).
+      const d = await wizAction('detect_network');
+      ip = ((d.settings && d.settings.lan_ip) || '').trim();
+    }
+    if (!ip || ip === '127.0.0.1') { wizSet('net', 'fail', wzt('wiz_net_fail')); return false; }
+    wizSet('net', 'ok', wzt('wiz_net_ok', {ip}));
+    return true;
+  }
+
+  async function wizStepSrv() {
+    let st = await wizStatus();
+    if (st.server_running) { wizSet('srv', 'ok', wzt('wiz_srv_ok', {port: st.port})); return true; }
+    wizSet('srv', 'run', wzt('wiz_srv_run'));
+    const d = await wizAction('start_server');
+    if (!d.ok) { wizSet('srv', 'fail', wzt('wiz_srv_fail', {m: wizErrText(d)})); return false; }
+    // Успех засчитываем только когда сервер действительно отвечает.
+    for (let i = 0; i < 20; i++) {
+      st = await wizStatus();
+      if (st.server_running) break;
+      await wizSleep(1000);
+    }
+    if (!st.server_running) { wizSet('srv', 'fail', wzt('wiz_srv_noresp', {port: st.port})); return false; }
+    // Порт был занят и выбран автоматически — сообщаем об этом пользователю.
+    const note = /занят/i.test(d.message || '') ? '\n' + d.message : '';
+    wizSet('srv', 'ok', wzt('wiz_srv_ok', {port: st.port}) + note);
+    return true;
+  }
+
+  async function wizStepFw() {
+    let st = await wizStatus();
+    if (st.firewall_configured) { wizSet('fw', 'ok', wzt('wiz_fw_ok', {port: st.port})); return true; }
+    const allow = await new Promise(resolve => {
+      wizFwChoice = resolve;
+      wizSet('fw', 'warn', wzt('wiz_fw_ask', {port: st.port}), {ask: true});
+    });
+    if (!allow) { wizSet('fw', 'warn', wzt('wiz_fw_skipped')); return true; }
+    wizSet('fw', 'run', wzt('wiz_fw_run'));
+    const d = await wizAction('apply_firewall');
+    st = await wizStatus();
+    if (d.ok && st.firewall_configured) { wizSet('fw', 'ok', wzt('wiz_fw_ok', {port: st.port})); return true; }
+    wizSet('fw', 'fail', wzt('wiz_fw_fail', {m: wizErrText(d)}));
+    return false;
+  }
+
+  async function wizStepLan() {
+    wizSet('lan', 'run', wzt('wiz_wait'));
+    const d = await wizAction('check_phone_connection');
+    const url = `http://${d.lan_ip || '?'}:${d.port || '?'}`;
+    if (d.ok && d.lan_reachable) { wizSet('lan', 'ok', wzt('wiz_lan_ok', {url})); }
+    else { wizSet('lan', 'warn', wzt('wiz_lan_warn', {url})); }
+    return true;  // предупреждение не блокирует: окончательная проверка — подключение телефона
+  }
+
+  async function runSetupWizard() {
+    if (wizRunning) return;
+    wizRunning = true;
+    wizButtons('running');
+    document.getElementById('wizSub').textContent = wzt('wiz_sub');
+    // Уже пройденные шаги перепроверяются заново: состояние могло измениться.
+    wizStates = {};
+    wizRender();
+    const fns = {deps: wizStepDeps, net: wizStepNet, srv: wizStepSrv, fw: wizStepFw, lan: wizStepLan};
+    let failed = false;
+    for (const id of WIZ_STEPS) {
+      let ok = false;
+      try { ok = await fns[id](); }
+      catch (e) { wizSet(id, 'fail', wzt('wiz_conn_lost', {m: String(e && e.message || e)})); ok = false; }
+      if (!ok) { failed = true; break; }
+    }
+    wizRunning = false;
+    wizFwChoice = null;
+    if (failed) {
+      document.getElementById('wizSub').textContent = wzt('wiz_failed');
+      wizButtons('failed');
+    } else {
+      document.getElementById('wizSub').textContent = wzt('wiz_done');
+      wizButtons('done');
+      try { await wizAction('mark_setup_complete'); } catch (e) {}
+    }
+    fetchStatus();
+  }
+
+  // Первый запуск: мастер открывается сам, если настройка ещё не пройдена и что-то не готово.
+  function maybeAutoOpenWizard(data) {
+    if (wizAutoChecked) return;
+    wizAutoChecked = true;
+    if (cpParams.get('wizard') === '1') { openSetupWizard(true); return; }
+    if (data.setup_completed) return;
+    const ready = data.python_deps && data.python_deps.installed && data.server_running && data.firewall_configured;
+    if (ready) { wizAction('mark_setup_complete').catch(() => {}); return; }
+    openSetupWizard(true);
+  }
+
   Object.assign(I18N.en, {network_settings: 'Network settings', network_reload: 'Reload saved', network_hint: 'Stop the server before changing its port. Apply the firewall rule again after saving.', btn_auto_setup_wol: 'Auto-Setup (Startup + Wake-on-LAN + Autologon)'});
   Object.assign(I18N.ru, {network_settings: 'Настройки сети', network_reload: 'Вернуть сохранённые', network_hint: 'Перед сменой порта остановите сервер. После сохранения заново примените правило брандмауэра.', btn_auto_setup_wol: 'Автонастройка (Автозапуск + Wake-on-LAN + Автовход)'});
   Object.assign(I18N.uk, {network_settings: 'Налаштування мережі', network_reload: 'Відновити збережені', network_hint: 'Перед зміною порту зупиніть сервер. Після збереження повторно застосуйте правило брандмауера.', btn_auto_setup_wol: 'Автоналаштування (Автозапуск + Wake-on-LAN + Автовхід)'});
@@ -2850,7 +3163,7 @@
     phone_intro:'Scan, open the remote and download APK',
     phone_steps:'Connect the phone and PC to the same Wi-Fi/router. Scan with the phone camera, open the link, then tap Download APK.',
     phone_apk_note:'Android: allow installation from this browser if prompted. You can also build a personalized APK with pre-configured IP and token via "Build APK (SDK)".',
-    phone_firewall:'If the link does not open on the phone: click "Apply Rule" to open port 5000 in Windows Defender Firewall, verify the selected LAN adapter, and disable guest Wi-Fi isolation.',
+    phone_firewall:'If the link does not open on the phone: click "Apply Rule" to open the server port in Windows Defender Firewall, verify the selected LAN adapter, and disable guest Wi-Fi isolation.',
     phone_invalid:'Set a reachable LAN IPv4 address in Network settings first.',
     act_diag_title:'System Diagnostics',
     act_diag_desc:'Save diagnostic report to logs/',
@@ -3296,6 +3609,7 @@
 
       renderUI(data);
       expandConsoleIfBusy();
+      maybeAutoOpenWizard(data);
     } catch(e) {}
   }
 
@@ -3408,8 +3722,14 @@
         updateBanner.style.display = 'flex';
         const descEl = document.getElementById('updateBannerDesc');
         if (descEl && uInfo.latest_commit) {
-          const msg = uInfo.commit_message ? `(${uInfo.commit_message.substring(0, 48)})` : '';
-          descEl.textContent = uInfo.message || `${uInfo.latest_commit} ${msg}`;
+          // Текст на языке интерфейса (раньше выводилась русская строка сервера при любом языке)
+          const n = uInfo.changed_count || 0, r = uInfo.removed_count || 0;
+          const tpl = {
+            ru: `Изменено файлов: ${n}, удалено: ${r}. Настройки будут сохранены.`,
+            uk: `Змінено файлів: ${n}, видалено: ${r}. Налаштування буде збережено.`,
+            en: `${n} files changed, ${r} removed. Your settings will be kept.`
+          };
+          descEl.textContent = tpl[currentLang] || tpl.en;
         }
       } else if (!uInfo || !uInfo.has_update || isDismissed) {
         if (!updateBanner.classList.contains('manual-open')) {

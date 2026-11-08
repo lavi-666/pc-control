@@ -28,3 +28,6 @@
 *.jpg binary
 *.jpeg binary
 *.dll binary
+
+# Коммит и дата сборки подставляются при скачивании ZIP с GitHub / git archive (сравнение версий при обновлении)
+build-info.json export-subst

@@ -566,7 +566,7 @@ def is_server_running(port: int | None = None) -> bool:
     if port is None:
         try:
             if CONFIG_FILE.exists():
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                     port = int(json.load(f).get("port", 5000))
             else:
                 port = 5000
@@ -736,6 +736,22 @@ def sync_network_settings(cfg, ts, force=False):
         return cfg
 
 
+def _detect_default_language() -> str:
+    """Язык панели при первом запуске: язык интерфейса Windows, затем региональный формат.
+    (locale.getdefaultlocale устарел и удаляется в Python 3.15.)"""
+    primary = {0x19: "ru", 0x22: "uk", 0x23: "ru", 0x3F: "ru"}  # ru, uk, be, kk
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        for lang_id in (k32.GetUserDefaultUILanguage(), k32.GetUserDefaultLangID()):
+            lang = primary.get(lang_id & 0x3FF)
+            if lang:
+                return lang
+    except Exception:
+        pass
+    return "en"
+
+
 def load_config_data() -> dict:
     with _settings_lock:
         return _load_config_data()
@@ -745,15 +761,27 @@ def _load_config_data() -> dict:
     if CONFIG_FILE.exists():
         for attempt in range(5):
             try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                # utf-8-sig: файл, сохранённый Блокнотом/PowerShell с BOM, тоже читается.
+                with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
-                    if "language" not in data:
-                        data["language"] = "en"
-                    return data
+                if not isinstance(data, dict):
+                    raise ValueError("config.json must contain a JSON object")
+                if "language" not in data:
+                    data["language"] = "en"
+                return data
             except PermissionError:
                 if attempt < 4:
                     time.sleep(0.02)
-            except Exception:
+            except Exception as e:
+                # Повреждённый файл не затираем молча: сохраняем копию, чтобы токен и настройки
+                # можно было восстановить, и честно сообщаем об этом в журнале.
+                backup = CONFIG_FILE.with_name(f"config.broken-{time.strftime('%Y%m%d-%H%M%S')}.json")
+                try:
+                    shutil.copy2(CONFIG_FILE, backup)
+                    append_log(f"[ERROR] config.json is damaged ({e}). A copy was saved as {backup.name}; "
+                               f"a new config was created. The phone must be paired again (new access key).")
+                except Exception as copy_err:
+                    append_log(f"[ERROR] config.json is damaged ({e}) and could not be backed up: {copy_err}")
                 break
 
     # Первоначальное создание config.json с авто-определением сетевых настроек
@@ -766,16 +794,7 @@ def _load_config_data() -> dict:
     lan_ip = detected['lan_ip']
     mac_address = detected['mac_address']
 
-    default_lang = "en"
-    try:
-        import locale
-        loc = (locale.getdefaultlocale()[0] or "").lower()
-        if loc.startswith("uk"):
-            default_lang = "uk"
-        elif any(loc.startswith(p) for p in ("ru", "be", "kk")):
-            default_lang = "ru"
-    except Exception:
-        pass
+    default_lang = _detect_default_language()
 
     cfg = {
         "auto_network": True,
@@ -902,6 +921,29 @@ def check_first_run_setup():
         append_log("[READY] Components verified. Use Start server when ready.")
 
 
+def _port_bindable(port: int) -> bool:
+    """Свободен ли порт для сервера: тот же адрес, что использует server.py (0.0.0.0).
+    Ловит и занятый другой программой порт, и порт, зарезервированный Windows."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_EXCLUSIVEADDRUSE", socket.SO_REUSEADDR), 1)
+        s.bind(("0.0.0.0", int(port)))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def _find_free_port(start: int, attempts: int = 100) -> int | None:
+    for candidate in range(max(1024, start), min(65535, start + attempts)):
+        if candidate in (5050, 5055) or candidate == CONTROL_PORT:
+            continue  # порт WOL-реле и панели управления
+        if _port_bindable(candidate):
+            return candidate
+    return None
+
+
 @serialize_lifecycle
 def start_server_process() -> tuple:
     """
@@ -923,24 +965,6 @@ def start_server_process() -> tuple:
     if is_server_running(port):
         return (True, "", "", f"Сервер уже запущен и принимает подключения на порту {port}.")
 
-    # Проверка доступности порта перед запуском
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(0.3)
-    try:
-        port_in_use = (s.connect_ex(("127.0.0.1", port)) == 0)
-    except Exception:
-        port_in_use = False
-    finally:
-        s.close()
-
-    if port_in_use:
-        return (
-            False,
-            "ERR_PORT_OCCUPIED",
-            f"Порт {port} уже занят",
-            f"Порт {port} занят сторонним приложением или зависшим процессом.\nОсвободите порт {port} или проверьте Диспетчер задач Windows."
-        )
-
     flag = LOGS_DIR / "manual_stop.flag"
     if flag.exists():
         try:
@@ -948,9 +972,35 @@ def start_server_process() -> tuple:
         except Exception:
             pass
 
-    # Перед запуском гарантируем отсутствие зависших процессов server.py
-    if not is_server_running(port):
-        kill_processes_by_name("server.py")
+    # Сначала убираем СВОИ зависшие процессы server.py (раньше это делалось уже после проверки
+    # порта — и порт, занятый собственным зависшим сервером, давал ошибку вместо исправления).
+    kill_processes_by_name("server.py")
+    for _pid in get_pids_on_port(port):
+        kill_pid(_pid)  # kill_pid завершает только процессы этой установки
+
+    # Порт может быть занят другой программой или зарезервирован Windows (Hyper-V/WSL):
+    # проверяем привязкой, а не подключением, и при необходимости выбираем свободный порт сами.
+    port_note = ""
+    if not _port_bindable(port):
+        time.sleep(0.5)
+    if not _port_bindable(port):
+        new_port = _find_free_port(port + 1)
+        if new_port is None:
+            return (
+                False,
+                "ERR_PORT_OCCUPIED",
+                f"Порт {port} уже занят",
+                f"Порт {port} и следующие 100 портов заняты другими программами. "
+                f"Укажите свободный порт в «Настройки сети»."
+            )
+        with _settings_lock:
+            cfg = load_config_data()
+            cfg["port"] = new_port
+            save_config_data(cfg)
+        append_log(f"[AUTO] Port {port} is busy (another program or reserved by Windows). Switched to free port {new_port}.")
+        port_note = (f" Порт {port} был занят другой программой, поэтому выбран свободный порт {new_port}. "
+                     f"Если телефон уже был подключён — подключите его заново по QR-коду.")
+        port = new_port
 
     pyw_bin = get_pythonw_path()
     server_script = BASE_DIR / "server.py"
@@ -1024,7 +1074,7 @@ def start_server_process() -> tuple:
                 err_text
             )
         if is_server_running(port):
-            return (True, "", "", f"Сервер успешно запущен на порту {port}.")
+            return (True, "", "", f"Сервер успешно запущен на порту {port}.{port_note}")
         time.sleep(0.25)
 
     return (
@@ -1417,6 +1467,59 @@ def run_elevated_command(target: str, params: str = "", work_dir: str = "", show
         return False, "ERR_UAC_EXCEPTION", f"Сбой вызова механизма UAC: {e}"
 
 
+def run_elevated_and_wait(target: str, params: str = "", work_dir: str = "", timeout: int = 180) -> tuple[bool, str, str, int | None]:
+    """Запуск с правами администратора С ОЖИДАНИЕМ завершения и кодом возврата.
+
+    run_elevated_command (ShellExecuteW) только запускает процесс: дождаться его и узнать
+    результат нельзя, поэтому лаунчер мог сообщить об успехе, когда настройка ещё не прошла
+    или завершилась ошибкой. Возвращает (ok, code, message, exit_code)."""
+    if platform.system() != "Windows":
+        return False, "ERR_NOT_SUPPORTED", "UAC elevation is only supported on Windows.", None
+    import ctypes
+    from ctypes import wintypes
+
+    class SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("fMask", ctypes.c_ulong), ("hwnd", wintypes.HWND),
+                    ("lpVerb", wintypes.LPCWSTR), ("lpFile", wintypes.LPCWSTR), ("lpParameters", wintypes.LPCWSTR),
+                    ("lpDirectory", wintypes.LPCWSTR), ("nShow", ctypes.c_int), ("hInstApp", wintypes.HINSTANCE),
+                    ("lpIDList", ctypes.c_void_p), ("lpClass", wintypes.LPCWSTR), ("hkeyClass", wintypes.HKEY),
+                    ("dwHotKey", wintypes.DWORD), ("hIconOrMonitor", wintypes.HANDLE), ("hProcess", wintypes.HANDLE)]
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
+    shell32.ShellExecuteExW.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    info = SHELLEXECUTEINFOW()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = 0x00000040 | 0x00000100  # SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
+    info.hwnd = ctypes.windll.user32.GetForegroundWindow() or None
+    info.lpVerb = "runas"
+    info.lpFile = target
+    info.lpParameters = params
+    info.lpDirectory = work_dir or None
+    info.nShow = 0  # SW_HIDE: окно консоли не нужно, вывод идёт в журнал
+    if not shell32.ShellExecuteExW(ctypes.byref(info)):
+        err = ctypes.get_last_error()
+        if err == 1223:
+            return False, "ERR_UAC_DENIED", "Запрос прав администратора (UAC) был отклонен пользователем.", None
+        return False, "ERR_UAC_FAILED", f"Не удалось запустить с правами администратора (код Windows {err}).", None
+    if not info.hProcess:
+        return False, "ERR_UAC_FAILED", "Процесс с правами администратора не был создан.", None
+    try:
+        if kernel32.WaitForSingleObject(info.hProcess, int(timeout * 1000)) != 0:
+            return False, "ERR_UAC_TIMEOUT", "Настройка не завершилась за отведённое время.", None
+        code = wintypes.DWORD()
+        kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
+        return code.value == 0, ("OK" if code.value == 0 else "ERR_EXIT_CODE"), f"exit code {code.value}", int(code.value)
+    finally:
+        kernel32.CloseHandle(info.hProcess)
+
+
 def set_windows_hello_state(enabled: bool) -> tuple[bool, str]:
     """
     Устанавливает DevicePasswordLessBuildVersion (2 = Включено, 0 = Отключено).
@@ -1683,6 +1786,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "is_busy": _is_busy,
                 "busy_action": _busy_action,
                 "setup_in_progress": bool(_is_busy and "Dependencies Installation" in _busy_action),
+                "setup_completed": bool(cfg.get("setup_completed", False)),
                 "update_info": LATEST_UPDATE_INFO,
                 "full_update_status": get_update_status()
             })
@@ -1825,6 +1929,20 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "settings": settings})
                 return
 
+            if action == "mark_setup_complete":
+                # Мастер первоначальной настройки прошёл все проверки — больше не открываем его сам.
+                try:
+                    with _settings_lock:
+                        cfg = load_config_data()
+                        cfg["setup_completed"] = True
+                        save_config_data(cfg)
+                    append_log("[SETUP] First-run setup wizard completed; all checks passed.")
+                    self.send_json({"ok": True})
+                except Exception as e:
+                    self.send_json({"ok": False, "error_code": "ERR_CONFIG_WRITE",
+                                    "message": "Не удалось сохранить config.json", "details": str(e)}, 500)
+                return
+
             if action == "set_language":
                 lang = str(req_data.get("language", "")).strip().lower()
                 if lang in ("en", "ru", "uk"):
@@ -1932,27 +2050,41 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-                ok, code, msg = run_elevated_command(
+                fw_log = LOGS_DIR / "firewall_setup.log"
+                try:
+                    fw_log.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                # Ждём завершения сценария и проверяем, что правило действительно появилось:
+                # раньше ответ «успех» приходил сразу после запуска окна UAC.
+                ok, code, msg, exit_code = run_elevated_and_wait(
                     "cmd.exe",
-                    f'/d /s /c "set PC_CONTROL_NO_PAUSE=1&& "{script_path}""',
+                    f'/d /s /c "set PC_CONTROL_NO_PAUSE=1&& "{script_path}" > "{fw_log}" 2>&1"',
                     str(BASE_DIR),
-                    show=True
                 )
-                if ok:
-                    global _cached_fw_time
-                    for _ in range(20):
-                        _cached_fw_time = 0.0
-                        if is_firewall_configured():
-                            break
-                        time.sleep(0.25)
-                    _cached_fw_time = 0.0
-                    fw_active = is_firewall_configured()
-                    if fw_active:
-                        append_log("Windows Firewall rules successfully applied and verified.")
-                        self.send_json({"ok": True, "firewall_ok": True, "message": "Правила брандмауэра Windows успешно применены"})
-                    else:
-                        append_log("Firewall setup window opened (please confirm UAC in Windows).")
-                        self.send_json({"ok": True, "firewall_ok": False, "message": "Окно настройки брандмауэра открыто (подтвердите UAC)"})
+                global _cached_fw_time
+                _cached_fw_time = 0.0
+                fw_active = is_firewall_configured()
+                if ok and fw_active:
+                    append_log("Windows Firewall rules successfully applied and verified.")
+                    self.send_json({"ok": True, "firewall_ok": True, "message": "Правила брандмауэра Windows созданы и проверены"})
+                elif code not in ("ERR_UAC_DENIED", "ERR_UAC_FAILED", "ERR_NOT_SUPPORTED"):
+                    # права получены, но сценарий завершился ошибкой / по таймауту / правило не появилось
+                    tail = ""
+                    try:
+                        tail = "\n".join(fw_log.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-6:])
+                    except OSError:
+                        pass
+                    append_log(f"[ERROR] Firewall setup did not create the rule ({msg}). {tail}")
+                    self.send_json({
+                        "ok": False,
+                        "firewall_ok": False,
+                        "error_code": "ERR_FIREWALL_NOT_APPLIED",
+                        "error_title": "Правило брандмауэра не создано",
+                        "message": "Настройка брандмауэра завершилась, но правило для порта сервера не появилось. "
+                                   "Подробности — в logs\\firewall_setup.log.",
+                        "details": tail or msg,
+                    }, 500)
                 else:
                     append_log(f"[ERROR] {msg} ({code})")
                     self.send_json({
