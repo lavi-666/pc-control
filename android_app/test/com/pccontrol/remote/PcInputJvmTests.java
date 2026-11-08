@@ -52,12 +52,14 @@ public final class PcInputJvmTests {
 
     static final class Rec implements PcTouchpadEngine.Sink, PcKeyboardLogic.Output {
         final List<String> ev = new ArrayList<>();
+        final List<int[]> moveList = new ArrayList<>();
         int moveX = 0, moveY = 0, moves = 0, scrollV = 0, scrollH = 0, changes = 0, hides = 0;
 
         public void move(int dx, int dy) {
             moveX += dx;
             moveY += dy;
             moves++;
+            moveList.add(new int[] {dx, dy});
         }
 
         public void moveAbs(float x, float y) {
@@ -573,6 +575,121 @@ public final class PcInputJvmTests {
         return sb.toString();
     }
 
+    // ------------------------------------------------------------------ smoothness / icons
+    /**
+     * Regression (jerky cursor): a steady finger with millisecond-jittered event timestamps
+     * (vsync batching, whole-ms getEventTime) must give an even cursor step when pointer
+     * acceleration is on. Before the fix the raw per-event speed drove the gain directly.
+     */
+    static double accelStepDeviation(long seed) {
+        sch = new FakeScheduler();
+        rec = new Rec();
+        tp = new PcTouchpadEngine(rec, sch);
+        tp.configure(D, 1f, true, 1f, false, false);
+        final double speedDpPerMs = 1.5;
+        final double frameMs = 1000.0 / 120.0;
+        long rnd = seed;
+        tp.onTouch(PcTouchpadEngine.ACTION_DOWN, 0, 1, new int[] {0}, new float[] {100}, new float[] {300}, 1000);
+        int n = 120;
+        for (int i = 1; i <= n; i++) {
+            double trueT = 1000 + i * frameMs;
+            rnd = rnd * 6364136223846793005L + 1442695040888963407L;
+            double jitter = ((rnd >>> 33) % 4001) / 1000.0 - 2.0; // +-2 ms
+            long evT = (long) Math.floor(trueT + jitter);
+            float x = (float) (100 + speedDpPerMs * D * (trueT - 1000));
+            tp.onTouch(PcTouchpadEngine.ACTION_MOVE, 0, 1, new int[] {0}, new float[] {x}, new float[] {300}, evT);
+        }
+        tp.onTouch(PcTouchpadEngine.ACTION_UP, 0, 1, new int[] {0}, new float[] {0}, new float[] {300}, 1000 + (long) (n * frameMs) + 5);
+        // steady state: skip the first 15 events, compare per-event steps with their mean
+        List<int[]> m = rec.moveList;
+        double sum = 0, sq = 0;
+        int cnt = 0;
+        for (int i = 15; i < m.size(); i++) {
+            sum += m.get(i)[0];
+            cnt++;
+        }
+        double mean = sum / cnt;
+        for (int i = 15; i < m.size(); i++) {
+            double d = m.get(i)[0] - mean;
+            sq += d * d;
+        }
+        return Math.sqrt(sq / cnt) / mean;
+    }
+
+    static void testAccelerationIsSmoothUnderTimestampJitter() {
+        double worst = 0;
+        for (long seed = 1; seed <= 5; seed++) worst = Math.max(worst, accelStepDeviation(seed));
+        System.out.println(String.format("  accel step deviation (rms/mean, worst of 5): %.3f", worst));
+        check(worst < 0.06, "cursor step uneven under timestamp jitter: rms/mean=" + worst);
+    }
+
+    static final class BoundsSink implements PcSvgPath.Sink {
+        float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+        int segments = 0;
+        float lastX, lastY;
+
+        void add(float x, float y) {
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+        }
+
+        public void moveTo(float x, float y) { add(x, y); lastX = x; lastY = y; }
+        public void lineTo(float x, float y) { add(x, y); segments++; lastX = x; lastY = y; }
+        public void cubicTo(float x1, float y1, float x2, float y2, float x, float y) {
+            add(x1, y1);
+            add(x2, y2);
+            add(x, y);
+            segments++;
+            lastX = x;
+            lastY = y;
+        }
+        public void close() { segments++; }
+    }
+
+    static void testIconsParseAndFitViewBox() {
+        String[][] all = PcIcons.all();
+        int ok = 0;
+        for (String[] icon : all) {
+            check("F".equals(icon[0]) || "S".equals(icon[0]), "icon style marker");
+            BoundsSink b = new BoundsSink();
+            try {
+                for (int i = 1; i < icon.length; i++) PcSvgPath.parse(icon[i], b);
+            } catch (RuntimeException e) {
+                failures.add("icon parse failed: " + e);
+                continue;
+            }
+            if (b.segments > 0 && b.minX >= -0.6f && b.minY >= -0.6f && b.maxX <= 24.6f && b.maxY <= 24.6f) ok++;
+            else failures.add("icon outside 24x24 viewBox: " + b.minX + "," + b.minY + " .. " + b.maxX + "," + b.maxY + " " + icon[1].substring(0, 20));
+        }
+        check(ok == all.length, "all " + all.length + " icons parse and fit the viewBox (" + ok + ")");
+    }
+
+    static void testSvgArcsAndCompactNumbers() {
+        // circle r=3 around (12,12) written with two arcs
+        BoundsSink c = new BoundsSink();
+        PcSvgPath.parse("M15 12a3 3 0 1 1-6 0 3 3 0 1 1 6 0z", c);
+        check(Math.abs(c.minX - 9) < 0.05 && Math.abs(c.maxX - 15) < 0.05
+                && Math.abs(c.minY - 9) < 1.4 && Math.abs(c.maxY - 15) < 1.4, "arc circle bounds "
+                + c.minX + "," + c.minY + " " + c.maxX + "," + c.maxY);
+        // compact arc flags + numbers without separators ("a.998.998 0 0 0-.98-.85", "001")
+        BoundsSink m = new BoundsSink();
+        PcSvgPath.parse("M5 5a.998.998 0 0 0-.98-.85M1 1a1 1 0 001 1", m);
+        check(Math.abs(m.lastX - 2) < 1e-3 && Math.abs(m.lastY - 2) < 1e-3, "compact arc flags end point " + m.lastX + "," + m.lastY);
+        BoundsSink r = new BoundsSink();
+        PcSvgPath.parse("M1-.5.5.5l1e1 0h-2v.25z", r);
+        // M1 -0.5, implicit L .5 .5, l 10 0 -> 10.5, h -2 -> 8.5, v .25 -> 0.75
+        check(Math.abs(r.lastX - 8.5) < 1e-4 && Math.abs(r.lastY - 0.75) < 1e-4, "compact numbers " + r.lastX + "," + r.lastY);
+        boolean threw = false;
+        try {
+            PcSvgPath.parse("M1 1 a1 1 0 2 1 2 2", new BoundsSink());
+        } catch (IllegalArgumentException e) {
+            threw = true;
+        }
+        check(threw, "invalid arc flag rejected");
+    }
+
     static void eq(Object got, Object want, String name) {
         if (got.equals(want)) passed++;
         else failures.add(name + "\n     want: " + want + "\n     got:  " + got);
@@ -617,6 +734,9 @@ public final class PcInputJvmTests {
             testSymbolsLayer();
             testHideKey();
             testProtocolEncoding();
+            testAccelerationIsSmoothUnderTimestampJitter();
+            testIconsParseAndFitViewBox();
+            testSvgArcsAndCompactNumbers();
         }
         System.out.println("JVM_TESTS_PASSED=" + passed + " FAILED=" + failures.size());
         for (String f : failures) System.out.println("  FAIL: " + f);

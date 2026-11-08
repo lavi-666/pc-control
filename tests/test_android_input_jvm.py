@@ -22,7 +22,8 @@ from modules.input_engine import RecordingBackend
 BASE = Path(__file__).resolve().parent.parent
 SRC = BASE / "android_app" / "src" / "com" / "pccontrol" / "remote"
 TEST_SRC = BASE / "android_app" / "test" / "com" / "pccontrol" / "remote" / "PcInputJvmTests.java"
-PURE_JAVA = ["PcInputProtocol.java", "PcInputClient.java", "PcTouchpadEngine.java", "PcKeyboardLogic.java"]
+PURE_JAVA = ["PcInputProtocol.java", "PcInputClient.java", "PcTouchpadEngine.java", "PcKeyboardLogic.java",
+             "PcSvgPath.java", "PcIcons.java"]
 
 
 def _find_jdk():

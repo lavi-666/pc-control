@@ -1087,6 +1087,74 @@ def screen_encoders():
     })
 
 
+class _CursorPainter:
+    """Draws the current Windows mouse pointer into a GDI memory DC (screen capture frames).
+    Hotspots are cached per cursor handle; nothing is allocated per frame."""
+
+    DI_NORMAL = 0x0003
+    CURSOR_SHOWING = 0x00000001
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        class CURSORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                        ("hCursor", ctypes.c_void_p), ("ptScreenPos", wintypes.POINT)]
+
+        class ICONINFO(ctypes.Structure):
+            _fields_ = [("fIcon", wintypes.BOOL), ("xHotspot", wintypes.DWORD), ("yHotspot", wintypes.DWORD),
+                        ("hbmMask", ctypes.c_void_p), ("hbmColor", ctypes.c_void_p)]
+
+        self._ctypes = ctypes
+        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self.gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        self.user32.GetCursorInfo.argtypes = [ctypes.POINTER(CURSORINFO)]
+        self.user32.GetCursorInfo.restype = wintypes.BOOL
+        self.user32.GetIconInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(ICONINFO)]
+        self.user32.GetIconInfo.restype = wintypes.BOOL
+        self.user32.DrawIconEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                                           ctypes.c_int, ctypes.c_int, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
+        self.user32.DrawIconEx.restype = wintypes.BOOL
+        self.gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+        self.ci = CURSORINFO()
+        self.ci.cbSize = ctypes.sizeof(CURSORINFO)
+        self._ICONINFO = ICONINFO
+        self._hotspots: dict[int, tuple[int, int]] = {}
+
+    def _hotspot(self, hcursor: int) -> tuple[int, int]:
+        hs = self._hotspots.get(hcursor)
+        if hs is None:
+            ii = self._ICONINFO()
+            hs = (0, 0)
+            if self.user32.GetIconInfo(hcursor, self._ctypes.byref(ii)):
+                hs = (int(ii.xHotspot), int(ii.yHotspot))
+                for bm in (ii.hbmMask, ii.hbmColor):
+                    if bm:
+                        self.gdi32.DeleteObject(bm)
+            if len(self._hotspots) > 64:
+                self._hotspots.clear()
+            self._hotspots[hcursor] = hs
+        return hs
+
+    def draw(self, hdc, origin_x: int, origin_y: int) -> bool:
+        """Draws the pointer at its screen position relative to (origin_x, origin_y).
+        Returns True if something was drawn."""
+        try:
+            if not self.user32.GetCursorInfo(self._ctypes.byref(self.ci)):
+                return False
+            if not (self.ci.flags & self.CURSOR_SHOWING) or not self.ci.hCursor:
+                return False
+            hx, hy = self._hotspot(self.ci.hCursor)
+            if isinstance(hdc, int) and hdc < 0:
+                hdc += 1 << 64  # handle returned through a c_int restype: restore sign extension
+            x = self.ci.ptScreenPos.x - hx - origin_x
+            y = self.ci.ptScreenPos.y - hy - origin_y
+            return bool(self.user32.DrawIconEx(hdc, x, y, self.ci.hCursor, 0, 0, 0, None, self.DI_NORMAL))
+        except Exception:
+            return False
+
+
 class _FastDIBSection:
     """Высокопроизводительный прямой захват экрана Windows через DIB-секцию без промежуточных аллокаций памяти."""
     def __init__(self, left: int, top: int, width: int, height: int):
@@ -1140,6 +1208,8 @@ class _FastDIBSection:
         self.gdi32.SelectObject(self.memdc, self.dib)
         size = self.width * self.height * 4
         self.buf = (ctypes.c_char * size).from_address(self.dib_bits.value)
+        self.draw_cursor_enabled = True
+        self._cursor = _CursorPainter()
 
     def grab_into(self, vf) -> bool:
         SRCCOPY = 0x00CC0020
@@ -1148,6 +1218,10 @@ class _FastDIBSection:
         )
         if not res:
             return False
+        if self.draw_cursor_enabled:
+            # BitBlt never contains the mouse pointer (it is a hardware overlay):
+            # draw it into the frame, like Sunshine does, otherwise the phone sees no cursor.
+            self._cursor.draw(self.memdc, self.left, self.top)
         self.gdi32.GdiFlush()
         vf.planes[0].update(self.buf)
         return True

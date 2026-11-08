@@ -631,6 +631,7 @@ public final class PcInputClient {
 
         private void postJson(String path, String json) throws IOException {
             HttpURLConnection c = (HttpURLConnection) new URL(url + path).openConnection();
+            boolean ok = false;
             try {
                 c.setRequestMethod("POST");
                 c.setConnectTimeout(1500);
@@ -643,9 +644,19 @@ public final class PcInputClient {
                 OutputStream o = c.getOutputStream();
                 o.write(body);
                 o.close();
-                c.getResponseCode();
+                int code = c.getResponseCode();
+                // Read the body to the end and close the stream WITHOUT disconnect(): the
+                // socket goes back to the keep-alive pool. disconnect() after every event
+                // forced a new TCP connection per mouse move (very jerky on the old server).
+                InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+                if (in != null) {
+                    byte[] buf = new byte[256];
+                    while (in.read(buf) >= 0) { /* drain */ }
+                    in.close();
+                }
+                ok = true;
             } finally {
-                c.disconnect();
+                if (!ok) c.disconnect();
             }
         }
     }

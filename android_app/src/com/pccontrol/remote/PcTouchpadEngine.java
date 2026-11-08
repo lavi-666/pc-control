@@ -60,6 +60,7 @@ public final class PcTouchpadEngine {
     static final float TAP_DRAG_DISTANCE_DP = 40f;
     static final float BASE_PX_PER_DP = 1.6f;
     static final float SCROLL_DP_PER_NOTCH = 22f;
+    static final float SPEED_TAU_MS = 30f;
 
     private final Sink sink;
     private final Scheduler scheduler;
@@ -85,6 +86,7 @@ public final class PcTouchpadEngine {
     private boolean longPressFired = false;
     private boolean tapDragCandidate = false;
     private float remX = 0f, remY = 0f;
+    private float speedEma = -1f;
     private float scrollRemV = 0f, scrollRemH = 0f;
     private float lastCx, lastCy;
     private long lastTapUpTime = -100000;
@@ -222,6 +224,7 @@ public final class PcTouchpadEngine {
         downTime = lastMoveTime = t;
         moved = scrolling = dragging = longPressFired = false;
         remX = remY = 0f;
+        speedEma = -1f;
         scrollRemV = scrollRemH = 0f;
         float tapDist = dist(x - lastTapX, y - lastTapY) / density;
         tapDragCandidate = !absolute && (t - lastTapUpTime) <= TAP_DRAG_WINDOW_MS && tapDist <= TAP_DRAG_DISTANCE_DP;
@@ -277,7 +280,17 @@ public final class PcTouchpadEngine {
             float gain = sensitivity;
             if (acceleration) {
                 float speed = (float) Math.sqrt(dxDp * dxDp + dyDp * dyDp) / dt; // dp per ms
-                gain *= Math.max(0.6f, Math.min(3.0f, 0.6f + 1.1f * speed));
+                // Event timestamps are whole milliseconds and arrive in vsync batches, so the
+                // per-event speed jitters by 10-30 % even for a perfectly steady finger.
+                // Feeding that straight into the gain made the cursor step unevenly; a short
+                // time-based low-pass (tau = 30 ms) keeps acceleration responsive but smooth.
+                if (speedEma < 0) {
+                    speedEma = speed;
+                } else {
+                    float a = 1f - (float) Math.exp(-dt / SPEED_TAU_MS);
+                    speedEma += (speed - speedEma) * a;
+                }
+                gain *= Math.max(0.6f, Math.min(3.0f, 0.6f + 1.1f * speedEma));
             }
             remX += dxDp * BASE_PX_PER_DP * gain;
             remY += dyDp * BASE_PX_PER_DP * gain;

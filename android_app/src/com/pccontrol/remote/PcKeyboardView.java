@@ -37,13 +37,18 @@ public class PcKeyboardView extends View {
     private boolean haptics = true;
     private final float density;
 
-    private static final int C_KEY = Color.parseColor("#1E2530");
-    private static final int C_SPECIAL = Color.parseColor("#242A35");
-    private static final int C_PRESSED = Color.parseColor("#334155");
-    private static final int C_STROKE = Color.parseColor("#334155");
-    private static final int C_ACTIVE_BG = Color.parseColor("#0C4A6E");
-    private static final int C_ACCENT = Color.parseColor("#38BDF8");
-    private static final int C_LOCK_BG = Color.parseColor("#0369A1");
+    // Palette = PC Control app tokens (assets/css/styles.css): surface2/surface3 keys,
+    // rgba(255,255,255,.13) borders, button.active (white 18 % + white 50 % border) for
+    // held/latched modifiers, --ytm-red for a locked modifier (Caps), subtext for service keys.
+    private static final int C_KEY = 0xFF1D1D1D;
+    private static final int C_SPECIAL = 0xFF282828;
+    private static final int C_PRESSED = 0xFF4A4A4A;
+    private static final int C_STROKE = 0x21FFFFFF;
+    private static final int C_ACTIVE_BG = 0xFF424242;
+    private static final int C_ACTIVE_STROKE = 0x80FFFFFF;
+    private static final int C_SERVICE_TEXT = 0xFFAAAAAA;
+    private static final int C_LOCK_BG = 0xFF3A1019;
+    private static final int C_LOCK_STROKE = 0xFFFF0033;
     private static final int C_TEXT = Color.WHITE;
 
     public PcKeyboardView(Context context, PcKeyboardLogic logic) {
@@ -130,21 +135,22 @@ public class PcKeyboardView extends View {
                 boolean isPressed = isKeyPressed(k);
                 int bg = k.special ? C_SPECIAL : C_KEY;
                 int stroke = C_STROKE;
-                int fg = (k.special && k.kind != PcKeyboardLogic.K_CHAR) ? C_ACCENT : C_TEXT;
+                int fg = (k.special && k.kind != PcKeyboardLogic.K_CHAR) ? C_SERVICE_TEXT : C_TEXT;
                 if (k.kind == PcKeyboardLogic.K_MOD) {
                     int st = logic.getModState(k.mod);
                     if (st == PcKeyboardLogic.ST_LOCKED) {
                         bg = C_LOCK_BG;
-                        stroke = C_ACCENT;
+                        stroke = C_LOCK_STROKE;
                         fg = C_TEXT;
                     } else if (st != PcKeyboardLogic.ST_OFF) {
                         bg = C_ACTIVE_BG;
-                        stroke = C_ACCENT;
-                        fg = C_ACCENT;
+                        stroke = C_ACTIVE_STROKE;
+                        fg = C_TEXT;
                     }
                 } else if ((k.kind == PcKeyboardLogic.K_FN && logic.getLayer() == PcKeyboardLogic.LAYER_FN)) {
                     bg = C_ACTIVE_BG;
-                    stroke = C_ACCENT;
+                    stroke = C_ACTIVE_STROKE;
+                    fg = C_TEXT;
                 }
                 if (isPressed) bg = C_PRESSED;
                 float alpha = (r == 0 ? specialAlpha : keyAlpha);

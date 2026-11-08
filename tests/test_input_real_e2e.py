@@ -279,6 +279,51 @@ class RealWindowsInputE2E(unittest.TestCase):
             self.pump(0.05)
         self.assertFalse(self.user32.GetAsyncKeyState(0xA0) & 0x8000, "shift stuck after disconnect")
 
+    def test_6_cursor_is_drawn_into_captured_frames(self):
+        """Regression: the H.264 capture (BitBlt) had no mouse pointer at all, so on the phone
+        the cursor was invisible / only guessable from hover effects."""
+        import av
+        from modules.streaming import _FastDIBSection
+
+        import tkinter as tk
+
+        # Flat-coloured topmost window under the pointer
+        flat = tk.Toplevel(self.root)
+        flat.overrideredirect(True)
+        flat.geometry(f"240x240+{self.root.winfo_rootx() + 200}+{self.root.winfo_rooty() + 100}")
+        flat.configure(bg="#3070b0")
+        flat.attributes("-topmost", True)
+        self.pump(0.4)
+        x = flat.winfo_rootx() + 100
+        y = flat.winfo_rooty() + 100
+        self.user32.SetCursorPos(x, y)
+        self.pump(0.3)
+        left, top, w, h = x - 40, y - 40, 96, 96
+        cap = _FastDIBSection(left, top, w, h)
+        try:
+            vf = av.VideoFrame(w, h, "bgra")
+
+            def grab(draw):
+                cap.draw_cursor_enabled = draw
+                self.assertTrue(cap.grab_into(vf))
+                arr = vf.to_ndarray()
+                return arr.reshape(h, w, 4)[:, :, :3].astype(int)
+
+            plain = grab(False)
+            with_cursor = grab(True)
+            # without the pointer the 96x96 region is the flat canvas colour
+            self.assertLess(int(abs(plain - plain[2, 2]).sum()), 3 * w * h // 50)
+            diff = abs(with_cursor - plain).sum(axis=2)
+            ys, xs = (diff > 30).nonzero()
+            self.assertGreater(len(xs), 20, "pointer not drawn into the frame")
+            # pointer pixels start at its hotspot (screen pos - capture origin = 40,40)
+            self.assertLessEqual(abs(int(xs.min()) - 40), 16)
+            self.assertLessEqual(abs(int(ys.min()) - 40), 16)
+            print(f"\n[real-e2e] pointer drawn: {len(xs)} px changed, bbox x {xs.min()}..{xs.max()} y {ys.min()}..{ys.max()}")
+        finally:
+            cap.close()
+            flat.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

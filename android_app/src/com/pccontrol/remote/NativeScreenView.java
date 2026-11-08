@@ -104,28 +104,28 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private TextView titleView;
     private TextView subtitleView;
     private TextView scaleModeBtn;
-    private TextView fullscreenBtn;
-    private TextView settingsBtn;
-    private TextView closeBtn;
+    private PcUi.IconBtn fullscreenBtn;
+    private PcUi.IconBtn settingsBtn;
+    private PcUi.IconBtn closeBtn;
 
     // Плавающие элементы управления (для MODE_PC_CONTROL)
     private FrameLayout floatingControlsGroup;
-    private TextView floatingGearBtn;
-    private TextView floatingArrowBtn;
+    private PcUi.IconBtn floatingGearBtn;
+    private PcUi.IconBtn floatingArrowBtn;
     private LinearLayout quickActionsDrawer;
     private boolean isQuickDrawerOpen = false;
 
     // 4 быстрые кнопки
-    private TextView quickBtnKeyboard;
-    private TextView quickBtnMic;
-    private TextView quickBtnSound;
-    private TextView quickBtnTouchpad;
+    private PcUi.Btn quickBtnKeyboard;
+    private PcUi.Btn quickBtnMic;
+    private PcUi.Btn quickBtnSound;
+    private PcUi.Btn quickBtnTouchpad;
 
     // Отдельные кнопки «Мышь» и «Клавиатура» (режим «Управление ПК» и панель демонстрации)
-    private TextView floatingMouseBtn;
-    private TextView floatingKbdBtn;
-    private TextView toolbarMouseBtn;
-    private TextView toolbarKbdBtn;
+    private PcUi.IconBtn floatingMouseBtn;
+    private PcUi.IconBtn floatingKbdBtn;
+    private PcUi.IconBtn toolbarMouseBtn;
+    private PcUi.IconBtn toolbarKbdBtn;
 
     private boolean isTouchpadEnabled = true;      // мышь в режиме «Управление ПК»
     private boolean isViewMouseEnabled = false;    // мышь в режиме «Демонстрация экрана»
@@ -197,18 +197,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private float gearPosX = -1f;
     private float gearPosY = -1f;
 
-    // Стандартные чипы настроек экрана
-    private final List<TextView> monitorChips = new ArrayList<>();
-    private final Map<Integer, TextView> resChips = new HashMap<>();
-    private final Map<Integer, TextView> fpsChips = new HashMap<>();
-    private final Map<Integer, TextView> bitrateChips = new HashMap<>();
-
     // Звук ПК (WASAPI Loopback)
     private boolean isAudioEnabled = true;
     private int audioVolume = 80;
     private boolean isAudioMuted = false;
     private volatile String audioStatus = "Выключен";
-    private volatile int audioStatusColor = Color.parseColor("#94A3B8");
+    private volatile int audioStatusColor = PcUi.SUBTEXT;
     private AudioPlayerThread audioThread = null;
     private final Object audioLock = new Object();
 
@@ -242,8 +236,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private boolean isErrorVisible = false;
 
     // Декодер и сетевой поток
-    private MediaCodec decoder;
+    private volatile MediaCodec decoder;
+    private Thread decoderOutputThread;
     private final Object decoderLock = new Object();
+    // Wi-Fi без энергосбережения на время трансляции (как в Moonlight): без него пакеты
+    // ввода/видео уходят пачками, курсор и картинка двигаются рывками.
+    private android.net.wifi.WifiManager.WifiLock streamWifiLock;
     private Thread workerThread;
     private volatile HttpURLConnection activeConn;
     private final AtomicBoolean isStreaming = new AtomicBoolean(false);
@@ -537,46 +535,56 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void buildFloatingControls(Context context) {
         floatingControlsGroup = new FrameLayout(context);
         floatingControlsGroup.setVisibility(View.GONE);
+        floatingControlsGroup.setClipChildren(false);
+        floatingControlsGroup.setClipToPadding(false);
 
-        // Кнопка-шестерёнка (⚙)
-        floatingGearBtn = createCircularButton(context, "⚙", 48, "#EB121622", Color.WHITE, 18f);
+        // Шестерёнка настроек (по умолчанию — правый верхний угол; можно перетащить)
+        floatingGearBtn = new PcUi.IconBtn(context, PcIcons.GEAR, 46, 22, true, "Настройки");
         floatingGearBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
                 toggleSplitSettings();
             }
         });
-
-        // Поддержка перетаскивания шестерёнки пользователем
         floatingGearBtn.setOnTouchListener(new OnTouchListener() {
-            private float startRawX, startRawY, initialX, initialY;
+            private float startRawX, startRawY;
+            private int initialLeft, initialTop;
             private boolean isMoving = false;
 
             @Override
             public boolean onTouch(View v, MotionEvent ev) {
+                PcUi.pressFeedback(v, ev);
                 switch (ev.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         startRawX = ev.getRawX();
                         startRawY = ev.getRawY();
-                        initialX = floatingControlsGroup.getX();
-                        initialY = floatingControlsGroup.getY();
+                        initialLeft = floatingControlsGroup.getLeft();
+                        initialTop = floatingControlsGroup.getTop();
                         isMoving = false;
                         return false;
-                    case MotionEvent.ACTION_MOVE:
+                    case MotionEvent.ACTION_MOVE: {
                         float dx = ev.getRawX() - startRawX;
                         float dy = ev.getRawY() - startRawY;
-                        if (Math.abs(dx) > dpToPx(6) || Math.abs(dy) > dpToPx(6)) {
-                            isMoving = true;
-                            float newX = Math.max(dpToPx(8), Math.min(getWidth() - dpToPx(56), initialX + dx));
-                            float newY = Math.max(dpToPx(8), Math.min(getHeight() - dpToPx(56), initialY + dy));
-                            floatingControlsGroup.setX(newX);
-                            floatingControlsGroup.setY(newY);
-                            gearPosX = newX;
-                            gearPosY = newY;
+                        if (isMoving || Math.abs(dx) > dpToPx(8) || Math.abs(dy) > dpToPx(8)) {
+                            if (!isMoving) {
+                                isMoving = true;
+                                v.setPressed(false);
+                                v.cancelLongPress();
+                            }
+                            int gW = floatingControlsGroup.getWidth();
+                            int gH = floatingControlsGroup.getHeight();
+                            // Позиция задаётся только через layout (без setX/translation),
+                            // иначе после следующего requestLayout смещение удваивалось.
+                            gearPosX = Math.max(dpToPx(8), Math.min(getWidth() - gW - dpToPx(8), initialLeft + dx));
+                            gearPosY = Math.max(dpToPx(8), Math.min(getHeight() - gH - dpToPx(8), initialTop + dy));
+                            requestLayout();
                         }
                         return isMoving;
+                    }
                     case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
                         if (isMoving) {
+                            isMoving = false;
                             savePreferences();
                             return true;
                         }
@@ -586,8 +594,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
 
-        // Кнопка-стрелочка (◀ / ▶)
-        floatingArrowBtn = createCircularButton(context, "◀", 40, "#EB121622", Color.parseColor("#38BDF8"), 14f);
+        // Кнопка раскрытия/сворачивания меню быстрых действий (шеврон поворачивается на 180°)
+        floatingArrowBtn = new PcUi.IconBtn(context, PcIcons.CHEVRON_DOWN, 40, 20, true, "Быстрое меню");
         floatingArrowBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -599,36 +607,30 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         quickActionsDrawer = new LinearLayout(context);
         quickActionsDrawer.setOrientation(LinearLayout.VERTICAL);
         quickActionsDrawer.setVisibility(View.GONE);
-
-        GradientDrawable drawerBg = new GradientDrawable();
-        drawerBg.setColor(Color.parseColor("#EB121622"));
-        drawerBg.setCornerRadius(dpToPx(16));
-        drawerBg.setStroke(dpToPx(1), Color.parseColor("#334155"));
-        quickActionsDrawer.setBackground(drawerBg);
-        int pad = dpToPx(8);
+        quickActionsDrawer.setBackground(PcUi.shape(PcUi.FLOAT_BG, dpToPx(18), PcUi.BORDER_STRONG, dpToPx(1)));
+        int pad = dpToPx(6);
         quickActionsDrawer.setPadding(pad, pad, pad, pad);
 
-        // 4 быстрые кнопки
-        quickBtnKeyboard = createQuickActionButton(context, "⌨", "Клавиатура", new Runnable() {
+        quickBtnKeyboard = createQuickActionButton(context, PcIcons.KEYBOARD, "Клавиатура", new Runnable() {
             @Override
             public void run() {
                 toggleCustomKeyboard();
             }
         });
-        quickBtnMic = createQuickActionButton(context, "🎤", "Микрофон", new Runnable() {
+        quickBtnMic = createQuickActionButton(context, PcIcons.MIC, "Микрофон", new Runnable() {
             @Override
             public void run() {
                 toggleMicStreaming();
             }
         });
-        quickBtnSound = createQuickActionButton(context, "🔊", "Звук ПК", new Runnable() {
+        quickBtnSound = createQuickActionButton(context, PcIcons.HEADPHONES, "Звук ПК", new Runnable() {
             @Override
             public void run() {
                 setAudioEnabled(!isAudioEnabled);
                 updateQuickActionStates();
             }
         });
-        quickBtnTouchpad = createQuickActionButton(context, "🖱", "Тачпад", new Runnable() {
+        quickBtnTouchpad = createQuickActionButton(context, PcIcons.MOUSE, "Тачпад", new Runnable() {
             @Override
             public void run() {
                 toggleMouseControl();
@@ -643,16 +645,15 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         addQuickSpacer(context, quickActionsDrawer);
         quickActionsDrawer.addView(quickBtnTouchpad);
 
-        // Компоновка плавающего контейнера
         // Отдельные кнопки: включение/выключение мыши и открытие/закрытие клавиатуры
-        floatingMouseBtn = createCircularButton(context, "🖱", 44, "#EB121622", Color.parseColor("#94A3B8"), 16f);
+        floatingMouseBtn = new PcUi.IconBtn(context, PcIcons.MOUSE, 44, 20, true, "Мышь");
         floatingMouseBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
                 toggleMouseControl();
             }
         });
-        floatingKbdBtn = createCircularButton(context, "⌨", 44, "#EB121622", Color.parseColor("#94A3B8"), 16f);
+        floatingKbdBtn = new PcUi.IconBtn(context, PcIcons.KEYBOARD, 44, 20, true, "Клавиатура");
         floatingKbdBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -660,23 +661,23 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
 
+        // Ряд кнопок: [меню] [мышь] [клавиатура] [шестерёнка] — шестерёнка крайняя справа
         LinearLayout headRow = new LinearLayout(context);
         headRow.setOrientation(LinearLayout.HORIZONTAL);
         headRow.setGravity(Gravity.CENTER_VERTICAL);
+        headRow.setClipChildren(false);
         headRow.addView(floatingArrowBtn);
-        View sp = new View(context);
-        headRow.addView(sp, new LinearLayout.LayoutParams(dpToPx(6), 1));
+        addToolbarSpacer(context, headRow, 8);
         headRow.addView(floatingMouseBtn);
-        View sp2 = new View(context);
-        headRow.addView(sp2, new LinearLayout.LayoutParams(dpToPx(6), 1));
+        addToolbarSpacer(context, headRow, 8);
         headRow.addView(floatingKbdBtn);
-        View sp3 = new View(context);
-        headRow.addView(sp3, new LinearLayout.LayoutParams(dpToPx(6), 1));
+        addToolbarSpacer(context, headRow, 8);
         headRow.addView(floatingGearBtn);
 
         LinearLayout groupCol = new LinearLayout(context);
         groupCol.setOrientation(LinearLayout.VERTICAL);
         groupCol.setGravity(Gravity.RIGHT);
+        groupCol.setClipChildren(false);
         groupCol.addView(headRow);
 
         LinearLayout.LayoutParams drawerLp = new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
@@ -689,51 +690,16 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         updateQuickActionStates();
     }
 
-    private TextView createCircularButton(Context context, String text, int sizeDp, String bgHex, int textColor, float textSp) {
-        TextView btn = new TextView(context);
-        btn.setText(text);
-        btn.setTextColor(textColor);
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp);
-        btn.setTypeface(Typeface.DEFAULT_BOLD);
-        btn.setGravity(Gravity.CENTER);
-
-        int px = dpToPx(sizeDp);
-        btn.setLayoutParams(new LinearLayout.LayoutParams(px, px));
-
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(Color.parseColor(bgHex));
-        gd.setCornerRadius(px / 2f);
-        gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
-        btn.setBackground(gd);
-        return btn;
-    }
-
-    private TextView createQuickActionButton(Context context, final String icon, final String label, final Runnable onClick) {
-        TextView btn = new TextView(context);
-        btn.setText(icon + " " + label);
-        btn.setTextColor(Color.parseColor("#94A3B8"));
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        btn.setTypeface(Typeface.DEFAULT_BOLD);
-        btn.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
-        btn.setMinWidth(dpToPx(130));
-        btn.setMinHeight(dpToPx(48));
-
-        int padX = dpToPx(10);
-        int padY = dpToPx(6);
-        btn.setPadding(padX, padY, padX, padY);
-
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(Color.parseColor("#1E2530"));
-        gd.setCornerRadius(dpToPx(10));
-        gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
-        btn.setBackground(gd);
-
+    private PcUi.Btn createQuickActionButton(Context context, String[] icon, String label, final Runnable onClick) {
+        PcUi.Btn btn = new PcUi.Btn(context, icon, label, true);
+        btn.setMinimumWidth(dpToPx(168));
         btn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (onClick != null) onClick.run();
             }
         });
+        btn.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         return btn;
     }
 
@@ -742,25 +708,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         parent.addView(sp, new LinearLayout.LayoutParams(1, dpToPx(6)));
     }
 
-    private void setQuickButtonState(TextView btn, boolean active, boolean error) {
-        if (btn == null) return;
-        GradientDrawable gd = new GradientDrawable();
-        gd.setCornerRadius(dpToPx(10));
-        if (error) {
-            gd.setColor(Color.parseColor("#3B181E"));
-            gd.setStroke(dpToPx(1), Color.parseColor("#EF4444"));
-            btn.setTextColor(Color.parseColor("#FCA5A5"));
-        } else if (active) {
-            // Мягкий сине-бирюзовый акцент PC Control
-            gd.setColor(Color.parseColor("#0C4A6E"));
-            gd.setStroke(dpToPx(1), Color.parseColor("#38BDF8"));
-            btn.setTextColor(Color.parseColor("#38BDF8"));
-        } else {
-            gd.setColor(Color.parseColor("#1E2530"));
-            gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
-            btn.setTextColor(Color.parseColor("#94A3B8"));
-        }
-        btn.setBackground(gd);
+    private static int toggleState(boolean active, boolean error, int idle) {
+        if (error) return PcUi.ST_ERROR;
+        return active ? PcUi.ST_ACTIVE : idle;
     }
 
     private void updateQuickActionStates() {
@@ -768,89 +718,80 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         boolean inputError = inputClient.isRunning()
                 && (st == PcInputClient.STATE_ERROR || st == PcInputClient.STATE_AUTH_ERROR);
         boolean mouseOn = isMouseActive();
-        setQuickButtonState(quickBtnKeyboard, isKeyboardVisible, false);
-        setQuickButtonState(quickBtnMic, isMicStreaming, false);
-        setQuickButtonState(quickBtnSound, isAudioEnabled, false);
-        setQuickButtonState(quickBtnTouchpad, mouseOn, mouseOn && inputError);
-        setRoundToggleState(floatingMouseBtn, mouseOn, mouseOn && inputError);
-        setRoundToggleState(floatingKbdBtn, isKeyboardVisible, isKeyboardVisible && inputError);
-        setToolbarToggleState(toolbarMouseBtn, isViewMouseEnabled, isViewMouseEnabled && inputError);
-        setToolbarToggleState(toolbarKbdBtn, isKeyboardVisible, isKeyboardVisible && inputError);
+        if (quickBtnKeyboard != null) quickBtnKeyboard.setState(toggleState(isKeyboardVisible, false, PcUi.ST_NORMAL));
+        if (quickBtnMic != null) quickBtnMic.setState(toggleState(isMicStreaming, false, PcUi.ST_NORMAL));
+        if (quickBtnSound != null) quickBtnSound.setState(toggleState(isAudioEnabled, false, PcUi.ST_NORMAL));
+        if (quickBtnTouchpad != null) quickBtnTouchpad.setState(toggleState(mouseOn, mouseOn && inputError, PcUi.ST_NORMAL));
+        if (floatingMouseBtn != null) floatingMouseBtn.setState(toggleState(mouseOn, mouseOn && inputError, PcUi.ST_FLOATING));
+        if (floatingKbdBtn != null) floatingKbdBtn.setState(toggleState(isKeyboardVisible, isKeyboardVisible && inputError, PcUi.ST_FLOATING));
+        if (toolbarMouseBtn != null) toolbarMouseBtn.setState(toggleState(isViewMouseEnabled, isViewMouseEnabled && inputError, PcUi.ST_NORMAL));
+        if (toolbarKbdBtn != null) toolbarKbdBtn.setState(toggleState(isKeyboardVisible, isKeyboardVisible && inputError, PcUi.ST_NORMAL));
+        if (floatingArrowBtn != null) floatingArrowBtn.setState(isQuickDrawerOpen ? PcUi.ST_ACTIVE : PcUi.ST_FLOATING);
+        maybeWarnLegacyServer(st);
     }
 
-    /** Состояние круглой плавающей кнопки (те же цвета, что у быстрых кнопок). */
-    private void setRoundToggleState(TextView btn, boolean active, boolean error) {
-        if (btn == null) return;
-        GradientDrawable gd = new GradientDrawable();
-        gd.setCornerRadius(dpToPx(22));
-        if (error) {
-            gd.setColor(Color.parseColor("#3B181E"));
-            gd.setStroke(dpToPx(1), Color.parseColor("#EF4444"));
-            btn.setTextColor(Color.parseColor("#FCA5A5"));
-        } else if (active) {
-            gd.setColor(Color.parseColor("#0C4A6E"));
-            gd.setStroke(dpToPx(1), Color.parseColor("#38BDF8"));
-            btn.setTextColor(Color.parseColor("#38BDF8"));
-        } else {
-            gd.setColor(Color.parseColor("#EB121622"));
-            gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
-            btn.setTextColor(Color.parseColor("#94A3B8"));
-        }
-        btn.setBackground(gd);
-    }
+    private boolean legacyWarningShown = false;
 
-    /** Состояние кнопки верхней панели демонстрации. */
-    private void setToolbarToggleState(TextView btn, boolean active, boolean error) {
-        if (btn == null) return;
-        GradientDrawable bg = new GradientDrawable();
-        bg.setCornerRadius(dpToPx(14));
-        if (error) {
-            bg.setColor(Color.parseColor("#3A2024"));
-            btn.setTextColor(Color.parseColor("#FF5252"));
-        } else if (active) {
-            bg.setColor(Color.parseColor("#0C4A6E"));
-            btn.setTextColor(Color.parseColor("#38BDF8"));
-        } else {
-            bg.setColor(Color.parseColor("#242A35"));
-            btn.setTextColor(Color.WHITE);
+    /** Старый сервер (нет /api/input/stream): мышь работает, но медленно — подсказываем перезапуск. */
+    private void maybeWarnLegacyServer(int state) {
+        if (state == PcInputClient.STATE_LEGACY && !legacyWarningShown) {
+            legacyWarningShown = true;
+            Toast.makeText(getContext(), "Сервер PC Control на ПК устарел: мышь работает в медленном режиме. "
+                    + "Перезапустите сервер на ПК.", Toast.LENGTH_LONG).show();
         }
-        btn.setBackground(bg);
     }
 
     private void toggleQuickDrawer() {
         isQuickDrawerOpen = !isQuickDrawerOpen;
+        quickActionsDrawer.animate().cancel();
+        floatingArrowBtn.animate().rotation(isQuickDrawerOpen ? 180f : 0f).setDuration(220)
+                .setInterpolator(new DecelerateInterpolator()).start();
+        floatingArrowBtn.setContentDescription(isQuickDrawerOpen ? "Свернуть меню" : "Развернуть меню");
         if (isQuickDrawerOpen) {
             quickActionsDrawer.setVisibility(View.VISIBLE);
-            floatingArrowBtn.setText("▶");
-            AlphaAnimation fa = new AlphaAnimation(0f, 1f);
-            fa.setDuration(180);
-            quickActionsDrawer.startAnimation(fa);
+            quickActionsDrawer.setAlpha(0f);
+            quickActionsDrawer.setTranslationY(-dpToPx(10));
+            quickActionsDrawer.animate().alpha(1f).translationY(0f).setDuration(200)
+                    .setInterpolator(new DecelerateInterpolator()).setListener(null).start();
         } else {
-            floatingArrowBtn.setText("◀");
-            quickActionsDrawer.setVisibility(View.GONE);
+            quickActionsDrawer.animate().alpha(0f).translationY(-dpToPx(8)).setDuration(150)
+                    .setInterpolator(new AccelerateInterpolator())
+                    .setListener(new AnimatorListenerAdapter() {
+                        @Override
+                        public void onAnimationEnd(Animator animation) {
+                            if (!isQuickDrawerOpen) {
+                                quickActionsDrawer.setVisibility(View.GONE);
+                                quickActionsDrawer.setTranslationY(0f);
+                            }
+                        }
+                    }).start();
         }
+        updateQuickActionStates();
     }
 
     // -----------------------------------------------------------------------
-    // АНИМИРОВАННЫЙ SPLIT-SCREEN РЕДАКТОР НАСТРОЕК (Scale, Translate, Preview)
+    // АНИМИРОВАННЫЙ SPLIT-SCREEN РЕДАКТОР НАСТРОЕК (стиль окна настроек приложения)
     // -----------------------------------------------------------------------
+    private GradientDrawable settingsCardBg;
+    private LinearLayout settingsBody;
+
     private void buildSplitSettings(Context context) {
         splitSettingsContainer = new FrameLayout(context);
         splitSettingsContainer.setVisibility(View.GONE);
-        splitSettingsContainer.setBackgroundColor(Color.parseColor("#CC030303"));
+        // .settings-modal-backdrop: rgba(0,0,0,0.76)
+        splitSettingsContainer.setBackgroundColor(0xC2000000);
 
         splitSettingsScroll = new ScrollView(context);
         splitSettingsScroll.setVerticalScrollBarEnabled(false);
+        splitSettingsScroll.setClipToPadding(false);
+        int m = dpToPx(12);
+        splitSettingsScroll.setPadding(m, m, m, m);
 
         splitSettingsCard = new LinearLayout(context);
         splitSettingsCard.setOrientation(LinearLayout.VERTICAL);
-
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor("#EB121622"));
-        bg.setCornerRadius(dpToPx(20));
-        bg.setStroke(dpToPx(1), Color.parseColor("#334155"));
-        splitSettingsCard.setBackground(bg);
-
+        // .settings-modal: #121212, border rgba(255,255,255,.13), radius 22, padding 18
+        settingsCardBg = PcUi.shape(PcUi.SURFACE, dpToPx(22), PcUi.BORDER_STRONG, dpToPx(1));
+        splitSettingsCard.setBackground(settingsCardBg);
         int pad = dpToPx(18);
         splitSettingsCard.setPadding(pad, pad, pad, pad);
 
@@ -858,6 +799,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         splitSettingsContainer.addView(splitSettingsScroll, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
         addView(splitSettingsContainer, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        applyOpacities();
     }
 
     private void toggleSplitSettings() {
@@ -869,11 +811,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
 
     /**
-     * Плавная анимация: уменьшение живого видео слева (scale=0.52), выезд панели справа.
+     * Плавная анимация: уменьшение живого видео (scale=0.5) со сдвигом вправо, выезд панели слева.
      */
     private void openSplitSettingsWithAnimation(int section) {
         isSplitSettingsOpen = true;
         activeSettingsSection = section;
+        if (isQuickDrawerOpen) toggleQuickDrawer();
         renderSplitSettingsContent();
 
         // Скрываем плавающие кнопки и клавиатуру на время настроек (клавиши при этом отпускаются)
@@ -886,13 +829,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         releaseLocalInputState(false);
         if (touchpadZoneView != null) touchpadZoneView.setVisibility(View.GONE);
 
+        splitSettingsContainer.animate().cancel();
         splitSettingsContainer.setVisibility(View.VISIBLE);
         splitSettingsContainer.setAlpha(0f);
+        splitSettingsCard.setTranslationX(-dpToPx(28));
 
         int parentW = getWidth();
-        int parentH = getHeight();
 
-        // Анимация контейнера видео: масштабирование до 50% и сдвиг вправо
         videoContainer.animate()
                 .scaleX(0.50f)
                 .scaleY(0.50f)
@@ -901,10 +844,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 .setInterpolator(new AccelerateDecelerateInterpolator())
                 .start();
 
-        // Анимация появления панели настроек слева
+        splitSettingsCard.animate().translationX(0f).setDuration(280)
+                .setInterpolator(new DecelerateInterpolator()).start();
         splitSettingsContainer.animate()
                 .alpha(1f)
-                .setDuration(280)
+                .setDuration(240)
                 .setListener(new AnimatorListenerAdapter() {
                     @Override
                     public void onAnimationEnd(Animator animation) {
@@ -916,10 +860,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private void closeSplitSettingsWithAnimation() {
         isSplitSettingsOpen = false;
-        if (touchpadVisualEditor != null) {
-            touchpadVisualEditor.setVisibility(View.GONE);
-            isTouchpadEditing = false;
-        }
+        leaveTouchpadEditor();
 
         videoContainer.animate()
                 .scaleX(1.0f)
@@ -930,17 +871,21 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 .setInterpolator(new DecelerateInterpolator())
                 .start();
 
+        splitSettingsCard.animate().translationX(-dpToPx(28)).setDuration(220)
+                .setInterpolator(new AccelerateInterpolator()).start();
         splitSettingsContainer.animate()
                 .alpha(0f)
                 .setDuration(220)
                 .setListener(new AnimatorListenerAdapter() {
                     @Override
                     public void onAnimationEnd(Animator animation) {
+                        if (isSplitSettingsOpen) return;
                         splitSettingsContainer.setVisibility(View.GONE);
+                        splitSettingsCard.setTranslationX(0f);
                         if (operatingMode == MODE_PC_CONTROL && floatingControlsGroup != null) {
                             floatingControlsGroup.setVisibility(View.VISIBLE);
                         }
-                        if (isKeyboardVisible && keyboardPanel != null && !isSplitSettingsOpen) {
+                        if (isKeyboardVisible && keyboardPanel != null) {
                             keyboardPanel.setVisibility(View.VISIBLE);
                             keyboardPanel.setAlpha(1f);
                             keyboardPanel.setTranslationY(0f);
@@ -953,23 +898,55 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 .start();
     }
 
+    private void leaveTouchpadEditor() {
+        touchpadBoundsListener = null;
+        if (touchpadVisualEditor != null) touchpadVisualEditor.setVisibility(View.GONE);
+        isTouchpadEditing = false;
+    }
+
+    private void openSettingsSection(int section) {
+        if (section != 4) leaveTouchpadEditor();
+        activeSettingsSection = section;
+        renderSplitSettingsContent();
+    }
+
     private void renderSplitSettingsContent() {
         splitSettingsCard.removeAllViews();
         Context ctx = getContext();
+        int s = activeSettingsSection;
 
-        // Шапка панели настроек
+        // Шапка как у окна «Настройки» приложения: значок/назад, заголовок, круглая ✕
         LinearLayout head = new LinearLayout(ctx);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
+        if (s == 0) {
+            android.widget.ImageView tile = new android.widget.ImageView(ctx);
+            tile.setImageDrawable(new PcIconDrawable(PcIcons.GEAR, PcUi.RED, dpToPx(16)));
+            tile.setScaleType(android.widget.ImageView.ScaleType.CENTER);
+            tile.setBackground(PcUi.shape(PcUi.RED_SOFT, dpToPx(8), 0, 0));
+            head.addView(tile, new LinearLayout.LayoutParams(dpToPx(28), dpToPx(28)));
+        } else {
+            PcUi.IconBtn back = new PcUi.IconBtn(ctx, PcIcons.CHEVRON_LEFT, 30, 18, true, "Назад к разделам");
+            back.setBackground(PcUi.oval(0x14FFFFFF, 0, 0));
+            back.setOnClickListener(new OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    openSettingsSection(0);
+                }
+            });
+            head.addView(back);
+        }
+        TextView title = PcUi.text(ctx, getSectionTitle(s), 16f, PcUi.TEXT, Typeface.DEFAULT_BOLD);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
+        tlp.leftMargin = dpToPx(10);
+        tlp.rightMargin = dpToPx(8);
+        head.addView(title, tlp);
 
-        TextView title = new TextView(ctx);
-        title.setText(getSectionTitle(activeSettingsSection));
-        title.setTextColor(Color.parseColor("#38BDF8"));
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        head.addView(title, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-
-        TextView closeX = createToolbarButton(ctx, "✕", "#242A35", Color.parseColor("#94A3B8"), 14f);
+        PcUi.IconBtn closeX = new PcUi.IconBtn(ctx, PcIcons.CLOSE, 30, 16, true, "Закрыть настройки");
+        closeX.setBackground(PcUi.oval(0x14FFFFFF, 0, 0));
+        closeX.icon.setColor(0x99FFFFFF);
         closeX.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -979,57 +956,65 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         head.addView(closeX);
         splitSettingsCard.addView(head);
 
-        addDivider(ctx, splitSettingsCard);
+        TextView sub = PcUi.text(ctx, getSectionSubtitle(s), 12f, PcUi.SUBTEXT, null);
+        sub.setPadding(0, dpToPx(12), 0, dpToPx(4));
+        sub.setLineSpacing(0, 1.15f);
+        splitSettingsCard.addView(sub);
 
-        if (activeSettingsSection == 0) {
-            // Главное меню разделов
-            buildMainSettingsMenu(ctx);
-        } else if (activeSettingsSection == 1) {
-            // Раздел: Экран
-            buildScreenSettingsSection(ctx);
-        } else if (activeSettingsSection == 2) {
-            // Раздел: Качество
-            buildQualitySettingsSection(ctx);
-        } else if (activeSettingsSection == 3) {
-            // Раздел: FPS
-            buildFpsSettingsSection(ctx);
-        } else if (activeSettingsSection == 4) {
-            // Раздел: Тачпад
-            buildTouchpadSettingsSection(ctx);
-        } else if (activeSettingsSection == 5) {
-            // Раздел: Клавиатура
-            buildKeyboardSettingsSection(ctx);
-        } else if (activeSettingsSection == 6) {
-            // Раздел: Прозрачность
-            buildOpacitySettingsSection(ctx);
-        }
+        settingsBody = new LinearLayout(ctx);
+        settingsBody.setOrientation(LinearLayout.VERTICAL);
+        splitSettingsCard.addView(settingsBody, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+
+        if (s == 0) buildMainSettingsMenu(ctx);
+        else if (s == 1) buildScreenSettingsSection(ctx);
+        else if (s == 2) buildQualitySettingsSection(ctx);
+        else if (s == 3) buildFpsSettingsSection(ctx);
+        else if (s == 4) buildTouchpadSettingsSection(ctx);
+        else if (s == 5) buildKeyboardSettingsSection(ctx);
+        else if (s == 6) buildOpacitySettingsSection(ctx);
+
+        // .settings-pane{animation:fadeIn .2s} — fade + 4dp lift
+        settingsBody.setAlpha(0f);
+        settingsBody.setTranslationY(dpToPx(4));
+        settingsBody.animate().alpha(1f).translationY(0f).setDuration(200)
+                .setInterpolator(new DecelerateInterpolator()).start();
+        if (splitSettingsScroll != null) splitSettingsScroll.scrollTo(0, 0);
     }
 
     private String getSectionTitle(int s) {
         switch (s) {
-            case 1: return "НАСТРОЙКИ ЭКРАНА";
-            case 2: return "КАЧЕСТВО ИЗОБРАЖЕНИЯ";
-            case 3: return "ЧАСТОТА КАДРОВ (FPS)";
-            case 4: return "НАСТРОЙКА ТАЧПАДА";
-            case 5: return "ЭКРАННАЯ КЛАВИАТУРА";
-            case 6: return "ПРОЗРАЧНОСТЬ ИНТЕРФЕЙСА";
-            default: return "УПРАВЛЕНИЕ ПК: НАСТРОЙКИ";
+            case 1: return "Экран";
+            case 2: return "Качество изображения";
+            case 3: return "Частота кадров";
+            case 4: return "Тачпад и мышь";
+            case 5: return "Клавиатура ПК";
+            case 6: return "Прозрачность и кнопки";
+            default: return "Настройки";
         }
     }
 
-    private void buildMainSettingsMenu(Context ctx) {
-        addSectionNavButton(ctx, "🖥 1. Экран (Мониторы)", 1);
-        addSectionNavButton(ctx, "🎨 2. Качество изображения", 2);
-        addSectionNavButton(ctx, "⚡ 3. Частота кадров (FPS)", 3);
-        addSectionNavButton(ctx, "🖱 4. Прозрачный тачпад", 4);
-        addSectionNavButton(ctx, "⌨ 5. Экранная клавиатура", 5);
-        addSectionNavButton(ctx, "👁 6. Прозрачность элементов", 6);
+    private String getSectionSubtitle(int s) {
+        switch (s) {
+            case 1: return "Какой монитор ПК транслировать.";
+            case 2: return "Разрешение и битрейт видеопотока.";
+            case 3: return "Частота кадров трансляции.";
+            case 4: return "Перетаскивайте зону и её маркеры прямо на видео справа.";
+            case 5: return "Собственная клавиатура PC Control — системная клавиатура Android не используется.";
+            case 6: return "Видимость плавающих кнопок, панелей и клавиатуры.";
+            default: return operatingMode == MODE_PC_CONTROL ? "Управление ПК · трансляция, мышь и клавиатура" : "Демонстрация экрана · трансляция";
+        }
+    }
 
-        addDivider(ctx, splitSettingsCard);
+    private void buildMainSettingsMenu(final Context ctx) {
+        addNav(ctx, PcIcons.MONITOR, "Экран", "Выбор монитора", 1);
+        addNav(ctx, PcIcons.IMAGE, "Качество изображения", "Разрешение и битрейт", 2);
+        addNav(ctx, PcIcons.CLOCK, "Частота кадров", "30 · 60 · 90 FPS", 3);
+        addNav(ctx, PcIcons.MOUSE, "Тачпад и мышь", "Зона, чувствительность, прокрутка", 4);
+        addNav(ctx, PcIcons.KEYBOARD, "Клавиатура ПК", "Размер, положение, язык", 5);
+        addNav(ctx, PcIcons.EYE, "Прозрачность и кнопки", "Видимость элементов интерфейса", 6);
 
-        // Кнопка перехода в диагностику
-        TextView diagBtn = createToolbarButton(ctx, "📊 Диагностика и телеметрия потока", "#1E293B", Color.parseColor("#38BDF8"), 13f);
-        diagBtn.setLayoutParams(new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+        settingsBody.addView(PcUi.divider(ctx));
+        PcUi.Btn diagBtn = new PcUi.Btn(ctx, PcIcons.CHART, "Диагностика потока", true);
         diagBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1037,25 +1022,18 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 setDiagnosticsVisible(true);
             }
         });
-        splitSettingsCard.addView(diagBtn);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dpToPx(8);
+        settingsBody.addView(diagBtn, lp);
     }
 
-    private void addSectionNavButton(Context ctx, String title, final int targetSection) {
-        TextView btn = createToolbarButton(ctx, title, "#1E2530", Color.WHITE, 13f);
-        btn.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
-        int pad = dpToPx(12);
-        btn.setPadding(pad, pad, pad, pad);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dpToPx(8);
-        btn.setLayoutParams(lp);
-        btn.setOnClickListener(new OnClickListener() {
+    private void addNav(Context ctx, String[] icon, String title, String subtitle, final int section) {
+        settingsBody.addView(PcUi.navRow(ctx, icon, title, subtitle, new OnClickListener() {
             @Override
             public void onClick(View v) {
-                activeSettingsSection = targetSection;
-                renderSplitSettingsContent();
+                openSettingsSection(section);
             }
-        });
-        splitSettingsCard.addView(btn);
+        }));
     }
 
     private interface TouchpadBoundsListener {
@@ -1063,14 +1041,107 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
     private TouchpadBoundsListener touchpadBoundsListener;
 
-    private void addSmallVSpacer(Context ctx, LinearLayout parent) {
-        View sp = new View(ctx);
-        parent.addView(sp, new LinearLayout.LayoutParams(1, dpToPx(8)));
+    // ---- построители строк раздела -------------------------------------------------
+    private interface SliderChange {
+        /** Applies the value and returns the text shown on the right of the label. */
+        String onChange(int value);
     }
 
-    private void addSmallSpacer(Context ctx, LinearLayout parent) {
-        View sp = new View(ctx);
-        parent.addView(sp, new LinearLayout.LayoutParams(dpToPx(6), 1));
+    private static final class SliderRow {
+        PcUi.ValueRow row;
+        SeekBar bar;
+        int min;
+
+        void set(int value, String text) {
+            bar.setProgress(Math.max(0, value - min));
+            row.set(text);
+        }
+    }
+
+    private void addTitle(String text) {
+        settingsBody.addView(PcUi.sectionTitle(getContext(), text));
+    }
+
+    private void addHint(String text) {
+        TextView t = PcUi.text(getContext(), text, 12f, PcUi.SUBTEXT, null);
+        t.setLineSpacing(0, 1.15f);
+        t.setPadding(dpToPx(2), 0, 0, dpToPx(4));
+        settingsBody.addView(t);
+    }
+
+    private SliderRow addValueSlider(String label, int min, int max, int current, final SliderChange ch) {
+        Context ctx = getContext();
+        final SliderRow r = new SliderRow();
+        r.min = min;
+        r.row = new PcUi.ValueRow(ctx, label, "");
+        settingsBody.addView(r.row);
+        r.bar = PcUi.slider(ctx, min, max, current, new PcUi.SliderListener() {
+            @Override
+            public void onValue(int value) {
+                r.row.set(ch.onChange(value));
+            }
+        });
+        settingsBody.addView(r.bar);
+        return r;
+    }
+
+    private PcUi.Seg addSeg(String label, String[] options, int selected, PcUi.SegListener l) {
+        Context ctx = getContext();
+        if (label != null) {
+            TextView t = PcUi.text(ctx, label, 12.5f, PcUi.SUBTEXT, PcUi.medium());
+            t.setPadding(dpToPx(2), dpToPx(10), 0, dpToPx(6));
+            settingsBody.addView(t);
+        }
+        PcUi.Seg seg = new PcUi.Seg(ctx, options, selected, l);
+        settingsBody.addView(seg, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+        return seg;
+    }
+
+    private void addButtonRow(View... buttons) {
+        Context ctx = getContext();
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < buttons.length; i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f);
+            if (i > 0) lp.leftMargin = dpToPx(8);
+            row.addView(buttons[i], lp);
+        }
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+        rlp.topMargin = dpToPx(8);
+        settingsBody.addView(row, rlp);
+    }
+
+    private PcUi.Btn smallBtn(String text, final Runnable r) {
+        PcUi.Btn b = new PcUi.Btn(getContext(), null, text, false);
+        b.setPadding(dpToPx(6), dpToPx(9), dpToPx(6), dpToPx(9));
+        b.label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        b.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                r.run();
+            }
+        });
+        return b;
+    }
+
+    private PcUi.Btn actionBtn(String[] icon, String text, int state, final Runnable r) {
+        PcUi.Btn b = new PcUi.Btn(getContext(), icon, text, false);
+        b.setState(state);
+        b.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                r.run();
+            }
+        });
+        return b;
+    }
+
+    private static String pct(float v) {
+        return Math.round(v * 100) + "%";
+    }
+
+    private static String fmt1(float v) {
+        return String.format(java.util.Locale.US, "%.1f×", v);
     }
 
     // -----------------------------------------------------------------------
@@ -1088,648 +1159,319 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             touchpadVisualEditor.invalidate();
         }
 
-        addBackToMainButton(ctx);
-
-        addSectionHeader(ctx, splitSettingsCard, "ЖИВАЯ РЕГУЛИРОВКА ПАРАМЕТРОВ");
-
-        // Ширина тачпада
-        final TextView wLbl = new TextView(ctx);
-        wLbl.setText("Ширина зоны: " + (int) (tpNormW * 100) + "%");
-        wLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        wLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(wLbl);
-
-        final SeekBar wBar = createSlider(ctx, 15, 95, (int) (tpNormW * 100), new SeekBarCallback() {
+        addTitle("Зона тачпада");
+        final SliderRow wRow = addValueSlider("Ширина", 15, 95, Math.round(tpNormW * 100), new SliderChange() {
             @Override
-            public void onVal(int val) {
-                tpNormW = val / 100f;
-                wLbl.setText("Ширина зоны: " + val + "%");
-                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            public String onChange(int val) {
+                tpNormW = Math.min(val / 100f, 1f - tpNormX);
+                invalidateTouchpadEditor();
+                return pct(tpNormW);
             }
         });
-        splitSettingsCard.addView(wBar);
-
-        // Высота тачпада
-        final TextView hLbl = new TextView(ctx);
-        hLbl.setText("Высота зоны: " + (int) (tpNormH * 100) + "%");
-        hLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        hLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(hLbl);
-
-        final SeekBar hBar = createSlider(ctx, 15, 95, (int) (tpNormH * 100), new SeekBarCallback() {
+        wRow.row.set(pct(tpNormW));
+        final SliderRow hRow = addValueSlider("Высота", 15, 95, Math.round(tpNormH * 100), new SliderChange() {
             @Override
-            public void onVal(int val) {
-                tpNormH = val / 100f;
-                hLbl.setText("Высота зоны: " + val + "%");
-                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
+            public String onChange(int val) {
+                tpNormH = Math.min(val / 100f, 1f - tpNormY);
+                invalidateTouchpadEditor();
+                return pct(tpNormH);
             }
         });
-        splitSettingsCard.addView(hBar);
+        hRow.row.set(pct(tpNormH));
 
         touchpadBoundsListener = new TouchpadBoundsListener() {
             @Override
             public void onBoundsChanged(float x, float y, float w, float h) {
-                wLbl.setText("Ширина зоны: " + (int) (w * 100) + "%");
-                hLbl.setText("Высота зоны: " + (int) (h * 100) + "%");
-                wBar.setProgress((int) (w * 100));
-                hBar.setProgress((int) (h * 100));
+                wRow.set(Math.round(w * 100), pct(w));
+                hRow.set(Math.round(h * 100), pct(h));
             }
         };
 
-        // ТОЧНАЯ КОРРЕКЦИЯ СТРЕЛОЧКАМИ
-        addSectionHeader(ctx, splitSettingsCard, "ТОЧНАЯ КОРРЕКЦИЯ СТРЕЛОЧКАМИ (±1%)");
+        addTitle("Точная подстройка (±1%)");
+        addButtonRow(
+                smallBtn("X −", new Runnable() { @Override public void run() { tpNormX = Math.max(0f, tpNormX - 0.01f); invalidateTouchpadEditor(); } }),
+                smallBtn("X +", new Runnable() { @Override public void run() { tpNormX = Math.min(1f - tpNormW, tpNormX + 0.01f); invalidateTouchpadEditor(); } }),
+                smallBtn("Y −", new Runnable() { @Override public void run() { tpNormY = Math.max(0f, tpNormY - 0.01f); invalidateTouchpadEditor(); } }),
+                smallBtn("Y +", new Runnable() { @Override public void run() { tpNormY = Math.min(1f - tpNormH, tpNormY + 0.01f); invalidateTouchpadEditor(); } }));
+        addButtonRow(
+                smallBtn("Шир −", new Runnable() { @Override public void run() {
+                    tpNormW = Math.max(0.15f, tpNormW - 0.01f); wRow.set(Math.round(tpNormW * 100), pct(tpNormW)); invalidateTouchpadEditor(); } }),
+                smallBtn("Шир +", new Runnable() { @Override public void run() {
+                    tpNormW = Math.min(1f - tpNormX, tpNormW + 0.01f); wRow.set(Math.round(tpNormW * 100), pct(tpNormW)); invalidateTouchpadEditor(); } }),
+                smallBtn("Выс −", new Runnable() { @Override public void run() {
+                    tpNormH = Math.max(0.15f, tpNormH - 0.01f); hRow.set(Math.round(tpNormH * 100), pct(tpNormH)); invalidateTouchpadEditor(); } }),
+                smallBtn("Выс +", new Runnable() { @Override public void run() {
+                    tpNormH = Math.min(1f - tpNormY, tpNormH + 0.01f); hRow.set(Math.round(tpNormH * 100), pct(tpNormH)); invalidateTouchpadEditor(); } }));
 
-        LinearLayout arrowRow1 = new LinearLayout(ctx);
-        arrowRow1.setOrientation(LinearLayout.HORIZONTAL);
-
-        TextView leftBtn = createToolbarButton(ctx, "◀ X-", "#1E2530", Color.WHITE, 12f);
-        leftBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                tpNormX = Math.max(0f, tpNormX - 0.01f);
-                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
-            }
-        });
-
-        TextView rightBtn = createToolbarButton(ctx, "X+ ▶", "#1E2530", Color.WHITE, 12f);
-        rightBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                tpNormX = Math.min(1f - tpNormW, tpNormX + 0.01f);
-                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
-            }
-        });
-
-        TextView upBtn = createToolbarButton(ctx, "▲ Y-", "#1E2530", Color.WHITE, 12f);
-        upBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                tpNormY = Math.max(0f, tpNormY - 0.01f);
-                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
-            }
-        });
-
-        TextView downBtn = createToolbarButton(ctx, "Y+ ▼", "#1E2530", Color.WHITE, 12f);
-        downBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                tpNormY = Math.min(1f - tpNormH, tpNormY + 0.01f);
-                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
-            }
-        });
-
-        arrowRow1.addView(leftBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        addSmallSpacer(ctx, arrowRow1);
-        arrowRow1.addView(rightBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        addSmallSpacer(ctx, arrowRow1);
-        arrowRow1.addView(upBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        addSmallSpacer(ctx, arrowRow1);
-        arrowRow1.addView(downBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        splitSettingsCard.addView(arrowRow1);
-
-        LinearLayout arrowRow2 = new LinearLayout(ctx);
-        arrowRow2.setOrientation(LinearLayout.HORIZONTAL);
-        arrowRow2.setPadding(0, dpToPx(6), 0, 0);
-
-        TextView wDecBtn = createToolbarButton(ctx, "Шир -", "#1E2530", Color.WHITE, 12f);
-        wDecBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                tpNormW = Math.max(0.15f, tpNormW - 0.01f);
-                wBar.setProgress((int) (tpNormW * 100));
-                wLbl.setText("Ширина зоны: " + (int) (tpNormW * 100) + "%");
-                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
-            }
-        });
-
-        TextView wIncBtn = createToolbarButton(ctx, "Шир +", "#1E2530", Color.WHITE, 12f);
-        wIncBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                tpNormW = Math.min(1f - tpNormX, tpNormW + 0.01f);
-                wBar.setProgress((int) (tpNormW * 100));
-                wLbl.setText("Ширина зоны: " + (int) (tpNormW * 100) + "%");
-                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
-            }
-        });
-
-        TextView hDecBtn = createToolbarButton(ctx, "Выс -", "#1E2530", Color.WHITE, 12f);
-        hDecBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                tpNormH = Math.max(0.15f, tpNormH - 0.01f);
-                hBar.setProgress((int) (tpNormH * 100));
-                hLbl.setText("Высота зоны: " + (int) (tpNormH * 100) + "%");
-                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
-            }
-        });
-
-        TextView hIncBtn = createToolbarButton(ctx, "Выс +", "#1E2530", Color.WHITE, 12f);
-        hIncBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                tpNormH = Math.min(1f - tpNormY, tpNormH + 0.01f);
-                hBar.setProgress((int) (tpNormH * 100));
-                hLbl.setText("Высота зоны: " + (int) (tpNormH * 100) + "%");
-                if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
-            }
-        });
-
-        arrowRow2.addView(wDecBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        addSmallSpacer(ctx, arrowRow2);
-        arrowRow2.addView(wIncBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        addSmallSpacer(ctx, arrowRow2);
-        arrowRow2.addView(hDecBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        addSmallSpacer(ctx, arrowRow2);
-        arrowRow2.addView(hIncBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        splitSettingsCard.addView(arrowRow2);
-
-        // Чувствительность мыши
-        final TextView sLbl = new TextView(ctx);
-        sLbl.setText("Чувствительность: " + String.format("%.1f", mouseSensitivity) + "x");
-        sLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        sLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(sLbl);
-
-        SeekBar sBar = createSlider(ctx, 2, 30, (int) (mouseSensitivity * 10), new SeekBarCallback() {
+        addTitle("Мышь");
+        SliderRow sens = addValueSlider("Чувствительность", 2, 30, Math.round(mouseSensitivity * 10), new SliderChange() {
             @Override
-            public void onVal(int val) {
+            public String onChange(int val) {
                 mouseSensitivity = val / 10f;
-                sLbl.setText("Чувствительность: " + String.format("%.1f", mouseSensitivity) + "x");
                 applyTouchpadConfig();
+                return fmt1(mouseSensitivity);
             }
         });
-        splitSettingsCard.addView(sBar);
-
-        // Режим мыши: Относительный vs Абсолютный
-        addSectionHeader(ctx, splitSettingsCard, "РЕЖИМ УПРАВЛЕНИЯ");
-        LinearLayout modeRow = new LinearLayout(ctx);
-        modeRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        final TextView relChip = createChipButton(ctx, "Относительный (Тачпад)", null);
-        final TextView absChip = createChipButton(ctx, "Абсолютный (Перо)", null);
-        setChipActive(relChip, !isMouseAbsolute);
-        setChipActive(absChip, isMouseAbsolute);
-
-        relChip.setOnClickListener(new OnClickListener() {
+        sens.row.set(fmt1(mouseSensitivity));
+        addSeg("Режим", new String[]{"Тачпад", "Прямое касание"}, isMouseAbsolute ? 1 : 0, new PcUi.SegListener() {
             @Override
-            public void onClick(View v) {
-                isMouseAbsolute = false;
-                setChipActive(relChip, true);
-                setChipActive(absChip, false);
+            public void onSelect(int i) {
+                isMouseAbsolute = i == 1;
                 applyTouchpadConfig();
             }
         });
-        absChip.setOnClickListener(new OnClickListener() {
+        addSeg("Ускорение указателя", new String[]{"Вкл", "Выкл"}, mouseAccel ? 0 : 1, new PcUi.SegListener() {
             @Override
-            public void onClick(View v) {
-                isMouseAbsolute = true;
-                setChipActive(relChip, false);
-                setChipActive(absChip, true);
+            public void onSelect(int i) {
+                mouseAccel = i == 0;
                 applyTouchpadConfig();
             }
         });
-        modeRow.addView(relChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        modeRow.addView(absChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        splitSettingsCard.addView(modeRow);
 
-        // Ускорение указателя
-        addSectionHeader(ctx, splitSettingsCard, "УСКОРЕНИЕ И ПРОКРУТКА");
-        LinearLayout accelRow = new LinearLayout(ctx);
-        accelRow.setOrientation(LinearLayout.HORIZONTAL);
-        final TextView accelOn = createChipButton(ctx, "Ускорение: вкл", null);
-        final TextView accelOff = createChipButton(ctx, "Ускорение: выкл", null);
-        setChipActive(accelOn, mouseAccel);
-        setChipActive(accelOff, !mouseAccel);
-        accelOn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                mouseAccel = true;
-                setChipActive(accelOn, true);
-                setChipActive(accelOff, false);
-                applyTouchpadConfig();
-            }
-        });
-        accelOff.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                mouseAccel = false;
-                setChipActive(accelOn, false);
-                setChipActive(accelOff, true);
-                applyTouchpadConfig();
-            }
-        });
-        accelRow.addView(accelOn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        accelRow.addView(accelOff, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        splitSettingsCard.addView(accelRow);
-
-        // Скорость прокрутки двумя пальцами
-        final TextView scLbl = new TextView(ctx);
-        scLbl.setText("Скорость прокрутки: " + String.format("%.1f", scrollSpeed) + "x");
-        scLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        scLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(scLbl);
-        splitSettingsCard.addView(createSlider(ctx, 3, 30, (int) (scrollSpeed * 10), new SeekBarCallback() {
+        addTitle("Прокрутка двумя пальцами");
+        SliderRow sc = addValueSlider("Скорость прокрутки", 3, 30, Math.round(scrollSpeed * 10), new SliderChange() {
             @Override
-            public void onVal(int val) {
+            public String onChange(int val) {
                 scrollSpeed = val / 10f;
-                scLbl.setText("Скорость прокрутки: " + String.format("%.1f", scrollSpeed) + "x");
                 applyTouchpadConfig();
-            }
-        }));
-
-        LinearLayout invRow = new LinearLayout(ctx);
-        invRow.setOrientation(LinearLayout.HORIZONTAL);
-        final TextView natChip = createChipButton(ctx, "Прокрутка: естественная", null);
-        final TextView invChip = createChipButton(ctx, "Прокрутка: обратная", null);
-        setChipActive(natChip, !invertScroll);
-        setChipActive(invChip, invertScroll);
-        natChip.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                invertScroll = false;
-                setChipActive(natChip, true);
-                setChipActive(invChip, false);
-                applyTouchpadConfig();
+                return fmt1(scrollSpeed);
             }
         });
-        invChip.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                invertScroll = true;
-                setChipActive(natChip, false);
-                setChipActive(invChip, true);
-                applyTouchpadConfig();
-            }
-        });
-        invRow.addView(natChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        invRow.addView(invChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        splitSettingsCard.addView(invRow);
-
-        // Видимость зоны тачпада поверх видео
-        final TextView zLbl = new TextView(ctx);
-        zLbl.setText("Видимость зоны тачпада: " + opacityTpZone + "%");
-        zLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        zLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(zLbl);
-        splitSettingsCard.addView(createSlider(ctx, 0, 100, opacityTpZone, new SeekBarCallback() {
+        sc.row.set(fmt1(scrollSpeed));
+        addSeg("Направление", new String[]{"Естественное", "Обратное"}, invertScroll ? 1 : 0, new PcUi.SegListener() {
             @Override
-            public void onVal(int val) {
+            public void onSelect(int i) {
+                invertScroll = i == 1;
+                applyTouchpadConfig();
+            }
+        });
+
+        addTitle("Отображение");
+        SliderRow zone = addValueSlider("Видимость зоны на видео", 0, 100, opacityTpZone, new SliderChange() {
+            @Override
+            public String onChange(int val) {
                 opacityTpZone = val;
-                zLbl.setText("Видимость зоны тачпада: " + val + "%");
-            }
-        }));
-
-        addDivider(ctx, splitSettingsCard);
-
-        // Кнопки сохранения: Сброс, Отмена, Применить
-        LinearLayout btnRow = new LinearLayout(ctx);
-        btnRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        TextView resetBtn = createToolbarButton(ctx, "Сброс", "#242A35", Color.parseColor("#94A3B8"), 12f);
-        resetBtn.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                tpNormX = 0.55f;
-                tpNormY = 0.10f;
-                tpNormW = 0.42f;
-                tpNormH = 0.80f;
-                mouseSensitivity = 1.0f;
-                mouseAccel = true;
-                isMouseAbsolute = false;
-                scrollSpeed = 1.0f;
-                invertScroll = false;
-                opacityTpZone = 18;
-                applyTouchpadConfig();
-                savePreferences();
-                renderSplitSettingsContent();
+                return val + "%";
             }
         });
+        zone.row.set(opacityTpZone + "%");
 
-        TextView cancelBtn = createToolbarButton(ctx, "✕ Отмена", "#334155", Color.parseColor("#CBD5E1"), 12f);
-        cancelBtn.setOnClickListener(new OnClickListener() {
+        settingsBody.addView(PcUi.divider(ctx));
+        addButtonRow(
+                actionBtn(PcIcons.RESET, "Сброс", PcUi.ST_NORMAL, new Runnable() {
+                    @Override
+                    public void run() {
+                        tpNormX = 0.55f;
+                        tpNormY = 0.10f;
+                        tpNormW = 0.42f;
+                        tpNormH = 0.80f;
+                        mouseSensitivity = 1.0f;
+                        mouseAccel = true;
+                        isMouseAbsolute = false;
+                        scrollSpeed = 1.0f;
+                        invertScroll = false;
+                        opacityTpZone = 18;
+                        applyTouchpadConfig();
+                        savePreferences();
+                        renderSplitSettingsContent();
+                    }
+                }),
+                actionBtn(null, "Отмена", PcUi.ST_NORMAL, new Runnable() {
+                    @Override
+                    public void run() {
+                        tpNormX = initX;
+                        tpNormY = initY;
+                        tpNormW = initW;
+                        tpNormH = initH;
+                        closeSplitSettingsWithAnimation();
+                        Toast.makeText(getContext(), "Изменения зоны тачпада отменены", Toast.LENGTH_SHORT).show();
+                    }
+                }));
+        addButtonRow(actionBtn(PcIcons.CHECK, "Применить", PcUi.ST_PRIMARY, new Runnable() {
             @Override
-            public void onClick(View v) {
-                tpNormX = initX;
-                tpNormY = initY;
-                tpNormW = initW;
-                tpNormH = initH;
-                touchpadBoundsListener = null;
-                if (touchpadVisualEditor != null) {
-                    touchpadVisualEditor.setVisibility(View.GONE);
-                    isTouchpadEditing = false;
-                }
-                closeSplitSettingsWithAnimation();
-                Toast.makeText(getContext(), "Изменения тачпада отменены", Toast.LENGTH_SHORT).show();
-            }
-        });
-
-        TextView applyBtn = createToolbarButton(ctx, "✓ Применить", "#16A34A", Color.WHITE, 12f);
-        applyBtn.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                touchpadBoundsListener = null;
+            public void run() {
                 savePreferences();
                 closeSplitSettingsWithAnimation();
                 Toast.makeText(getContext(), "Настройки тачпада сохранены", Toast.LENGTH_SHORT).show();
             }
-        });
+        }));
+    }
 
-        btnRow.addView(resetBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        addSmallSpacer(ctx, btnRow);
-        btnRow.addView(cancelBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        addSmallSpacer(ctx, btnRow);
-        btnRow.addView(applyBtn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        splitSettingsCard.addView(btnRow);
+    private void invalidateTouchpadEditor() {
+        if (touchpadVisualEditor != null) touchpadVisualEditor.invalidate();
     }
 
     // -----------------------------------------------------------------------
     // РАЗДЕЛ: КЛАВИАТУРА (СОБСТВЕННАЯ КЛАВИАТУРА И ПАРАМЕТРЫ)
     // -----------------------------------------------------------------------
     private void buildKeyboardSettingsSection(Context ctx) {
-        addBackToMainButton(ctx);
-
-        addSectionHeader(ctx, splitSettingsCard, "НАСТРОЙКИ ЭКРАННОЙ КЛАВИАТУРЫ");
-
-        final TextView hLbl = new TextView(ctx);
-        hLbl.setText("Высота клавиатуры: " + kbdHeightDp + " dp");
-        hLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        hLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(hLbl);
-
-        SeekBar hBar = createSlider(ctx, 140, 360, kbdHeightDp, new SeekBarCallback() {
+        addTitle("Размер");
+        addValueSlider("Высота", 140, 360, kbdHeightDp, new SliderChange() {
             @Override
-            public void onVal(int val) {
+            public String onChange(int val) {
                 kbdHeightDp = val;
-                hLbl.setText("Высота клавиатуры: " + val + " dp");
                 requestLayout();
+                return val + " dp";
             }
-        });
-        splitSettingsCard.addView(hBar);
-
-        final TextView wLbl = new TextView(ctx);
-        wLbl.setText("Ширина клавиатуры: " + kbdWidthPct + "%");
-        wLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        wLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(wLbl);
-        splitSettingsCard.addView(createSlider(ctx, 40, 100, kbdWidthPct, new SeekBarCallback() {
+        }).row.set(kbdHeightDp + " dp");
+        addValueSlider("Ширина", 40, 100, kbdWidthPct, new SliderChange() {
             @Override
-            public void onVal(int val) {
+            public String onChange(int val) {
                 kbdWidthPct = val;
-                wLbl.setText("Ширина клавиатуры: " + val + "%");
                 requestLayout();
+                return val + "%";
             }
-        }));
+        }).row.set(kbdWidthPct + "%");
 
-        addSectionHeader(ctx, splitSettingsCard, "ПОЛОЖЕНИЕ (также перетаскивание за полоску ━━ сверху клавиатуры)");
-        final TextView xLbl = new TextView(ctx);
-        xLbl.setText("По горизонтали: " + Math.round(kbdPosX * 100) + "%");
-        xLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        xLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(xLbl);
-        splitSettingsCard.addView(createSlider(ctx, 0, 100, Math.round(kbdPosX * 100), new SeekBarCallback() {
+        addTitle("Положение");
+        addHint("Клавиатуру можно перетащить за полоску сверху.");
+        addValueSlider("По горизонтали", 0, 100, Math.round(kbdPosX * 100), new SliderChange() {
             @Override
-            public void onVal(int val) {
+            public String onChange(int val) {
                 kbdPosX = val / 100f;
-                xLbl.setText("По горизонтали: " + val + "%");
                 requestLayout();
+                return val + "%";
             }
-        }));
-        final TextView yLbl = new TextView(ctx);
-        yLbl.setText("Отступ снизу: " + kbdOffsetYDp + " dp");
-        yLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        yLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(yLbl);
-        splitSettingsCard.addView(createSlider(ctx, 0, 400, kbdOffsetYDp, new SeekBarCallback() {
+        }).row.set(Math.round(kbdPosX * 100) + "%");
+        addValueSlider("Отступ снизу", 0, 400, kbdOffsetYDp, new SliderChange() {
             @Override
-            public void onVal(int val) {
+            public String onChange(int val) {
                 kbdOffsetYDp = val;
-                yLbl.setText("Отступ снизу: " + val + " dp");
                 requestLayout();
+                return val + " dp";
             }
-        }));
+        }).row.set(kbdOffsetYDp + " dp");
 
-        addSectionHeader(ctx, splitSettingsCard, "ПРОЗРАЧНОСТЬ");
-        final TextView opLbl = new TextView(ctx);
-        opLbl.setText("Прозрачность подложки: " + opacityKbdBg + "%");
-        opLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        opLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(opLbl);
-
-        SeekBar opBar = createSlider(ctx, 0, 100, opacityKbdBg, new SeekBarCallback() {
+        addTitle("Прозрачность");
+        addValueSlider("Подложка", 0, 100, opacityKbdBg, new SliderChange() {
             @Override
-            public void onVal(int val) {
+            public String onChange(int val) {
                 opacityKbdBg = val;
-                opLbl.setText("Прозрачность подложки: " + val + "%");
                 applyOpacities();
+                return val + "%";
             }
-        });
-        splitSettingsCard.addView(opBar);
-
-        final TextView kOpLbl = new TextView(ctx);
-        kOpLbl.setText("Прозрачность клавиш: " + opacityKbdKeys + "%");
-        kOpLbl.setTextColor(Color.parseColor("#CBD5E1"));
-        kOpLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        splitSettingsCard.addView(kOpLbl);
-        splitSettingsCard.addView(createSlider(ctx, 15, 100, opacityKbdKeys, new SeekBarCallback() {
+        }).row.set(opacityKbdBg + "%");
+        addValueSlider("Клавиши", 15, 100, opacityKbdKeys, new SliderChange() {
             @Override
-            public void onVal(int val) {
+            public String onChange(int val) {
                 opacityKbdKeys = val;
-                kOpLbl.setText("Прозрачность клавиш: " + val + "%");
                 applyOpacities();
+                return val + "%";
             }
-        }));
+        }).row.set(opacityKbdKeys + "%");
 
-        addSectionHeader(ctx, splitSettingsCard, "ЯЗЫК ВВОДА (переключение — клавиша EN/RU/UK)");
-        LinearLayout langRow = new LinearLayout(ctx);
-        langRow.setOrientation(LinearLayout.HORIZONTAL);
-        final String[] langNames = {"EN", "RU", "UK"};
-        final TextView[] langChips = new TextView[3];
-        for (int i = 0; i < 3; i++) {
-            final int li = i;
-            langChips[i] = createChipButton(ctx, langNames[i], null);
-            setChipActive(langChips[i], kbdLayoutIdx == i);
-            langChips[i].setOnClickListener(new OnClickListener() {
-                @Override public void onClick(View v) {
-                    kbdLayoutIdx = li;
-                    if (keyboardLogic != null) keyboardLogic.setLang(li);
-                    for (int j = 0; j < 3; j++) setChipActive(langChips[j], j == li);
-                }
-            });
-            langRow.addView(langChips[i], new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        }
-        splitSettingsCard.addView(langRow);
-
-        addSectionHeader(ctx, splitSettingsCard, "РЕЖИМ БУКВЕННЫХ КЛАВИШ");
-        LinearLayout modeRow = new LinearLayout(ctx);
-        modeRow.setOrientation(LinearLayout.HORIZONTAL);
-        final TextView textChip = createChipButton(ctx, "Текст (Unicode)", null);
-        final TextView gameChip = createChipButton(ctx, "Клавиши (игры)", null);
-        setChipActive(textChip, !kbdGameKeys);
-        setChipActive(gameChip, kbdGameKeys);
-        textChip.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                kbdGameKeys = false;
-                if (keyboardLogic != null) keyboardLogic.setGameKeys(false);
-                setChipActive(textChip, true);
-                setChipActive(gameChip, false);
-            }
-        });
-        gameChip.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                kbdGameKeys = true;
-                if (keyboardLogic != null) keyboardLogic.setGameKeys(true);
-                setChipActive(textChip, false);
-                setChipActive(gameChip, true);
-            }
-        });
-        modeRow.addView(textChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        modeRow.addView(gameChip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        splitSettingsCard.addView(modeRow);
-
-        LinearLayout hapRow = new LinearLayout(ctx);
-        hapRow.setOrientation(LinearLayout.HORIZONTAL);
-        final TextView hapOn = createChipButton(ctx, "Вибрация: вкл", null);
-        final TextView hapOff = createChipButton(ctx, "Вибрация: выкл", null);
-        setChipActive(hapOn, kbdHaptics);
-        setChipActive(hapOff, !kbdHaptics);
-        hapOn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                kbdHaptics = true;
-                if (keyboardView != null) keyboardView.setHaptics(true);
-                setChipActive(hapOn, true);
-                setChipActive(hapOff, false);
-            }
-        });
-        hapOff.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) {
-                kbdHaptics = false;
-                if (keyboardView != null) keyboardView.setHaptics(false);
-                setChipActive(hapOn, false);
-                setChipActive(hapOff, true);
-            }
-        });
-        hapRow.addView(hapOn, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        hapRow.addView(hapOff, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        splitSettingsCard.addView(hapRow);
-
-        addDivider(ctx, splitSettingsCard);
-
-        TextView saveKbdBtn = createToolbarButton(ctx, "✓ Сохранить настройки клавиатуры", "#16A34A", Color.WHITE, 12f);
-        saveKbdBtn.setOnClickListener(new OnClickListener() {
+        addTitle("Ввод");
+        addSeg("Язык (переключается и клавишей на клавиатуре)", new String[]{"EN", "RU", "UK"}, kbdLayoutIdx, new PcUi.SegListener() {
             @Override
-            public void onClick(View v) {
+            public void onSelect(int i) {
+                kbdLayoutIdx = i;
+                if (keyboardLogic != null) keyboardLogic.setLang(i);
+            }
+        });
+        addSeg("Буквенные клавиши", new String[]{"Текст (Unicode)", "Клавиши (игры)"}, kbdGameKeys ? 1 : 0, new PcUi.SegListener() {
+            @Override
+            public void onSelect(int i) {
+                kbdGameKeys = i == 1;
+                if (keyboardLogic != null) keyboardLogic.setGameKeys(kbdGameKeys);
+            }
+        });
+        addSeg("Вибрация", new String[]{"Вкл", "Выкл"}, kbdHaptics ? 0 : 1, new PcUi.SegListener() {
+            @Override
+            public void onSelect(int i) {
+                kbdHaptics = i == 0;
+                if (keyboardView != null) keyboardView.setHaptics(kbdHaptics);
+            }
+        });
+
+        settingsBody.addView(PcUi.divider(ctx));
+        addButtonRow(actionBtn(PcIcons.KEYBOARD, "Проверить", PcUi.ST_NORMAL, new Runnable() {
+            @Override
+            public void run() {
                 savePreferences();
-                Toast.makeText(getContext(), "Настройки клавиатуры сохранены", Toast.LENGTH_SHORT).show();
-            }
-        });
-        splitSettingsCard.addView(saveKbdBtn);
-        addSmallVSpacer(ctx, splitSettingsCard);
-
-        TextView testKbdBtn = createToolbarButton(ctx, "⌨ Открыть клавиатуру для проверки", "#1E2530", Color.parseColor("#38BDF8"), 13f);
-        testKbdBtn.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
                 closeSplitSettingsWithAnimation();
                 showCustomKeyboard(true);
             }
-        });
-        splitSettingsCard.addView(testKbdBtn);
+        }), actionBtn(PcIcons.CHECK, "Сохранить", PcUi.ST_PRIMARY, new Runnable() {
+            @Override
+            public void run() {
+                savePreferences();
+                Toast.makeText(getContext(), "Настройки клавиатуры сохранены", Toast.LENGTH_SHORT).show();
+            }
+        }));
     }
 
     // -----------------------------------------------------------------------
     // РАЗДЕЛ: ПРОЗРАЧНОСТЬ (14 ИНДИВИДУАЛЬНЫХ СЛАЙДЕРОВ С ЖИВЫМ ПРИМЕНЕНИЕМ)
     // -----------------------------------------------------------------------
+    private interface OpacitySetter {
+        void set(int v);
+    }
+
     private void buildOpacitySettingsSection(Context ctx) {
-        addBackToMainButton(ctx);
+        addTitle("Плавающие кнопки");
+        addOpacitySlider("Шестерёнка настроек", opacityGear, new OpacitySetter() { @Override public void set(int v) { opacityGear = v; } });
+        addOpacitySlider("Кнопка меню", opacityArrow, new OpacitySetter() { @Override public void set(int v) { opacityArrow = v; } });
+        addTitle("Быстрое меню");
+        addOpacitySlider("Панель быстрых действий", opacityQuickDrawer, new OpacitySetter() { @Override public void set(int v) { opacityQuickDrawer = v; } });
+        addOpacitySlider("Кнопка «Клавиатура»", opacityBtnKeyboard, new OpacitySetter() { @Override public void set(int v) { opacityBtnKeyboard = v; } });
+        addOpacitySlider("Кнопка «Микрофон»", opacityBtnMic, new OpacitySetter() { @Override public void set(int v) { opacityBtnMic = v; } });
+        addOpacitySlider("Кнопка «Звук ПК»", opacityBtnSound, new OpacitySetter() { @Override public void set(int v) { opacityBtnSound = v; } });
+        addOpacitySlider("Кнопка «Тачпад»", opacityBtnTouchpad, new OpacitySetter() { @Override public void set(int v) { opacityBtnTouchpad = v; } });
+        addTitle("Панели");
+        addOpacitySlider("Фон панели настроек", opacitySettings, new OpacitySetter() { @Override public void set(int v) { opacitySettings = v; } });
+        addOpacitySlider("Панель диагностики", opacityDiag, new OpacitySetter() { @Override public void set(int v) { opacityDiag = v; } });
+        addTitle("Клавиатура");
+        addOpacitySlider("Подложка клавиатуры", opacityKbdBg, new OpacitySetter() { @Override public void set(int v) { opacityKbdBg = v; } });
+        addOpacitySlider("Клавиши", opacityKbdKeys, new OpacitySetter() { @Override public void set(int v) { opacityKbdKeys = v; } });
+        addOpacitySlider("Ряд спец-клавиш", opacityKbdSpecial, new OpacitySetter() { @Override public void set(int v) { opacityKbdSpecial = v; } });
+        addTitle("Редактор тачпада");
+        addOpacitySlider("Рамка зоны", opacityTpBorder, new OpacitySetter() { @Override public void set(int v) { opacityTpBorder = v; } });
+        addOpacitySlider("Значок перемещения", opacityTpCenter, new OpacitySetter() { @Override public void set(int v) { opacityTpCenter = v; } });
 
-        addSectionHeader(ctx, splitSettingsCard, "ПРОЗРАЧНОСТЬ ЭЛЕМЕНТОВ (0 - 100%)");
-
-        addOpacitySlider(ctx, "Шестерёнка настроек", opacityGear, new SeekBarCallback() {
+        settingsBody.addView(PcUi.divider(ctx));
+        addButtonRow(actionBtn(PcIcons.GEAR, "Кнопки в правый верхний угол", PcUi.ST_NORMAL, new Runnable() {
             @Override
-            public void onVal(int v) { opacityGear = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Стрелочка быстрого меню", opacityArrow, new SeekBarCallback() {
+            public void run() {
+                gearPosX = -1f;
+                gearPosY = -1f;
+                savePreferences();
+                requestLayout();
+                Toast.makeText(getContext(), "Кнопки возвращены в правый верхний угол", Toast.LENGTH_SHORT).show();
+            }
+        }));
+        addButtonRow(actionBtn(PcIcons.RESET, "Сбросить прозрачность", PcUi.ST_NORMAL, new Runnable() {
             @Override
-            public void onVal(int v) { opacityArrow = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Панель быстрых действий", opacityQuickDrawer, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityQuickDrawer = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Кнопка «Клавиатура»", opacityBtnKeyboard, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityBtnKeyboard = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Кнопка «Микрофон»", opacityBtnMic, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityBtnMic = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Кнопка «Звук ПК»", opacityBtnSound, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityBtnSound = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Кнопка «Тачпад»", opacityBtnTouchpad, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityBtnTouchpad = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Основная панель настроек", opacitySettings, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacitySettings = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Панель диагностики", opacityDiag, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityDiag = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Подложка клавиатуры", opacityKbdBg, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityKbdBg = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Клавиши клавиатуры", opacityKbdKeys, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityKbdKeys = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Панель спец-клавиш", opacityKbdSpecial, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityKbdSpecial = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Рамка тачпада в редакторе", opacityTpBorder, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityTpBorder = v; applyOpacities(); }
-        });
-        addOpacitySlider(ctx, "Индикатор тачпада", opacityTpCenter, new SeekBarCallback() {
-            @Override
-            public void onVal(int v) { opacityTpCenter = v; applyOpacities(); }
-        });
-
-        addDivider(ctx, splitSettingsCard);
-
-        TextView resetOp = createToolbarButton(ctx, "Сбросить прозрачность по умолчанию", "#242A35", Color.parseColor("#E2E8F0"), 13f);
-        resetOp.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v) {
+            public void run() {
                 resetDefaultOpacities();
                 savePreferences();
                 renderSplitSettingsContent();
             }
-        });
-        splitSettingsCard.addView(resetOp);
+        }));
     }
 
-    private void addOpacitySlider(Context ctx, String label, int currentVal, final SeekBarCallback cb) {
-        final TextView lbl = new TextView(ctx);
-        lbl.setText(label + ": " + currentVal + "%");
-        lbl.setTextColor(Color.parseColor("#CBD5E1"));
-        lbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-        splitSettingsCard.addView(lbl);
-
-        SeekBar sb = createSlider(ctx, 10, 100, currentVal, new SeekBarCallback() {
+    private void addOpacitySlider(String label, int currentVal, final OpacitySetter setter) {
+        addValueSlider(label, 10, 100, currentVal, new SliderChange() {
             @Override
-            public void onVal(int val) {
-                cb.onVal(val);
-                lbl.setText(label + ": " + val + "%");
+            public String onChange(int val) {
+                setter.set(val);
+                applyOpacities();
+                return val + "%";
             }
-        });
-        splitSettingsCard.addView(sb);
+        }).row.set(currentVal + "%");
     }
 
     private void applyOpacities() {
         if (floatingGearBtn != null) floatingGearBtn.setAlpha(opacityGear / 100f);
         if (floatingArrowBtn != null) floatingArrowBtn.setAlpha(opacityArrow / 100f);
+        if (floatingMouseBtn != null) floatingMouseBtn.setAlpha(opacityGear / 100f);
+        if (floatingKbdBtn != null) floatingKbdBtn.setAlpha(opacityGear / 100f);
         if (quickActionsDrawer != null) quickActionsDrawer.setAlpha(opacityQuickDrawer / 100f);
         if (quickBtnKeyboard != null) quickBtnKeyboard.setAlpha(opacityBtnKeyboard / 100f);
         if (quickBtnMic != null) quickBtnMic.setAlpha(opacityBtnMic / 100f);
         if (quickBtnSound != null) quickBtnSound.setAlpha(opacityBtnSound / 100f);
         if (quickBtnTouchpad != null) quickBtnTouchpad.setAlpha(opacityBtnTouchpad / 100f);
-        if (splitSettingsCard != null) splitSettingsCard.setAlpha(opacitySettings / 100f);
+        // Прозрачность панели настроек — только у фона, текст и ползунки остаются читаемыми
+        if (settingsCardBg != null) settingsCardBg.setAlpha(Math.round(opacitySettings / 100f * 255));
         if (diagCard != null) diagCard.setAlpha(opacityDiag / 100f);
         if (keyboardPanelBg != null) keyboardPanelBg.setAlpha(Math.round(opacityKbdBg / 100f * 255));
         if (keyboardView != null) keyboardView.setKeyOpacity(opacityKbdKeys / 100f, opacityKbdSpecial / 100f);
@@ -1756,152 +1498,48 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
 
     // -----------------------------------------------------------------------
-    // РАЗДЕЛЫ: ЭКРАН, КАЧЕСТВО, FPS
+    // РАЗДЕЛЫ: ЭКРАН, КАЧЕСТВО, FPS (как .seg-group в панели демонстрации приложения)
     // -----------------------------------------------------------------------
+    private static int indexOf(int[] arr, int v) {
+        for (int i = 0; i < arr.length; i++) if (arr[i] == v) return i;
+        return -1;
+    }
+
     private void buildScreenSettingsSection(Context ctx) {
-        addBackToMainButton(ctx);
-        addSectionHeader(ctx, splitSettingsCard, "ВЫБОР МОНИТОРА");
-
-        LinearLayout monRow = new LinearLayout(ctx);
-        monRow.setOrientation(LinearLayout.HORIZONTAL);
-        monitorChips.clear();
-
         final int[] mIds = {1, 2, 0};
-        final String[] mNames = {"Экран 1", "Экран 2", "Все"};
-        for (int i = 0; i < mIds.length; i++) {
-            final int mId = mIds[i];
-            TextView chip = createChipButton(ctx, mNames[i], new Runnable() {
-                @Override
-                public void run() {
-                    applyVideoSettings(mId, targetHeight, targetFps, targetBitrate);
-                }
-            });
-            chip.setTag(mId);
-            setChipActive(chip, mId == targetMonitor);
-            monitorChips.add(chip);
-            monRow.addView(chip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        }
-        splitSettingsCard.addView(monRow);
+        addSeg("Экран", new String[]{"Экран 1", "Экран 2", "Все экраны"}, indexOf(mIds, targetMonitor), new PcUi.SegListener() {
+            @Override
+            public void onSelect(int i) {
+                applyVideoSettings(mIds[i], targetHeight, targetFps, targetBitrate);
+            }
+        });
     }
 
     private void buildQualitySettingsSection(Context ctx) {
-        addBackToMainButton(ctx);
-        addSectionHeader(ctx, splitSettingsCard, "РАЗРЕШЕНИЕ");
-
-        LinearLayout resRow = new LinearLayout(ctx);
-        resRow.setOrientation(LinearLayout.HORIZONTAL);
-        resChips.clear();
-
         final int[] rVals = {480, 720, 1080, 0};
-        final String[] rNames = {"480p", "720p", "1080p", "Native"};
-        for (int i = 0; i < rVals.length; i++) {
-            final int h = rVals[i];
-            TextView chip = createChipButton(ctx, rNames[i], new Runnable() {
-                @Override
-                public void run() {
-                    applyVideoSettings(targetMonitor, h, targetFps, targetBitrate);
-                }
-            });
-            resChips.put(h, chip);
-            setChipActive(chip, h == targetHeight);
-            resRow.addView(chip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        }
-        splitSettingsCard.addView(resRow);
-
-        addDivider(ctx, splitSettingsCard);
-        addSectionHeader(ctx, splitSettingsCard, "БИТРЕЙТ");
-
-        LinearLayout brRow = new LinearLayout(ctx);
-        brRow.setOrientation(LinearLayout.HORIZONTAL);
-        bitrateChips.clear();
-
+        addSeg("Разрешение", new String[]{"480p", "720p", "1080p", "Исходное"}, indexOf(rVals, targetHeight), new PcUi.SegListener() {
+            @Override
+            public void onSelect(int i) {
+                applyVideoSettings(targetMonitor, rVals[i], targetFps, targetBitrate);
+            }
+        });
         final int[] bVals = {0, 5, 15, 30, 50};
-        final String[] bNames = {"Авто", "5M", "15M", "30M", "50M"};
-        for (int i = 0; i < bVals.length; i++) {
-            final int b = bVals[i];
-            TextView chip = createChipButton(ctx, bNames[i], new Runnable() {
-                @Override
-                public void run() {
-                    applyVideoSettings(targetMonitor, targetHeight, targetFps, b);
-                }
-            });
-            bitrateChips.put(b, chip);
-            setChipActive(chip, b == targetBitrate);
-            brRow.addView(chip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        }
-        splitSettingsCard.addView(brRow);
+        addSeg("Битрейт", new String[]{"Авто", "5M", "15M", "30M", "50M"}, indexOf(bVals, targetBitrate), new PcUi.SegListener() {
+            @Override
+            public void onSelect(int i) {
+                applyVideoSettings(targetMonitor, targetHeight, targetFps, bVals[i]);
+            }
+        });
     }
 
     private void buildFpsSettingsSection(Context ctx) {
-        addBackToMainButton(ctx);
-        addSectionHeader(ctx, splitSettingsCard, "ЧАСТОТА КАДРОВ");
-
-        LinearLayout fpsRow = new LinearLayout(ctx);
-        fpsRow.setOrientation(LinearLayout.HORIZONTAL);
-        fpsChips.clear();
-
         final int[] fVals = {30, 60, 90};
-        final String[] fNames = {"30 FPS", "60 FPS", "90 FPS"};
-        for (int i = 0; i < fVals.length; i++) {
-            final int f = fVals[i];
-            TextView chip = createChipButton(ctx, fNames[i], new Runnable() {
-                @Override
-                public void run() {
-                    applyVideoSettings(targetMonitor, targetHeight, f, targetBitrate);
-                }
-            });
-            fpsChips.put(f, chip);
-            setChipActive(chip, f == targetFps);
-            fpsRow.addView(chip, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
-        }
-        splitSettingsCard.addView(fpsRow);
-    }
-
-    private void addBackToMainButton(Context ctx) {
-        TextView back = createToolbarButton(ctx, "← Назад к разделам", "#1E2530", Color.parseColor("#94A3B8"), 12f);
-        back.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
-        int pad = dpToPx(8);
-        back.setPadding(pad, pad, pad, pad);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dpToPx(12);
-        back.setLayoutParams(lp);
-        back.setOnClickListener(new OnClickListener() {
+        addSeg("Частота", new String[]{"30", "60", "90"}, indexOf(fVals, targetFps), new PcUi.SegListener() {
             @Override
-            public void onClick(View v) {
-                if (touchpadVisualEditor != null) {
-                    touchpadVisualEditor.setVisibility(View.GONE);
-                    isTouchpadEditing = false;
-                }
-                activeSettingsSection = 0;
-                renderSplitSettingsContent();
+            public void onSelect(int i) {
+                applyVideoSettings(targetMonitor, targetHeight, fVals[i], targetBitrate);
             }
         });
-        splitSettingsCard.addView(back);
-    }
-
-    private interface SeekBarCallback {
-        void onVal(int val);
-    }
-
-    private SeekBar createSlider(Context ctx, int min, int max, int current, final SeekBarCallback cb) {
-        SeekBar sb = new SeekBar(ctx);
-        sb.setMax(max - min);
-        sb.setProgress(Math.max(0, current - min));
-        sb.setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8));
-        final int finalMin = min;
-        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (fromUser && cb != null) {
-                    cb.onVal(finalMin + progress);
-                }
-            }
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {}
-        });
-        return sb;
     }
 
     // -----------------------------------------------------------------------
@@ -1926,10 +1564,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         keyboardPanel = new LinearLayout(context);
         keyboardPanel.setOrientation(LinearLayout.VERTICAL);
-        keyboardPanelBg = new GradientDrawable();
-        keyboardPanelBg.setColor(Color.parseColor("#E6121622"));
-        keyboardPanelBg.setCornerRadius(dpToPx(16));
-        keyboardPanelBg.setStroke(dpToPx(1), Color.parseColor("#334155"));
+        // Подложка как у карточек приложения (.card): #121212, рамка rgba(255,255,255,.13), радиус 18
+        keyboardPanelBg = PcUi.shape(PcUi.SURFACE, dpToPx(18), PcUi.BORDER_STRONG, dpToPx(1));
         keyboardPanel.setBackground(keyboardPanelBg);
         int pad = dpToPx(6);
         keyboardPanel.setPadding(pad, 0, pad, pad);
@@ -1938,10 +1574,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         // Полоска-ручка: перетаскивание клавиатуры по экрану
         FrameLayout handle = new FrameLayout(context);
         View grip = new View(context);
-        GradientDrawable gripBg = new GradientDrawable();
-        gripBg.setColor(Color.parseColor("#64748B"));
-        gripBg.setCornerRadius(dpToPx(2));
-        grip.setBackground(gripBg);
+        grip.setBackground(PcUi.shape(PcUi.MUTED, dpToPx(2), 0, 0));
         handle.addView(grip, new FrameLayout.LayoutParams(dpToPx(44), dpToPx(4), Gravity.CENTER));
         handle.setOnTouchListener(new OnTouchListener() {
             private float startRawX, startRawY, startPosX;
@@ -2420,7 +2053,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 c.setRequestProperty("Accept", "audio/wav");
 
                 if (c.getResponseCode() != 200) {
-                    updateAudioStatusOnMain("Ошибка (" + c.getResponseCode() + ")", Color.parseColor("#EF4444"));
+                    updateAudioStatusOnMain("Ошибка (" + c.getResponseCode() + ")", PcUi.DANGER);
                     return;
                 }
 
@@ -2461,7 +2094,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 }
                 c.disconnect();
             } catch (Exception e) {
-                updateAudioStatusOnMain("Отключен", Color.parseColor("#94A3B8"));
+                updateAudioStatusOnMain("Отключен", PcUi.SUBTEXT);
             } finally {
                 if (audioTrack != null) {
                     try {
@@ -2491,7 +2124,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             startAudioStream();
         } else {
             stopAudioStream();
-            updateAudioStatusOnMain("Выключен", Color.parseColor("#94A3B8"));
+            updateAudioStatusOnMain("Выключен", PcUi.SUBTEXT);
         }
     }
 
@@ -2564,6 +2197,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
             gearPosX = sp.getFloat("gear_x", -1f);
             gearPosY = sp.getFloat("gear_y", -1f);
+            if (sp.getInt("ui_rev", 0) < 3) {
+                // Раньше перетаскивание сохраняло координату с двойным смещением (setX + layout):
+                // один раз возвращаем кнопки в положение по умолчанию — правый верхний угол.
+                gearPosX = -1f;
+                gearPosY = -1f;
+                sp.edit().putInt("ui_rev", 3).remove("gear_x").remove("gear_y").apply();
+            }
         } catch (Exception ignored) {}
     }
 
@@ -2649,6 +2289,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         isStreaming.set(true);
         hidePlaybackError();
         setVisibility(View.VISIBLE);
+        acquireStreamWifiLock();
 
         applyOperatingModeUI();
         if (operatingMode == MODE_VIEW) {
@@ -2666,7 +2307,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (isAudioEnabled) {
             startAudioStream();
         } else {
-            updateAudioStatusOnMain("Выключен", Color.parseColor("#94A3B8"));
+            updateAudioStatusOnMain("Выключен", PcUi.SUBTEXT);
         }
 
         workerThread = new Thread(new Runnable() {
@@ -2709,6 +2350,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         }
 
         releaseDecoder();
+        releaseStreamWifiLock();
 
         post(new Runnable() {
             @Override
@@ -2725,6 +2367,29 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
         stopStream();
+    }
+
+    @SuppressWarnings("deprecation")
+    private void acquireStreamWifiLock() {
+        try {
+            if (streamWifiLock == null) {
+                android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
+                        getContext().getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                if (wm == null) return;
+                int mode = Build.VERSION.SDK_INT >= 29
+                        ? android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                        : android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+                streamWifiLock = wm.createWifiLock(mode, "PCControl::PlayerLowLatency");
+                streamWifiLock.setReferenceCounted(false);
+            }
+            if (!streamWifiLock.isHeld()) streamWifiLock.acquire();
+        } catch (Exception ignored) {}
+    }
+
+    private void releaseStreamWifiLock() {
+        try {
+            if (streamWifiLock != null && streamWifiLock.isHeld()) streamWifiLock.release();
+        } catch (Exception ignored) {}
     }
 
     private void closeStreamAndExit() {
@@ -2776,7 +2441,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     public void toggleFullscreen() {
         isFullscreen = !isFullscreen;
         if (fullscreenBtn != null) {
-            fullscreenBtn.setText(isFullscreen ? "⊡" : "⛶");
+            fullscreenBtn.setIcon(isFullscreen ? PcIcons.FULLSCREEN_EXIT : PcIcons.FULLSCREEN);
         }
         if (playerCallback != null) {
             playerCallback.onFullscreenToggled(isFullscreen);
@@ -2934,7 +2599,6 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     receivedFpsTracker.recordEvent();
 
                     feedDecoder(frameBuf, payloadLen, flags, ptsUs);
-                    drainDecoder(false);
                 }
             } catch (Exception e) {
                 if (isStreaming.get()) {
@@ -2961,27 +2625,121 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void initDecoder() throws Exception {
         synchronized (decoderLock) {
             releaseDecoder();
-            decoder = MediaCodec.createDecoderByType("video/avc");
-            MediaFormat format = MediaFormat.createVideoFormat("video/avc", videoWidth, videoHeight);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                format.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE);
-                format.setInteger(MediaFormat.KEY_PRIORITY, 0);
+            MediaCodec codec = MediaCodec.createDecoderByType("video/avc");
+            try {
+                codec.configure(buildDecoderFormat(codec, true), surfaceHolder.getSurface(), null, 0);
+            } catch (Exception lowLatencyRejected) {
+                // Некоторые декодеры не принимают ключи низкой задержки — повтор с обычным форматом
+                try { codec.release(); } catch (Exception ignored) {}
+                codec = MediaCodec.createDecoderByType("video/avc");
+                codec.configure(buildDecoderFormat(codec, false), surfaceHolder.getSurface(), null, 0);
             }
-            decoder.configure(format, surfaceHolder.getSurface(), null, 0);
-            decoder.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
-            decoder.start();
+            codec.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
+            codec.start();
+            decoder = codec;
+            startDecoderOutputThread(codec);
+        }
+    }
+
+    /** Формат декодера; lowLatency — режим низкой задержки (как в Moonlight): FEATURE_LowLatency, Qualcomm. */
+    private MediaFormat buildDecoderFormat(MediaCodec codec, boolean lowLatency) {
+        MediaFormat format = MediaFormat.createVideoFormat("video/avc", videoWidth, videoHeight);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE);
+            format.setInteger(MediaFormat.KEY_PRIORITY, 0);
+        }
+        if (lowLatency) {
+            if (Build.VERSION.SDK_INT >= 30) {
+                try {
+                    if (codec.getCodecInfo().getCapabilitiesForType("video/avc")
+                            .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)) {
+                        format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+                    }
+                } catch (Exception ignored) {}
+            }
+            try {
+                String name = codec.getName().toLowerCase(java.util.Locale.US);
+                if (name.startsWith("omx.qcom") || name.startsWith("c2.qti")) {
+                    format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1);
+                }
+            } catch (Exception ignored) {}
+        }
+        return format;
+    }
+
+    /**
+     * Отдельный поток вывода: кадр показывается сразу после декодирования. Раньше выход
+     * декодера опрашивался только после прихода следующего кадра из сети (+1 кадр задержки
+     * и рывки при неравномерной доставке). Если готово несколько кадров — показывается
+     * только самый новый, отставание не накапливается.
+     */
+    private void startDecoderOutputThread(final MediaCodec codec) {
+        Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+                while (isStreaming.get() && decoder == codec) {
+                    int idx;
+                    try {
+                        idx = codec.dequeueOutputBuffer(info, 8000);
+                        if (idx >= 0) {
+                            int next;
+                            while ((next = codec.dequeueOutputBuffer(info, 0)) >= 0) {
+                                codec.releaseOutputBuffer(idx, false); // устаревший кадр
+                                droppedFramesCount++;
+                                idx = next;
+                            }
+                            codec.releaseOutputBuffer(idx, true);
+                            renderedFpsTracker.recordEvent();
+                            minFpsTracker.recordEvent();
+                            if (next == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) onDecoderFormatChanged(codec);
+                        } else if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                            onDecoderFormatChanged(codec);
+                        }
+                    } catch (Exception e) {
+                        break; // декодер остановлен/освобождён
+                    }
+                }
+            }
+        }, "pc-video-render");
+        t.setPriority(Thread.MAX_PRIORITY - 1);
+        t.setDaemon(true);
+        decoderOutputThread = t;
+        t.start();
+    }
+
+    private void onDecoderFormatChanged(MediaCodec codec) {
+        MediaFormat f = codec.getOutputFormat();
+        if (f.containsKey(MediaFormat.KEY_WIDTH) && f.containsKey(MediaFormat.KEY_HEIGHT)) {
+            videoWidth = f.getInteger(MediaFormat.KEY_WIDTH);
+            videoHeight = f.getInteger(MediaFormat.KEY_HEIGHT);
+            post(new Runnable() {
+                @Override public void run() { requestLayout(); }
+            });
         }
     }
 
     private void releaseDecoder() {
+        MediaCodec codec;
+        Thread out;
         synchronized (decoderLock) {
-            if (decoder != null) {
-                try {
-                    decoder.stop();
-                    decoder.release();
-                } catch (Exception ignored) {}
-                decoder = null;
+            codec = decoder;
+            decoder = null;
+            out = decoderOutputThread;
+            decoderOutputThread = null;
+        }
+        if (out != null && out != Thread.currentThread()) {
+            // Сначала дождаться выхода потока вывода (он ждёт не дольше 8 мс), потом stop/release
+            boolean wasInterrupted = Thread.interrupted();
+            try {
+                out.join(300);
+            } catch (InterruptedException ignored) {
             }
+            if (wasInterrupted) Thread.currentThread().interrupt();
+        }
+        if (codec != null) {
+            try { codec.stop(); } catch (Exception ignored) {}
+            try { codec.release(); } catch (Exception ignored) {}
         }
     }
 
@@ -2989,7 +2747,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         synchronized (decoderLock) {
             if (decoder == null) return;
             try {
-                int inIdx = decoder.dequeueInputBuffer(4000);
+                // Ждём свободный буфер дольше (30 мс): потерянный P-кадр портит картинку до следующего I-кадра
+                int inIdx = decoder.dequeueInputBuffer(30000);
                 if (inIdx >= 0) {
                     ByteBuffer inBuf = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
                             ? decoder.getInputBuffer(inIdx)
@@ -3002,34 +2761,6 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         if ((flags & 0x01) != 0) bufFlags |= MediaCodec.BUFFER_FLAG_KEY_FRAME;
                         decoder.queueInputBuffer(inIdx, 0, length, ptsUs, bufFlags);
                         decodedFpsTracker.recordEvent();
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
-    }
-
-    private void drainDecoder(boolean endOfStream) {
-        synchronized (decoderLock) {
-            if (decoder == null) return;
-            try {
-                MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-                while (true) {
-                    int outIdx = decoder.dequeueOutputBuffer(info, 1500);
-                    if (outIdx >= 0) {
-                        decoder.releaseOutputBuffer(outIdx, true);
-                        renderedFpsTracker.recordEvent();
-                        minFpsTracker.recordEvent();
-                    } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        MediaFormat f = decoder.getOutputFormat();
-                        if (f.containsKey(MediaFormat.KEY_WIDTH) && f.containsKey(MediaFormat.KEY_HEIGHT)) {
-                            videoWidth = f.getInteger(MediaFormat.KEY_WIDTH);
-                            videoHeight = f.getInteger(MediaFormat.KEY_HEIGHT);
-                            post(new Runnable() {
-                                @Override public void run() { requestLayout(); }
-                            });
-                        }
-                    } else {
-                        break;
                     }
                 }
             } catch (Exception ignored) {}
@@ -3068,15 +2799,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         topToolbar = new LinearLayout(context);
         topToolbar.setOrientation(LinearLayout.HORIZONTAL);
         topToolbar.setGravity(Gravity.CENTER_VERTICAL);
+        // Плавающая «пилюля» в цветах приложения: #121212, рамка rgba(255,255,255,.13)
+        topToolbar.setBackground(PcUi.shape(PcUi.FLOAT_BG, dpToPx(26), PcUi.BORDER_STRONG, dpToPx(1)));
 
-        GradientDrawable tbBg = new GradientDrawable();
-        tbBg.setColor(Color.parseColor("#E612161F"));
-        tbBg.setCornerRadius(dpToPx(24));
-        tbBg.setStroke(dpToPx(1), Color.parseColor("#33FFFFFF"));
-        topToolbar.setBackground(tbBg);
-
-        int padH = dpToPx(16);
-        int padV = dpToPx(8);
+        int padH = dpToPx(8);
+        int padV = dpToPx(6);
         topToolbar.setPadding(padH, padV, padH, padV);
 
         FrameLayout.LayoutParams tbParams = new FrameLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
@@ -3084,7 +2811,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         tbParams.topMargin = dpToPx(16);
         topToolbar.setLayoutParams(tbParams);
 
-        TextView backBtn = createToolbarButton(context, "←", "#242A35", Color.WHITE, 17f);
+        PcUi.IconBtn backBtn = new PcUi.IconBtn(context, PcIcons.ARROW_BACK, 40, 20, false, "Назад");
         backBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { closeStreamAndExit(); }
         });
@@ -3092,20 +2819,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         LinearLayout titleBox = new LinearLayout(context);
         titleBox.setOrientation(LinearLayout.VERTICAL);
-        titleBox.setPadding(dpToPx(12), 0, dpToPx(14), 0);
+        titleBox.setPadding(dpToPx(12), 0, dpToPx(12), 0);
         titleBox.setGravity(Gravity.CENTER_VERTICAL);
 
-        titleView = new TextView(context);
-        titleView.setText("Демонстрация экрана");
-        titleView.setTextColor(Color.WHITE);
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
-        titleView.setTypeface(Typeface.DEFAULT_BOLD);
+        titleView = PcUi.text(context, "Демонстрация экрана", 15f, PcUi.TEXT, Typeface.DEFAULT_BOLD);
         titleBox.addView(titleView);
 
-        subtitleView = new TextView(context);
-        subtitleView.setText("1080p · 60 FPS");
-        subtitleView.setTextColor(Color.parseColor("#94A3B8"));
-        subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        subtitleView = PcUi.text(context, "1080p · 60 FPS", 11f, PcUi.SUBTEXT, null);
+        subtitleView.setPadding(0, dpToPx(3), 0, 0);
         titleBox.addView(subtitleView);
         // На узком экране сжимается заголовок (с многоточием), а не кнопки справа
         titleView.setSingleLine(true);
@@ -3114,48 +2835,56 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         subtitleView.setEllipsize(TextUtils.TruncateAt.END);
         topToolbar.addView(titleBox, new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, 1f));
 
-        scaleModeBtn = createToolbarButton(context, "Fit", "#242A35", Color.parseColor("#E2E8F0"), 13f);
+        scaleModeBtn = PcUi.text(context, scaleMode == SCALE_MODE_FIT ? "Fit" : "Fill", 13f, PcUi.TEXT, PcUi.medium());
+        scaleModeBtn.setGravity(Gravity.CENTER);
+        scaleModeBtn.setMinWidth(dpToPx(48));
+        scaleModeBtn.setMinHeight(dpToPx(40));
+        scaleModeBtn.setPadding(dpToPx(10), 0, dpToPx(10), 0);
+        scaleModeBtn.setBackground(PcUi.shape(PcUi.SURFACE2, dpToPx(12), PcUi.BORDER, dpToPx(1)));
+        scaleModeBtn.setContentDescription("Масштаб: вписать / заполнить");
+        PcUi.pressable(scaleModeBtn);
         scaleModeBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { toggleScaleMode(); }
         });
         topToolbar.addView(scaleModeBtn);
 
-        addToolbarSpacer(context, topToolbar, 8);
+        addToolbarSpacer(context, topToolbar, 6);
 
         // Отдельные кнопки управления мышью и клавиатурой во время демонстрации
-        toolbarMouseBtn = createToolbarButton(context, "🖱", "#242A35", Color.WHITE, 16f);
+        toolbarMouseBtn = new PcUi.IconBtn(context, PcIcons.MOUSE, 40, 20, false, "Мышь");
         toolbarMouseBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { toggleMouseControl(); }
         });
         topToolbar.addView(toolbarMouseBtn);
 
-        addToolbarSpacer(context, topToolbar, 8);
+        addToolbarSpacer(context, topToolbar, 6);
 
-        toolbarKbdBtn = createToolbarButton(context, "⌨", "#242A35", Color.WHITE, 16f);
+        toolbarKbdBtn = new PcUi.IconBtn(context, PcIcons.KEYBOARD, 40, 20, false, "Клавиатура");
         toolbarKbdBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { toggleCustomKeyboard(); }
         });
         topToolbar.addView(toolbarKbdBtn);
 
-        addToolbarSpacer(context, topToolbar, 8);
+        addToolbarSpacer(context, topToolbar, 6);
 
-        fullscreenBtn =createToolbarButton(context, "⛶", "#242A35", Color.WHITE, 17f);
+        fullscreenBtn = new PcUi.IconBtn(context, PcIcons.FULLSCREEN, 40, 20, false, "Полноэкранный режим");
         fullscreenBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { toggleFullscreen(); }
         });
         topToolbar.addView(fullscreenBtn);
 
-        addToolbarSpacer(context, topToolbar, 8);
+        addToolbarSpacer(context, topToolbar, 6);
 
-        settingsBtn = createToolbarButton(context, "⚙", "#242A35", Color.WHITE, 17f);
+        settingsBtn = new PcUi.IconBtn(context, PcIcons.GEAR, 40, 20, false, "Настройки");
         settingsBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { toggleSplitSettings(); }
         });
         topToolbar.addView(settingsBtn);
 
-        addToolbarSpacer(context, topToolbar, 8);
+        addToolbarSpacer(context, topToolbar, 6);
 
-        closeBtn = createToolbarButton(context, "✕", "#3A2024", Color.parseColor("#FF5252"), 17f);
+        closeBtn = new PcUi.IconBtn(context, PcIcons.CLOSE, 40, 18, false, "Закрыть трансляцию");
+        closeBtn.setState(PcUi.ST_DANGER);
         closeBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { closeStreamAndExit(); }
         });
@@ -3164,123 +2893,59 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         addView(topToolbar);
     }
 
-    private TextView createToolbarButton(Context context, String text, String bgColorHex, int textColor, float textSizeSp) {
-        TextView btn = new TextView(context);
-        btn.setText(text);
-        btn.setTextColor(textColor);
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSizeSp);
-        btn.setTypeface(Typeface.DEFAULT_BOLD);
-        btn.setGravity(Gravity.CENTER);
-        btn.setMinWidth(dpToPx(48));
-        btn.setMinHeight(dpToPx(48));
-
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor(bgColorHex));
-        bg.setCornerRadius(dpToPx(14));
-        btn.setBackground(bg);
-        int pad = dpToPx(8);
-        btn.setPadding(pad, pad, pad, pad);
-        return btn;
-    }
-
     private void addToolbarSpacer(Context context, LinearLayout parent, int dp) {
         View sp = new View(context);
         parent.addView(sp, new LinearLayout.LayoutParams(dpToPx(dp), 1));
     }
 
-    private TextView createChipButton(Context context, String text, final Runnable onClick) {
-        TextView chip = new TextView(context);
-        chip.setText(text);
-        chip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        chip.setTypeface(Typeface.DEFAULT_BOLD);
-        chip.setGravity(Gravity.CENTER);
-        chip.setTextColor(Color.parseColor("#CBD5E1"));
-        chip.setMinWidth(dpToPx(48));
-        chip.setMinHeight(dpToPx(48));
-        int pad = dpToPx(8);
-        chip.setPadding(pad, pad, pad, pad);
-
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(Color.parseColor("#1E2530"));
-        gd.setCornerRadius(dpToPx(12));
-        gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
-        chip.setBackground(gd);
-
-        chip.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) { if (onClick != null) onClick.run(); }
-        });
-        return chip;
-    }
-
-    private void setChipActive(TextView chip, boolean active) {
-        if (chip == null) return;
-        GradientDrawable gd = new GradientDrawable();
-        gd.setCornerRadius(dpToPx(12));
-        if (active) {
-            gd.setColor(Color.parseColor("#0C4A6E"));
-            gd.setStroke(dpToPx(1), Color.parseColor("#38BDF8"));
-            chip.setTextColor(Color.parseColor("#38BDF8"));
-        } else {
-            gd.setColor(Color.parseColor("#1E2530"));
-            gd.setStroke(dpToPx(1), Color.parseColor("#334155"));
-            chip.setTextColor(Color.parseColor("#CBD5E1"));
-        }
-        chip.setBackground(gd);
-    }
-
-    private void addSectionHeader(Context context, LinearLayout parent, String text) {
-        TextView label = new TextView(context);
-        label.setText(text);
-        label.setTextColor(Color.parseColor("#94A3B8"));
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-        label.setTypeface(Typeface.DEFAULT_BOLD);
-        label.setPadding(0, dpToPx(4), 0, dpToPx(4));
-        parent.addView(label);
-    }
-
-    private void addDivider(Context context, LinearLayout parent) {
-        View d = new View(context);
-        d.setBackgroundColor(Color.parseColor("#22334155"));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, dpToPx(1));
-        lp.setMargins(0, dpToPx(10), 0, dpToPx(10));
-        d.setLayoutParams(lp);
-        parent.addView(d);
-    }
-
     private void buildDiagnosticsDialog(Context context) {
         diagOverlay = new FrameLayout(context);
-        diagOverlay.setBackgroundColor(Color.parseColor("#80000000"));
+        diagOverlay.setBackgroundColor(0xC2000000);
         diagOverlay.setVisibility(View.GONE);
+        diagOverlay.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { setDiagnosticsVisible(false); }
+        });
 
         diagCard = new LinearLayout(context);
         diagCard.setOrientation(LinearLayout.VERTICAL);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor("#EE121622"));
-        bg.setCornerRadius(dpToPx(16));
-        bg.setStroke(dpToPx(1), Color.parseColor("#334155"));
-        diagCard.setBackground(bg);
-        int pad = dpToPx(16);
+        diagCard.setBackground(PcUi.shape(PcUi.SURFACE, dpToPx(22), PcUi.BORDER_STRONG, dpToPx(1)));
+        int pad = dpToPx(18);
         diagCard.setPadding(pad, pad, pad, pad);
+        diagCard.setClickable(true);
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dpToPx(340), LayoutParams.WRAP_CONTENT, Gravity.CENTER);
         diagCard.setLayoutParams(lp);
 
-        TextView head = new TextView(context);
-        head.setText("📊 ТЕЛЕМЕТРИЯ ПОТОКА");
-        head.setTextColor(Color.parseColor("#38BDF8"));
-        head.setTypeface(Typeface.DEFAULT_BOLD);
-        diagCard.addView(head);
-
-        diagFpsRendVal = addDiagRow(context, diagCard, "FPS Отрисовки:");
-        diagFpsRecvVal = addDiagRow(context, diagCard, "FPS Приёма:");
-        diagBitrateVal = addDiagRow(context, diagCard, "Битрейт:");
-        diagResVal = addDiagRow(context, diagCard, "Разрешение:");
-
-        TextView closeDiag = createToolbarButton(context, "Закрыть", "#242A35", Color.WHITE, 12f);
-        closeDiag.setOnClickListener(new OnClickListener() {
+        LinearLayout head = new LinearLayout(context);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        android.widget.ImageView tile = new android.widget.ImageView(context);
+        tile.setImageDrawable(new PcIconDrawable(PcIcons.CHART, PcUi.RED, dpToPx(16)));
+        tile.setScaleType(android.widget.ImageView.ScaleType.CENTER);
+        tile.setBackground(PcUi.shape(PcUi.RED_SOFT, dpToPx(8), 0, 0));
+        head.addView(tile, new LinearLayout.LayoutParams(dpToPx(28), dpToPx(28)));
+        TextView title = PcUi.text(context, "Диагностика потока", 16f, PcUi.TEXT, Typeface.DEFAULT_BOLD);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f);
+        tlp.leftMargin = dpToPx(10);
+        head.addView(title, tlp);
+        PcUi.IconBtn closeX = new PcUi.IconBtn(context, PcIcons.CLOSE, 30, 16, true, "Закрыть");
+        closeX.setBackground(PcUi.oval(0x14FFFFFF, 0, 0));
+        closeX.icon.setColor(0x99FFFFFF);
+        closeX.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { setDiagnosticsVisible(false); }
         });
-        diagCard.addView(closeDiag);
+        head.addView(closeX);
+        diagCard.addView(head);
+
+        LinearLayout rows = new LinearLayout(context);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        rows.setPadding(0, dpToPx(10), 0, 0);
+        diagCard.addView(rows);
+        diagFpsRendVal = addDiagRow(context, rows, "FPS отрисовки");
+        diagFpsRecvVal = addDiagRow(context, rows, "FPS приёма");
+        diagBitrateVal = addDiagRow(context, rows, "Битрейт");
+        diagResVal = addDiagRow(context, rows, "Разрешение");
+        diagLatencyVal = addDiagRow(context, rows, "Ввод (мышь/клавиатура)");
 
         diagOverlay.addView(diagCard);
         addView(diagOverlay, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
@@ -3289,28 +2954,62 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private TextView addDiagRow(Context context, LinearLayout parent, String label) {
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        TextView l = new TextView(context);
-        l.setText(label);
-        l.setTextColor(Color.parseColor("#94A3B8"));
-        TextView v = new TextView(context);
-        v.setTextColor(Color.WHITE);
-        v.setTypeface(Typeface.MONOSPACE);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dpToPx(2), dpToPx(9), dpToPx(2), dpToPx(9));
+        TextView l = PcUi.text(context, label, 12.5f, PcUi.SUBTEXT, PcUi.medium());
+        TextView v = PcUi.text(context, "—", 12.5f, PcUi.TEXT, Typeface.MONOSPACE);
         row.addView(l, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0f));
         row.addView(v);
         parent.addView(row);
+        View d = new View(context);
+        d.setBackgroundColor(PcUi.BORDER);
+        parent.addView(d, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, Math.max(1, dpToPx(1))));
         return v;
     }
 
+    private long diagLastBytes = 0;
+    private long diagLastTime = 0;
+
     private void refreshDiagValues() {
-        if (diagFpsRendVal != null) diagFpsRendVal.setText(String.format("%.1f", renderedFpsTracker.getFps()));
-        if (diagFpsRecvVal != null) diagFpsRecvVal.setText(String.format("%.1f", receivedFpsTracker.getFps()));
-        if (diagResVal != null) diagResVal.setText(videoWidth + "x" + videoHeight);
+        if (diagFpsRendVal != null) diagFpsRendVal.setText(String.format(java.util.Locale.US, "%.1f", renderedFpsTracker.getFps()));
+        if (diagFpsRecvVal != null) diagFpsRecvVal.setText(String.format(java.util.Locale.US, "%.1f", receivedFpsTracker.getFps()));
+        if (diagResVal != null) diagResVal.setText(videoWidth + "×" + videoHeight);
+        long now = SystemClock.elapsedRealtime();
+        long bytes = totalBytesReceived;
+        if (diagBitrateVal != null && diagLastTime > 0 && now > diagLastTime) {
+            float mbps = (bytes - diagLastBytes) * 8f / ((now - diagLastTime) * 1000f);
+            diagBitrateVal.setText(String.format(java.util.Locale.US, "%.1f Мбит/с", Math.max(0f, mbps)));
+        }
+        diagLastBytes = bytes;
+        diagLastTime = now;
+        if (diagLatencyVal != null) {
+            String st;
+            switch (inputClient.getState()) {
+                case PcInputClient.STATE_CONNECTED: st = "поток · " + inputClient.framesSent + " событий"; break;
+                case PcInputClient.STATE_CONNECTING: st = "подключение…"; break;
+                case PcInputClient.STATE_LEGACY: st = "медленный режим (старый сервер)"; break;
+                case PcInputClient.STATE_AUTH_ERROR: st = "ошибка пароля"; break;
+                case PcInputClient.STATE_ERROR: st = "нет связи"; break;
+                default: st = "выключен"; break;
+            }
+            diagLatencyVal.setText(st);
+        }
     }
 
     public void setDiagnosticsVisible(boolean visible) {
         isDiagVisible = visible;
-        if (diagOverlay != null) diagOverlay.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (diagOverlay != null) {
+            diagOverlay.animate().cancel();
+            if (visible) {
+                diagOverlay.setVisibility(View.VISIBLE);
+                diagOverlay.setAlpha(0f);
+                diagOverlay.animate().alpha(1f).setDuration(180).setListener(null).start();
+            } else {
+                diagOverlay.setVisibility(View.GONE);
+            }
+        }
         if (visible) {
+            diagLastTime = 0;
             mainHandler.post(diagUpdateRunnable);
         } else {
             mainHandler.removeCallbacks(diagUpdateRunnable);
@@ -3319,7 +3018,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private void buildErrorDialog(Context context) {
         errorOverlay = new FrameLayout(context);
-        errorOverlay.setBackgroundColor(Color.parseColor("#B3000000"));
+        errorOverlay.setBackgroundColor(0xC2000000);
         errorOverlay.setVisibility(View.GONE);
         addView(errorOverlay, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
     }
