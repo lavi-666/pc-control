@@ -29,8 +29,16 @@ let _memoryToken = '';
     // 1. Сначала сохраняем сетевые параметры (LAN, VPN, MAC, Relay)
     if (urlLan) {
       const normLan = urlLan.replace(/\/+$/, '');
-      try { localStorage.setItem('pc_lan_host', normLan); } catch(e){}
-      try { localStorage.setItem('pc_active_server', normLan); } catch(e){}
+      // QA A-7: a link with only ?lan= (no token / ticket) used to switch the server silently, and the
+      // saved password went to that address. Ask first when a password is saved and the address is new.
+      let savedTok = '', savedLan = '';
+      try { savedTok = localStorage.getItem('pc_token') || sessionStorage.getItem('pc_token') || ''; savedLan = localStorage.getItem('pc_lan_host') || ''; } catch(e){}
+      const needsConfirm = !urlTok && !urlTicket && savedTok && savedLan.replace(/\/+$/, '') !== normLan;
+      const accepted = !needsConfirm || window.confirm((typeof t === 'function' && t('confirm_switch_server') ? t('confirm_switch_server') : 'Switch to the PC at {host}? Your saved password will be sent to it.').replace('{host}', normLan));
+      if (accepted) {
+        try { localStorage.setItem('pc_lan_host', normLan); } catch(e){}
+        try { localStorage.setItem('pc_active_server', normLan); } catch(e){}
+      }
       params.delete('lan');
       params.delete('lan_host');
       changed = true;
@@ -278,6 +286,26 @@ async function loadQrImage(targetUrl) {
   img.src = directUrl;
 }
 
+// Одноразовый билет сопряжения (5 минут) вместо пароля: раньше QR-код пульта содержал сам
+// пароль, и он попадал в журнал сервера, историю браузера и на снимки экрана.
+async function getPairingAuthParam(){
+  try {
+    const res = await apiFetch('/api/pair/ticket');
+    if (res && res.ok) {
+      const data = await res.json();
+      if (data && data.ticket) return 'ticket=' + encodeURIComponent(data.ticket);
+    }
+  } catch (e) {}
+  return '';
+}
+
+async function downloadApkWithTicket(ev){
+  if (ev) ev.preventDefault();
+  const auth = await getPairingAuthParam();
+  window.location.href = resolveApiUrl('/download/apk' + (auth ? '?' + auth : ''));
+  return false;
+}
+
 async function switchQrMode(mode){
   currentQrMode = mode;
   const btnWeb = document.getElementById('qrTabWeb');
@@ -304,7 +332,8 @@ async function switchQrMode(mode){
     btnApk.style.color = 'var(--muted)';
     hint.innerText = (currentQrNetwork === 'vpn') ? (t('qr_hint_web_vpn') || 'Камера смартфона откроет пульт через интернет (Tailscale):') : t('qr_hint_web');
     let qParams = [];
-    if (tok) qParams.push('token=' + encodeURIComponent(tok));
+    const auth = await getPairingAuthParam();
+    if (auth) qParams.push(auth);
     if (currentQrNetwork === 'lan' && baseHost) qParams.push('lan=' + encodeURIComponent(baseHost));
     const target = qParams.length ? (baseHost + '/?' + qParams.join('&')) : baseHost;
     currentQrTargetUrl = target;
@@ -318,8 +347,8 @@ async function switchQrMode(mode){
     hint.innerText = t('qr_hint_apk');
     const baseTarget = (currentQrNetwork === 'lan' && lanInfoCache && lanInfoCache.apk_url && !lanInfoCache.apk_url.includes('127.0.0.1')) ? lanInfoCache.apk_url : (baseHost + '/download/apk');
     let qParams = [];
-    if (tok) qParams.push('token=' + encodeURIComponent(tok));
-    if (currentQrNetwork === 'lan' && baseHost) qParams.push('lan=' + encodeURIComponent(baseHost));
+    const auth = await getPairingAuthParam();
+    if (auth) qParams.push(auth);
     const target = qParams.length ? (baseTarget + (baseTarget.includes('?') ? '&' : '?') + qParams.join('&')) : baseTarget;
     currentQrTargetUrl = target;
     urlEl.innerText = connSecState.qrUrl ? target : '••••••••••••••••••••••••';
@@ -582,7 +611,19 @@ function toggleLoginRemember(){
   if (chk) chk.checked = !chk.checked;
 }
 
-function logoutApp(){
+async function logoutApp(){
+  // QA U-41: the saved password is forgotten - ask first
+  const ok = await showCustomConfirm({
+    title: t('btn_logout'),
+    message: t('confirm_logout'),
+    buttons: [
+      { text: t('btn_cancel') || 'Cancel', value: false, className: 'settings-sec-btn' },
+      { text: t('btn_logout'), value: true, className: 'danger-soft' }
+    ]
+  });
+  if (ok !== true) return;
+  // the login cookies are HttpOnly (QA A-10): only the server can remove them
+  try { fetch(getApiBase() + '/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {}); } catch (e) {}
   _memoryToken = '';
   try {
     localStorage.removeItem('pc_token');
@@ -1016,6 +1057,8 @@ async function apiFetch(url, options = {}){
   const isMutating = (method === 'POST' || method === 'PUT' || method === 'DELETE');
 
   const headers = Object.assign({}, options.headers, {'X-Auth-Token': encodeURIComponent(getToken())});
+  // QA T-1: server messages in the UI language
+  if (typeof currentLang === 'string' && currentLang) headers['Accept-Language'] = currentLang;
   if (isMutating && !headers['X-Request-Id']) {
     headers['X-Request-Id'] = generateRequestId();
   }
@@ -1324,7 +1367,23 @@ async function toggleAppMute(pid, mute){
   } catch (e) {}
 }
 
+// QA P-1 / U-20: sleep / lock / restart / shut down only after an explicit confirmation
+// ([Cancel] [Action]) - one stray tap used to turn the PC off.
+async function confirmPower(action){
+  const label = t('btn_' + action) || action;
+  const choice = await showCustomConfirm({
+    title: label,
+    message: t('confirm_power_' + action),
+    buttons: [
+      { text: t('btn_cancel') || 'Cancel', value: false, className: 'settings-sec-btn' },
+      { text: label, value: true, className: (action === 'reboot' || action === 'shutdown') ? 'danger-soft' : '' }
+    ]
+  });
+  return choice === true;
+}
+
 async function send(action){
+  if (['sleep', 'lock', 'reboot', 'shutdown'].includes(action) && !(await confirmPower(action))) return;
   const statusEl = document.getElementById('statusMsg');
   statusEl.innerText = t('msg_sending');
   try {
@@ -1635,7 +1694,9 @@ async function commitSysVolume(val){
       body: JSON.stringify({percent: pct})
     });
     const data = await res.json();
-    if (res.ok) document.getElementById('statusMsg').innerText = data.message;
+    // Ошибку (например, 503 «аудиоустройство недоступно») тоже показываем, иначе ползунок молча «врёт»
+    if (data && data.message) document.getElementById('statusMsg').innerText = data.message;
+    if (!res.ok) loadVolume();
   } catch (e) {}
 }
 

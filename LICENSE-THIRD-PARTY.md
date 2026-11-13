@@ -80,3 +80,17 @@ PC Control is MIT. Only publicly known design ideas and behaviour were re-implem
   (stuck-key protection).
 * **KDE Connect** (`plugins/mousepad/windowsremoteinput.cpp`): sending real virtual-key codes for shortcuts so that
   Ctrl+C etc. work, with Unicode input as the text path; in PC Control the physical VK is resolved on the phone.
+---
+
+## Android Debug Bridge (adb), bundled in `tools/adb/`
+
+* **Files:** `tools/adb/adb.exe`, `tools/adb/AdbWinApi.dll`, `tools/adb/AdbWinUsbApi.dll` - unmodified binaries from
+  Android SDK Platform-Tools 37.0.1 (`tools/adb/source.properties`).
+* **Source:** [https://android.googlesource.com/platform/packages/modules/adb](https://android.googlesource.com/platform/packages/modules/adb),
+  [https://developer.android.com/tools/releases/platform-tools](https://developer.android.com/tools/releases/platform-tools)
+* **License:** Apache License 2.0 (adb and the Windows USB driver interface DLLs); the full notices of all components
+  shipped in Platform-Tools are in `tools/adb/NOTICE.txt`.
+* **Copyright:** Copyright (C) The Android Open Source Project
+* **Use in PC Control:** "USB cable" connection (`core/usb_link.py`). The server talks to the adb server over its
+  documented host protocol and runs the bundled `adb.exe` only to start an adb server when none is running; it creates
+  `adb reverse tcp:<server port> tcp:<server port>` for authorized phones so the app reaches the PC through the cable.

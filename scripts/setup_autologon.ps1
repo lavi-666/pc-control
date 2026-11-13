@@ -71,7 +71,10 @@ try {
     $shortcutPath = Join-Path $startupDir "PC_Control_Server.lnk"
     $vbsPath = Join-Path $ScriptsDir "start_silent.vbs"
     $targetPath = if (Test-Path -LiteralPath $PywExe) { $PywExe } else { "wscript.exe" }
-    $targetArgs = if (Test-Path -LiteralPath $PywExe) { "-E -s `"$(Join-Path $ScriptsDir 'watchdog.pyw')`"" } else { "`"$vbsPath`"" }
+    # QA L-3: the same path as start_server.bat (manage_server.py autostart: waits for the runtime and
+    # network, retries, then leaves the watchdog running) - the watchdog alone needed ~38 s and did not
+    # start the server at all when an old manual-stop flag was left over.
+    $targetArgs = if (Test-Path -LiteralPath $PywExe) { "-E -s `"$(Join-Path $ScriptsDir 'manage_server.py')`" autostart" } else { "`"$vbsPath`"" }
 
     if (Test-Path -LiteralPath $PyExe) {
         & $PyExe -E -s -m core.system_state capture-shortcut --id "shortcut.startup" --path "$shortcutPath" --target "$targetPath" --desc "Ярлык автозагрузки PC_Control_Server.lnk" 2>$null

@@ -390,7 +390,7 @@ final class PcUi {
     // ------------------------------------------------------------------ colour picker
     /** Palette for user-tinted elements: white, app red, PC-control sky, ok green, amber, violet, pink. */
     static final int[] TINTS = {0xFFFFFFFF, RED, PC_ACCENT, 0xFF2BA640, 0xFFFFB300, 0xFFA855F7, 0xFFFF4FA3};
-    static final String[] TINT_NAMES = {"Белый", "Красный", "Голубой", "Зелёный", "Янтарный", "Фиолетовый", "Розовый"};
+    static final String[] TINT_NAMES = {NativeScreenView.T("nsv_white", "Белый"), NativeScreenView.T("nsv_red", "Красный"), NativeScreenView.T("nsv_light_blue", "Голубой"), NativeScreenView.T("nsv_green", "Зелёный"), NativeScreenView.T("nsv_amber", "Янтарный"), NativeScreenView.T("nsv_purple", "Фиолетовый"), NativeScreenView.T("nsv_pink", "Розовый")};
 
     interface ColorListener {
         void onColor(int color);

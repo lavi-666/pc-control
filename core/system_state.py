@@ -68,6 +68,11 @@ def get_journal_paths(base_dir: Optional[Path] = None) -> List[Path]:
             sandbox / "localappdata" / "PCControl" / "system_state_journal.json",
         ]
 
+    if base_dir is None and os.environ.get("PC_CONTROL_DATA_DIR"):
+        # Изолированная папка данных (тесты): ни журнал проекта, ни общий журнал
+        # %LOCALAPPDATA%\PCControl других установок не трогаем (LOGS_DIR раньше не использовался)
+        return [LOGS_DIR / "system_state_journal.json"]
+
     paths = [root / "logs" / "system_state_journal.json"]
     local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
     if local_app_data:
@@ -99,11 +104,11 @@ def load_journal(base_dir: Optional[Path] = None) -> Tuple[Dict[str, Any], str]:
     """
     with _journal_lock:
         paths = get_journal_paths(base_dir)
+        root = (base_dir or BASE_DIR).resolve()
         found_any = False
-        for path in paths:
+        for i, path in enumerate(paths):
             if not path.is_file():
                 continue
-            found_any = True
             try:
                 raw = path.read_text(encoding="utf-8-sig")
                 data = json.loads(raw)
@@ -112,8 +117,16 @@ def load_journal(base_dir: Optional[Path] = None) -> Tuple[Dict[str, Any], str]:
                     and isinstance(data.get("entries"), dict)
                     and data.get("schema_version") == 1
                 ):
+                    # Копия в %LOCALAPPDATA%\PCControl общая для всех установок на ПК: чужой
+                    # журнал (другой папки) не используем — иначе изменения этой установки
+                    # записывались поверх журнала другой, и её деинсталлятор откатывал не то.
+                    if i > 0 and not _journal_belongs_to(data, root):
+                        continue
+                    found_any = True
                     return data, "ok"
+                found_any = True
             except Exception:
+                found_any = True
                 continue
 
         if found_any:
@@ -121,13 +134,36 @@ def load_journal(base_dir: Optional[Path] = None) -> Tuple[Dict[str, Any], str]:
         return _default_journal(base_dir), "missing"
 
 
+def _journal_belongs_to(data: Dict[str, Any], root: Path) -> bool:
+    try:
+        return Path(str(data.get("install_dir") or "")).resolve() == root.resolve() and bool(data.get("install_dir"))
+    except Exception:
+        return False
+
+
+def _foreign_live_journal(path: Path, root: Path) -> bool:
+    """Общая копия журнала принадлежит другой СУЩЕСТВУЮЩЕЙ установке — её не перезаписываем."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        other = str(data.get("install_dir") or "")
+        if not other or _journal_belongs_to(data, root):
+            return False
+        return (Path(other) / "server.py").is_file()
+    except Exception:
+        return False
+
+
 def save_journal(journal: Dict[str, Any], base_dir: Optional[Path] = None) -> bool:
     """Атомарно сохраняет журнал состояния во все настроенные пути."""
     with _journal_lock:
         journal["updated_at"] = _utc_now()
+        root = (base_dir or BASE_DIR).resolve()
+        journal.setdefault("install_dir", str(root))
         payload = json.dumps(journal, ensure_ascii=False, indent=2) + "\n"
         saved_any = False
-        for path in get_journal_paths(base_dir):
+        for i, path in enumerate(get_journal_paths(base_dir)):
+            if i > 0 and path.is_file() and _foreign_live_journal(path, root):
+                continue
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 tmp_path = path.with_suffix(".json.tmp")

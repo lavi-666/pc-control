@@ -71,9 +71,10 @@ On first start `Launcher.exe` opens the control panel and the **setup wizard**. 
 
 1. **Components** — checks the libraries and installs them if needed (progress is shown in the panel console).
 2. **Network** — detects the PC's local IP address.
-3. **Server** — starts the server and waits until it answers. If port 5000 is taken by another program or reserved by Windows, a free port is chosen and saved.
-4. **Windows Firewall** — explains why the rule is needed and creates it only after you agree (Windows asks for administrator confirmation). The rule only accepts connections from local-network and Tailscale addresses. The step counts as done only when the rule really exists.
+3. **Windows Firewall** — explains why the rule is needed and creates it only after you agree (Windows asks for administrator confirmation). It runs *before* the first server start, so Windows never shows its own "blocked some features" prompt (on a Public network that prompt silently creates a rule that **blocks** Wi-Fi connections). Such blocking rules left from earlier starts are detected and removed. The rules only accept connections from local-network and Tailscale addresses.
+4. **Server** — starts the server and waits until it answers. If port 5000 is taken by another program or reserved by Windows, a free port is chosen and saved.
 5. **Network access** — checks that the server answers on the PC's network address.
+6. **Android app** — builds `PC_Control.apk` for this PC (address, MAC and password built in) once everything else is set up. The first build downloads the Android SDK (~300 MB) into `%LOCALAPPDATA%\PCControl`; the full build log is saved to `logs\apk_build.log`. If the build fails, the universal APK from the archive still works.
 
 If a step fails, the wizard stops, shows the reason and a **Retry** button.
 Open the wizard again with the **Setup wizard** button in the **Setup & Readiness** section.
@@ -86,6 +87,10 @@ The phone and the PC must be in the same Wi-Fi network (or both connected to Tai
 
 - **In a browser.** Click **Connect phone · QR** in the panel and scan the QR code with the phone camera — the remote opens in the browser, no password to type.
 - **With the Android app.** Install [`PC_Control.apk`](https://github.com/lavi-666/pc-control/releases/latest/download/PC_Control.apk) (Android 7.0 or newer; the APK can also be downloaded via the QR code in the panel) and scan the same QR code in the app.
+
+### Music: YouTube Music extension
+
+The remote controls any player on the PC (Chrome, Spotify, AIMP, Windows Media Player…): pause, tracks, seeking, and the volume of that app only. For the YouTube Music queue (jump to any track, play next, remove, repeat) install the extension from the `chrome_extension` folder — see [`chrome_extension/README.md`](chrome_extension/README.md).
 
 ---
 
@@ -112,7 +117,7 @@ When the program files are updated, the panel restarts itself with the new code.
 - Passwords and keys are not written to logs.
 - The firewall rule only allows connections from local networks and Tailscale.
 - No accounts, analytics or telemetry: data goes directly between the phone and the PC.
-- An APK rebuilt with the Rebuild APK button or after a password change contains your password — don't publish it. Don't publish `config.json` either.
+- The APK built by the setup wizard (or the Rebuild APK button) contains your password — don't publish it. The server gives it out only with the password or with the one-time ticket from the QR code, never to just any device on the Wi-Fi. Don't publish `config.json` either.
 
 ---
 

@@ -1197,6 +1197,7 @@
   .toast-desc {
     font-size: 11.5px;
     color: var(--text-muted);
+    white-space: pre-line; /* QA L2-2: text (not HTML) — keep the line breaks of messages */
   }
   .toast-spin {
     animation: toastSpinAnim 0.85s linear infinite;
@@ -2010,8 +2011,24 @@
       </div>
 
       <button type="button" class="action-box" id="btnConnectPhone" onclick="openPhoneSetup(this)">
-        <div class="action-box-title" data-i18n="phone_title">Connect phone · QR</div>
-        <div class="action-box-desc" data-i18n="phone_intro">Scan, open the remote and download APK</div>
+        <div class="action-box-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="5" height="5" rx="1"></rect>
+            <rect x="16" y="3" width="5" height="5" rx="1"></rect>
+            <rect x="3" y="16" width="5" height="5" rx="1"></rect>
+            <path d="M21 16h-3a2 2 0 0 0-2 2v3"></path>
+            <path d="M21 21v.01"></path>
+            <path d="M12 7v3a2 2 0 0 1-2 2H7"></path>
+            <path d="M3 12h.01"></path>
+            <path d="M12 3h.01"></path>
+            <path d="M12 16v.01"></path>
+            <path d="M16 12h1"></path>
+            <path d="M21 12v.01"></path>
+            <path d="M12 21v-1"></path>
+          </svg>
+        </div>
+        <div class="action-box-title" id="txtActPhoneTitle" data-i18n="phone_title">Connect phone · QR</div>
+        <div class="action-box-desc" id="txtActPhoneDesc" data-i18n="phone_intro">Scan, open the remote and download APK</div>
       </button>
       <div class="action-box" onclick="location.href='/download/apk'">
         <div class="action-box-icon">
@@ -2076,7 +2093,7 @@
         <div class="action-box-desc" data-i18n="act_diag_desc">Save diagnostic report to logs/</div>
       </div>
 
-      <div class="action-box" onclick="handleLaunchUninstaller(this)">
+      <div class="action-box" id="actUninstallBox" onclick="handleLaunchUninstaller(this)">
         <div class="action-box-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
         </div>
@@ -2255,6 +2272,11 @@
     <p id="phoneAddress" style="overflow-wrap:anywhere;font-family:var(--font-mono);font-size:13px;text-align:center;color:#60a5fa;margin:4px 0;"></p>
     <p id="phoneFirewall" style="font-size:12px;color:var(--text-muted);line-height:1.45;"></p>
     <p data-i18n="phone_apk_note" style="font-size:12px;color:var(--text-muted);line-height:1.45;"></p>
+    <div id="phoneUsbBox" style="margin-top:8px;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,0.03);border:1px solid var(--border);">
+      <div data-i18n="phone_usb_title" style="font-size:13px;font-weight:600;margin-bottom:4px;">How to connect the phone by cable</div>
+      <p data-i18n="phone_usb_hint" style="font-size:12px;color:var(--text-muted);line-height:1.45;margin:0 0 6px;"></p>
+      <div id="phoneUsbDevices" style="font-size:12.5px;"></div>
+    </div>
     <div class="modal-actions" style="margin-top:10px;">
       <button type="button" class="btn btn-secondary" id="btnPhoneApplyFw" style="display:none;border-color:rgba(245,158,11,0.5);color:#fbbf24;" onclick="applyFirewallFromPhoneModal(this)" data-i18n="btn_apply_rule">Apply Firewall Rule</button>
       <button type="button" class="btn btn-secondary" onclick="closePhoneSetup()" data-i18n="btn_cancel">Close</button>
@@ -2887,10 +2909,11 @@
     wiz_deps_run: 'Installing libraries (progress is in the console below). This may take a few minutes…',
     wiz_deps_fail: 'Libraries could not be installed: {d}\nCheck the internet connection and press Retry. Details are in the console below.',
     wiz_deps_timeout: 'Installation takes too long (over 15 minutes). Check the console below and press Retry.',
+    wiz_deps_check_fail: 'The library check did not finish: {d}\nWindows may still be starting up. Wait a minute and press Retry.',
     wiz_net_ok: 'PC address in the local network: {ip}', wiz_net_fail: 'No active network adapter found. Connect the PC to Wi-Fi or Ethernet (the same network as the phone) and press Retry.',
     wiz_srv_ok: 'The server is running on port {port}.', wiz_srv_run: 'Starting the server…',
     wiz_srv_fail: 'The server did not start: {m}', wiz_srv_noresp: 'The server process started but does not answer on port {port}. See the console below and press Retry.',
-    wiz_fw_ok: 'Inbound rule for port {port} is present.',
+    wiz_fw_ok: 'Windows Firewall allows incoming connections to the server (port {port}).',
     wiz_fw_ask: 'For the phone to reach this PC, Windows Firewall must allow incoming connections to port {port} — only from local-network and Tailscale addresses. Windows will ask for administrator confirmation.',
     wiz_fw_run: 'Creating the firewall rule — confirm the Windows prompt if it appears…',
     wiz_fw_skipped: 'Skipped. The phone may be unable to connect over Wi-Fi until the rule is added (the «Apply rule» button in «Setup & Readiness»).',
@@ -2912,10 +2935,11 @@
     wiz_deps_run: 'Устанавливаются библиотеки (ход установки — в консоли ниже). Это может занять несколько минут…',
     wiz_deps_fail: 'Не удалось установить библиотеки: {d}\nПроверьте подключение к интернету и нажмите «Повторить». Подробности — в консоли ниже.',
     wiz_deps_timeout: 'Установка идёт слишком долго (более 15 минут). Проверьте консоль ниже и нажмите «Повторить».',
+    wiz_deps_check_fail: 'Проверка библиотек не завершилась: {d}\nВозможно, Windows ещё запускается. Подождите минуту и нажмите «Повторить».',
     wiz_net_ok: 'Адрес ПК в локальной сети: {ip}', wiz_net_fail: 'Не найден активный сетевой адаптер. Подключите ПК к Wi-Fi или Ethernet (к той же сети, что и телефон) и нажмите «Повторить».',
     wiz_srv_ok: 'Сервер работает на порту {port}.', wiz_srv_run: 'Запуск сервера…',
     wiz_srv_fail: 'Сервер не запустился: {m}', wiz_srv_noresp: 'Процесс сервера запущен, но не отвечает на порту {port}. Смотрите консоль ниже и нажмите «Повторить».',
-    wiz_fw_ok: 'Входящее правило для порта {port} есть.',
+    wiz_fw_ok: 'Брандмауэр Windows разрешает входящие подключения к серверу (порт {port}).',
     wiz_fw_ask: 'Чтобы телефон мог подключиться к ПК, брандмауэр Windows должен разрешить входящие подключения к порту {port} — только с адресов локальной сети и Tailscale. Windows запросит подтверждение администратора.',
     wiz_fw_run: 'Создаётся правило брандмауэра — подтвердите запрос Windows, если он появится…',
     wiz_fw_skipped: 'Пропущено. Пока правило не добавлено (кнопка «Применить правило» в разделе «Подготовка к работе»), телефон может не подключиться по Wi-Fi.',
@@ -2937,10 +2961,11 @@
     wiz_deps_run: 'Встановлюються бібліотеки (хід встановлення — у консолі нижче). Це може зайняти кілька хвилин…',
     wiz_deps_fail: 'Не вдалося встановити бібліотеки: {d}\nПеревірте підключення до інтернету й натисніть «Повторити». Подробиці — у консолі нижче.',
     wiz_deps_timeout: 'Встановлення триває надто довго (понад 15 хвилин). Перевірте консоль нижче й натисніть «Повторити».',
+    wiz_deps_check_fail: 'Перевірка бібліотек не завершилася: {d}\nМожливо, Windows ще запускається. Зачекайте хвилину й натисніть «Повторити».',
     wiz_net_ok: 'Адреса ПК у локальній мережі: {ip}', wiz_net_fail: 'Не знайдено активного мережевого адаптера. Підключіть ПК до Wi-Fi або Ethernet (до тієї ж мережі, що й телефон) і натисніть «Повторити».',
     wiz_srv_ok: 'Сервер працює на порту {port}.', wiz_srv_run: 'Запуск сервера…',
     wiz_srv_fail: 'Сервер не запустився: {m}', wiz_srv_noresp: 'Процес сервера запущено, але він не відповідає на порту {port}. Дивіться консоль нижче й натисніть «Повторити».',
-    wiz_fw_ok: 'Вхідне правило для порту {port} є.',
+    wiz_fw_ok: 'Брандмауер Windows дозволяє вхідні підключення до сервера (порт {port}).',
     wiz_fw_ask: 'Щоб телефон міг підключитися до ПК, брандмауер Windows має дозволити вхідні підключення до порту {port} — лише з адрес локальної мережі та Tailscale. Windows попросить підтвердження адміністратора.',
     wiz_fw_run: 'Створюється правило брандмауера — підтвердьте запит Windows, якщо він з’явиться…',
     wiz_fw_skipped: 'Пропущено. Поки правило не додано (кнопка «Застосувати правило» в розділі «Підготовка до роботи»), телефон може не підключитися через Wi-Fi.',
@@ -2952,7 +2977,50 @@
     wiz_conn_lost: 'Немає зв’язку з панеллю керування: {m}'
   });
 
-  const WIZ_STEPS = ['deps', 'net', 'srv', 'fw', 'lan'];
+  Object.assign(I18N.en, {
+    wiz_lan_fw_missing: 'The server works at {url}, but the Windows Firewall rule is missing — the phone will most likely NOT connect over Wi-Fi. Run the wizard again and allow the firewall step.',
+    wiz_lan_fw_block: 'The server works at {url}, but Windows has a rule that BLOCKS PC Control — the phone will not connect over Wi-Fi. Run the wizard again and allow the firewall step: the blocking rule will be removed.',
+  });
+  Object.assign(I18N.ru, {
+    wiz_lan_fw_missing: 'Сервер работает по адресу {url}, но правила брандмауэра Windows нет — телефон, скорее всего, НЕ подключится по Wi-Fi. Запустите мастер ещё раз и разрешите шаг брандмауэра.',
+    wiz_lan_fw_block: 'Сервер работает по адресу {url}, но в Windows есть правило, которое БЛОКИРУЕТ PC Control — телефон не подключится по Wi-Fi. Запустите мастер ещё раз и разрешите шаг брандмауэра: блокирующее правило будет удалено.',
+  });
+  Object.assign(I18N.uk, {
+    wiz_lan_fw_missing: 'Сервер працює за адресою {url}, але правила брандмауера Windows немає — телефон, найімовірніше, НЕ підключиться через Wi-Fi. Запустіть майстер ще раз і дозвольте крок брандмауера.',
+    wiz_lan_fw_block: 'Сервер працює за адресою {url}, але у Windows є правило, яке БЛОКУЄ PC Control — телефон не підключиться через Wi-Fi. Запустіть майстер ще раз і дозвольте крок брандмауера: блокувальне правило буде видалено.',
+  });
+  Object.assign(I18N.en, {
+    wiz_s_apk: 'Android app (APK)',
+    wiz_apk_run: 'Building the Android app for this PC (address, MAC and password are built in). The first build downloads the Android SDK (~300 MB), this takes a few minutes…',
+    wiz_apk_ok: 'PC_Control.apk is built for this PC — download it from the QR window on the phone.',
+    wiz_apk_same: 'PC_Control.apk is already built for the current address and password.',
+    wiz_apk_fail: 'The app could not be built: {m}\nThe universal APK still works (enter the address manually). Details: logs\\apk_build.log; "Rebuild APK" repeats the build.',
+    wiz_apk_na: 'The APK builder is not included in this package — the universal APK is used.',
+    wiz_fw_block: 'Windows has its own rule that BLOCKS PC Control ({apps}) — this is why the phone cannot connect over Wi-Fi. It will be removed and replaced with an allow rule (local network and Tailscale only).'
+  });
+  Object.assign(I18N.ru, {
+    wiz_s_apk: 'Приложение Android (APK)',
+    wiz_apk_run: 'Собирается приложение для этого ПК (адрес, MAC и пароль встроены). Первая сборка скачивает Android SDK (~300 МБ) — это займёт несколько минут…',
+    wiz_apk_ok: 'PC_Control.apk собран для этого ПК — скачайте его на телефон из окна с QR-кодом.',
+    wiz_apk_same: 'PC_Control.apk уже собран для текущего адреса и пароля.',
+    wiz_apk_fail: 'Не удалось собрать приложение: {m}\nУниверсальный APK работает (адрес вводится вручную). Подробности — logs\\apk_build.log; кнопка «Пересобрать APK» повторит сборку.',
+    wiz_apk_na: 'Сборщик APK не входит в этот пакет — используется универсальный APK.',
+    wiz_fw_block: 'В Windows есть собственное правило, которое БЛОКИРУЕТ PC Control ({apps}) — из-за него телефон не подключается по Wi-Fi. Оно будет удалено и заменено разрешающим (только локальная сеть и Tailscale).'
+  });
+  Object.assign(I18N.uk, {
+    wiz_s_apk: 'Застосунок Android (APK)',
+    wiz_apk_run: 'Збирається застосунок для цього ПК (адреса, MAC і пароль вбудовані). Перша збірка завантажує Android SDK (~300 МБ) — це займе кілька хвилин…',
+    wiz_apk_ok: 'PC_Control.apk зібрано для цього ПК — завантажте його на телефон з вікна з QR-кодом.',
+    wiz_apk_same: 'PC_Control.apk уже зібрано для поточної адреси й пароля.',
+    wiz_apk_fail: 'Не вдалося зібрати застосунок: {m}\nУніверсальний APK працює (адреса вводиться вручну). Подробиці — logs\\apk_build.log; кнопка «Перезібрати APK» повторить збірку.',
+    wiz_apk_na: 'Збирач APK не входить до цього пакета — використовується універсальний APK.',
+    wiz_fw_block: 'У Windows є власне правило, яке БЛОКУЄ PC Control ({apps}) — через нього телефон не підключається через Wi-Fi. Його буде видалено й замінено дозвільним (лише локальна мережа та Tailscale).'
+  });
+
+  // Брандмауэр — до первого запуска сервера: если разрешающее правило для программы уже есть,
+  // Windows не показывает своё окно «Брандмауэр заблокировал некоторые функции» и не создаёт
+  // блокирующее правило для общедоступной сети (из-за него телефон не подключался по Wi-Fi).
+  const WIZ_STEPS = ['deps', 'net', 'fw', 'srv', 'lan', 'apk'];
   let wizRunning = false;
   let wizAutoChecked = false;
   let wizStates = {};
@@ -3036,10 +3104,23 @@
     if (st.python_deps && st.python_deps.installed && !st.setup_in_progress) {
       wizSet('deps', 'ok', wzt('wiz_deps_ok')); return true;
     }
+    // Проверка не удалась (таймаут/сбой, например сразу после входа в Windows) — это не «нет библиотек»:
+    // не переустанавливаем, а ждём повторной проверки (фоновый статус повторяет её сам).
+    if (st.python_deps && st.python_deps.probe_failed && !st.setup_in_progress) {
+      wizSet('deps', 'run', wzt('wiz_wait'));
+      for (let i = 0; i < 30 && st.python_deps && st.python_deps.probe_failed; i++) {
+        await wizSleep(2000);
+        st = await wizStatus();
+      }
+      if (st.python_deps && st.python_deps.installed) { wizSet('deps', 'ok', wzt('wiz_deps_ok')); return true; }
+      if (st.python_deps && st.python_deps.probe_failed) {
+        wizSet('deps', 'fail', wzt('wiz_deps_check_fail', {d: st.python_deps.details || '?'})); return false;
+      }
+    }
     wizSet('deps', 'run', wzt('wiz_deps_run'));
     if (consoleCollapsed) toggleConsole();
     if (!st.setup_in_progress) {
-      const d = await wizAction('install_deps');
+      const d = await wizAction('install_deps', {start_server: false});
       // 409 = установка уже идёт (например, запущена автоматически при первом старте) — просто ждём её.
       if (!d.ok && d._http !== 409) { wizSet('deps', 'fail', wzt('wiz_deps_fail', {d: wizErrText(d)})); return false; }
     }
@@ -3075,9 +3156,11 @@
     if (st.server_running) { wizSet('srv', 'ok', wzt('wiz_srv_ok', {port: st.port})); return true; }
     wizSet('srv', 'run', wzt('wiz_srv_run'));
     const d = await wizAction('start_server');
-    if (!d.ok) { wizSet('srv', 'fail', wzt('wiz_srv_fail', {m: wizErrText(d)})); return false; }
+    // ERR_STARTUP_TIMEOUT: процесс сервера жив и ещё запускается (медленный старт) — ждём дольше, а не сдаёмся.
+    const slowStart = !d.ok && d.error_code === 'ERR_STARTUP_TIMEOUT';
+    if (!d.ok && !slowStart) { wizSet('srv', 'fail', wzt('wiz_srv_fail', {m: wizErrText(d)})); return false; }
     // Успех засчитываем только когда сервер действительно отвечает.
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < (slowStart ? 90 : 20); i++) {
       st = await wizStatus();
       if (st.server_running) break;
       await wizSleep(1000);
@@ -3092,9 +3175,11 @@
   async function wizStepFw() {
     let st = await wizStatus();
     if (st.firewall_configured) { wizSet('fw', 'ok', wzt('wiz_fw_ok', {port: st.port})); return true; }
+    const blocking = (st.firewall_blocking || []).map(p => String(p).split('\\').pop());
+    const askText = (blocking.length ? wzt('wiz_fw_block', {apps: blocking.join(', ')}) + '\n' : '') + wzt('wiz_fw_ask', {port: st.port});
     const allow = await new Promise(resolve => {
       wizFwChoice = resolve;
-      wizSet('fw', 'warn', wzt('wiz_fw_ask', {port: st.port}), {ask: true});
+      wizSet('fw', 'warn', askText, {ask: true});
     });
     if (!allow) { wizSet('fw', 'warn', wzt('wiz_fw_skipped')); return true; }
     wizSet('fw', 'run', wzt('wiz_fw_run'));
@@ -3109,9 +3194,40 @@
     wizSet('lan', 'run', wzt('wiz_wait'));
     const d = await wizAction('check_phone_connection');
     const url = `http://${d.lan_ip || '?'}:${d.port || '?'}`;
-    if (d.ok && d.lan_reachable) { wizSet('lan', 'ok', wzt('wiz_lan_ok', {url})); }
+    // Запрос к своему же IP идёт через loopback, брандмауэр он не проверяет — поэтому
+    // «OK» только если и сервер отвечает, и правило брандмауэра есть без блокирующих правил.
+    if (d.ok && d.lan_reachable && d.firewall_configured) { wizSet('lan', 'ok', wzt('wiz_lan_ok', {url})); }
+    else if (d.ok && d.lan_reachable) {
+      const blocked = (d.firewall_blocking || []).length > 0;
+      wizSet('lan', 'warn', wzt(blocked ? 'wiz_lan_fw_block' : 'wiz_lan_fw_missing', {url}));
+    }
     else { wizSet('lan', 'warn', wzt('wiz_lan_warn', {url})); }
     return true;  // предупреждение не блокирует: окончательная проверка — подключение телефона
+  }
+
+  // Последний шаг: персональный APK собирается, когда всё остальное уже настроено (IP, порт,
+  // пароль и MAC известны), — телефон подключается без ручного ввода адреса.
+  async function wizStepApk() {
+    let st = await wizStatus();
+    if (!st.apk_build_available) { wizSet('apk', 'warn', wzt('wiz_apk_na')); return true; }
+    if (st.apk_personalized) { wizSet('apk', 'ok', wzt('wiz_apk_same')); return true; }
+    wizSet('apk', 'run', wzt('wiz_apk_run'));
+    if (consoleCollapsed) toggleConsole();
+    const d = await wizAction('rebuild_apk', {background: true});
+    if (!d.ok && d._http !== 409) { wizSet('apk', 'warn', wzt('wiz_apk_fail', {m: wizErrText(d)})); return true; }
+    const deadline = Date.now() + 30 * 60 * 1000;
+    await wizSleep(1500);
+    let ab = {};
+    while (Date.now() < deadline) {
+      st = await wizStatus();
+      ab = st.apk_build || {};
+      if (ab.state !== 'running' && !(st.is_busy && /apk/i.test(st.busy_action || ''))) break;
+      wizSet('apk', 'run', wzt('wiz_apk_run') + (ab.message ? '\n' + ab.message : ''));
+      await wizSleep(2000);
+    }
+    if (ab.state === 'ok') { wizSet('apk', 'ok', wzt('wiz_apk_ok')); return true; }
+    wizSet('apk', 'warn', wzt('wiz_apk_fail', {m: ab.message || (d.message || '?')}));
+    return true;  // не блокирует: универсальный APK из архива тоже работает
   }
 
   async function runSetupWizard() {
@@ -3122,7 +3238,7 @@
     // Уже пройденные шаги перепроверяются заново: состояние могло измениться.
     wizStates = {};
     wizRender();
-    const fns = {deps: wizStepDeps, net: wizStepNet, srv: wizStepSrv, fw: wizStepFw, lan: wizStepLan};
+    const fns = {deps: wizStepDeps, net: wizStepNet, srv: wizStepSrv, fw: wizStepFw, lan: wizStepLan, apk: wizStepApk};
     let failed = false;
     for (const id of WIZ_STEPS) {
       let ok = false;
@@ -3219,7 +3335,60 @@
     await fetchStatus();
     await updatePhoneDiagnosticsUI();
   }
+  Object.assign(I18N.en, {
+    phone_usb_title:'How to connect the phone by cable',
+    phone_usb_hint:'Works without Wi-Fi and internet (even in airplane mode). Option 1 - USB debugging: turn on Developer options > USB debugging on the phone, plug in the cable and allow this PC; the server connects the app through the cable by itself. Option 2 - USB tethering: plug in the cable and turn on Settings > Hotspot & tethering > USB tethering. The app picks the cable automatically and shows "USB".',
+    phone_usb_none:'No phone connected by USB debugging.',
+    phone_usb_ready:'connected by cable',
+    phone_usb_unauthorized:'allow USB debugging on the phone screen',
+    phone_usb_waiting:'connecting...',
+    confirm_stop_server:'Stop the server? The phone loses the connection until the server is started again.',
+    confirm_clear_logs:'Clear the console log?',
+    weak_password_title:'Weak password',
+    weak_password_desc:'The access password is shorter than 8 characters. Set a longer one with "Change password" - the phone will ask for it once.'
+  });
+  Object.assign(I18N.ru, {
+    phone_usb_title:'Как подключить телефон кабелем',
+    phone_usb_hint:'Работает без Wi-Fi и интернета (даже в режиме полёта). Вариант 1 - отладка по USB: на телефоне включите «Для разработчиков» > «Отладка по USB», подключите кабель и разрешите этот ПК; сервер сам подключит приложение через кабель. Вариант 2 - USB-модем: подключите кабель и включите «Настройки» > «Точка доступа и модем» > «USB-модем». Приложение само выберет кабель и покажет «USB».',
+    phone_usb_none:'Нет телефонов, подключённых с отладкой по USB.',
+    phone_usb_ready:'подключён кабелем',
+    phone_usb_unauthorized:'разрешите отладку по USB на экране телефона',
+    phone_usb_waiting:'подключение...',
+    confirm_stop_server:'Остановить сервер? Телефон потеряет связь, пока сервер не будет запущен снова.',
+    confirm_clear_logs:'Очистить журнал консоли?',
+    weak_password_title:'Слабый пароль',
+    weak_password_desc:'Пароль доступа короче 8 символов. Задайте более длинный через «Сменить пароль» — телефон один раз попросит его ввести.'
+  });
+  Object.assign(I18N.uk, {
+    phone_usb_title:'Як підключити телефон кабелем',
+    phone_usb_hint:'Працює без Wi-Fi та інтернету (навіть у режимі польоту). Варіант 1 - налагодження через USB: на телефоні увімкніть «Для розробників» > «Налагодження через USB», під’єднайте кабель і дозвольте цей ПК; сервер сам підключить застосунок через кабель. Варіант 2 - USB-модем: під’єднайте кабель і увімкніть «Налаштування» > «Точка доступу та модем» > «USB-модем». Застосунок сам вибере кабель і покаже «USB».',
+    phone_usb_none:'Немає телефонів, підключених з налагодженням через USB.',
+    phone_usb_ready:'підключено кабелем',
+    phone_usb_unauthorized:'дозвольте налагодження через USB на екрані телефона',
+    phone_usb_waiting:'підключення...',
+    confirm_stop_server:'Зупинити сервер? Телефон втратить зв’язок, доки сервер не буде запущено знову.',
+    confirm_clear_logs:'Очистити журнал консолі?',
+    weak_password_title:'Слабкий пароль',
+    weak_password_desc:'Пароль доступу коротший за 8 символів. Задайте довший через «Змінити пароль» — телефон один раз попросить його ввести.'
+  });
+  function renderUsbDevices() {
+    const box = document.getElementById('phoneUsbDevices');
+    if (!box) return;
+    const dict = I18N[currentLang] || I18N.en;
+    const usb = (currentStatus && currentStatus.usb) || {};
+    const devs = Array.isArray(usb.devices) ? usb.devices : [];
+    if (!devs.length) {
+      box.innerHTML = `<span style="color:var(--text-muted)">${escapeHtml(dict.phone_usb_none || '')}</span>`;
+      return;
+    }
+    box.innerHTML = devs.map(d => {
+      const ok = !!d.ready;
+      const label = ok ? dict.phone_usb_ready : (d.state === 'unauthorized' ? dict.phone_usb_unauthorized : dict.phone_usb_waiting);
+      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:4px;"><span>🔌 ${escapeHtml(d.model || 'Android')}</span><span class="badge ${ok ? 'badge-ok' : 'badge-warn'}">${escapeHtml(label || '')}</span></div>`;
+    }).join('');
+  }
   async function updatePhoneDiagnosticsUI() {
+    renderUsbDevices();
     const diagBox = document.getElementById('phoneDiagnosticsBox');
     const fwBtn = document.getElementById('btnPhoneApplyFw');
     const adapterWrap = document.getElementById('phoneAdapterSelectWrap');
@@ -3282,7 +3451,10 @@
     } catch (e) {}
   }
   async function openPhoneSetup(button) {
-    button.disabled = true;
+    if (button) {
+      button.disabled = true;
+      button.classList.add('running');
+    }
     const dict = I18N[currentLang] || I18N.en;
     try {
       await fetchStatus();
@@ -3310,7 +3482,12 @@
       await updatePhoneDiagnosticsUI();
       document.getElementById('phoneModal').classList.add('open');
     } catch (error) { showToast(error.message, '', 'error', 7000); }
-    finally { button.disabled = false; }
+    finally {
+      if (button) {
+        button.disabled = false;
+        button.classList.remove('running');
+      }
+    }
   }
   Object.assign(I18N.en, {network_auto:'Auto IP / MAC / VPN', network_hint:'Auto detects and saves IP/MAC/VPN and keeps them updated. Editing IP/MAC/VPN switches to manual addresses. Stop the server before changing its port; reapply the firewall rule after changing ports.'});
   Object.assign(I18N.ru, {network_auto:'Авто IP / MAC / VPN', network_hint:'Авто определяет, сохраняет и обновляет IP/MAC/VPN. Правка IP/MAC/VPN включает ручные адреса. Перед сменой порта остановите сервер; после смены примените правило брандмауэра заново.'});
@@ -3527,13 +3704,12 @@
       }
     }
 
-    toast.innerHTML = `
-      <div style="flex-shrink:0; margin-top:2px;">${iconSvg}</div>
-      <div style="flex:1;">
-        <div class="toast-title">${title}</div>
-        ${desc ? `<div class="toast-desc">${desc}</div>` : ''}
-      </div>
-    `;
+    // QA L-12: title / desc are TEXT (server messages echo user input: innerHTML allowed injecting
+    // markup into the panel). Only the fixed icon SVG is markup.
+    toast.innerHTML = `<div style="flex-shrink:0; margin-top:2px;">${iconSvg}</div><div style="flex:1;"><div class="toast-title"></div><div class="toast-desc"></div></div>`;
+    toast.querySelector('.toast-title').textContent = title == null ? '' : String(title);
+    const descEl = toast.querySelector('.toast-desc');
+    if (desc) descEl.textContent = String(desc); else descEl.remove();
     container.appendChild(toast);
     requestAnimationFrame(() => toast.classList.add('show'));
 
@@ -3607,6 +3783,17 @@
         window.__panelBuild = data.panel_build;
       }
       currentStatus = data;
+      const phoneModalEl = document.getElementById('phoneModal');
+      if (phoneModalEl && phoneModalEl.classList.contains('open')) renderUsbDevices();
+      // QA L-7: no uninstall action in a development checkout (.git / Rust sources)
+      const uninstBox = document.getElementById('actUninstallBox');
+      if (uninstBox) uninstBox.style.display = data.dev_folder ? 'none' : '';
+      // QA L-13: an existing short password keeps working, but say once that it is weak
+      if (data.password_weak && !window._weakPwdWarned) {
+        window._weakPwdWarned = true;
+        const d = I18N[currentLang] || I18N.en;
+        showToast(d.weak_password_title || I18N.en.weak_password_title, d.weak_password_desc || I18N.en.weak_password_desc, 'warn', 9000);
+      }
 
       // Если в localStorage нет сохраненного языка, берем язык из конфигурации сервера
       let localLang = null;
@@ -3767,7 +3954,7 @@
         setTimeout(() => {
           if (setupBanner) setupBanner.style.display = 'none';
         }, 5000);
-      } else if (setupBanner.style.display !== 'none' && setupBanner.className === 'setup-banner' && data.python_deps && !data.python_deps.installed) {
+      } else if (setupBanner.style.display !== 'none' && setupBanner.className === 'setup-banner' && data.python_deps && !data.python_deps.installed && !data.python_deps.probe_failed) {
         setupBanner.className = 'setup-banner error';
         if (bannerIcon) bannerIcon.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
         bannerTitle.textContent = dict.status_deps_missing || 'Libraries missing';
@@ -3788,6 +3975,16 @@
     } else if (data.python_deps && data.python_deps.installed) {
       bDeps.className = 'badge badge-ok';
       bDeps.innerText = dict.status_installed;
+      bDeps.title = '';
+      if (btnStep1) {
+        btnStep1.classList.remove('running');
+        btnStep1.innerText = dict.btn_install || 'Install';
+      }
+    } else if (data.python_deps && data.python_deps.probe_failed) {
+      // Проверка не успела/упала — это не «нет библиотек»; панель повторит её сама.
+      bDeps.className = 'badge badge-warn';
+      bDeps.innerText = dict.status_deps_check_failed || 'Check failed';
+      bDeps.title = data.python_deps.details || '';
       if (btnStep1) {
         btnStep1.classList.remove('running');
         btnStep1.innerText = dict.btn_install || 'Install';
@@ -3795,6 +3992,7 @@
     } else {
       bDeps.className = 'badge badge-req';
       bDeps.innerText = dict.status_deps_missing;
+      bDeps.title = (data.python_deps && data.python_deps.details) || '';
       if (btnStep1) {
         btnStep1.classList.remove('running');
         btnStep1.innerText = dict.btn_install || 'Install';
@@ -3970,6 +4168,15 @@
       document.getElementById('btnToggleServer').disabled = true;
     }
     const dict = I18N[currentLang] || I18N.en;
+    // QA panel P-1 / P-2: stopping the server (the phone loses the connection) and clearing the
+    // console now ask first.
+    if ((action === 'stop_server' || action === 'clear_logs') && !payload.confirmed && !confirm(dict['confirm_' + action] || I18N.en['confirm_' + action])) {
+      if (lifecycleAction) {
+        lifecyclePending = false;
+        document.getElementById('btnToggleServer').disabled = false;
+      }
+      return {ok: false, message: 'cancelled'};
+    }
     if (!callerEl && window.event && window.event.currentTarget) {
       callerEl = window.event.currentTarget;
     }
@@ -4015,7 +4222,10 @@
       }
 
       if (!res.ok || data.ok === false) {
-        if (action !== 'check_updates' && action !== 'apply_update') {
+        if (data.error_code === 'ERR_STARTUP_TIMEOUT') {
+          // Сервер не остановлен и ещё запускается: это не ошибка, статус обновится сам.
+          showToast(data.error_title || dict.err_title_fallback, data.message || '', 'warn', 9000);
+        } else if (action !== 'check_updates' && action !== 'apply_update') {
           // Ошибка: показываем модальное окно с кодом ошибки и подробностями
           const errCode = data.error_code || `ERR_HTTP_${res.status}`;
           const errTitle = data.error_title || dict.err_title_fallback;
@@ -4475,7 +4685,7 @@
         }
         showToast(dict.toast_update_available || 'Project files have an update', res.commit_message || '', 'ok', 4000);
       } else {
-        showToast(dict.toast_up_to_date || 'You are currently using the latest version.', `(${res.current_commit || 'v2.0.1'})`, 'ok', 3500);
+        showToast(dict.toast_up_to_date || 'You are currently using the latest version.', res.current_commit ? `(${res.current_commit})` : '', 'ok', 3500); // QA L-18: no hard-coded old version
       }
     } else {
       const errMsg = (res && res.message) || dict.toast_update_error || 'Error checking updates. GitHub may be unreachable.';
@@ -4559,7 +4769,7 @@
       ub.classList.add('manual-open');
       ub.style.display = 'flex';
       const descEl = document.getElementById('updateBannerDesc');
-      if (descEl) descEl.textContent = 'v2.1.0 (Security & feature improvements)';
+      if (descEl) descEl.textContent = ''; // QA L-18: was a hard-coded 'v2.1.0' (the real text comes from the update check)
     }
   }
 

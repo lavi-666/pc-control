@@ -91,19 +91,102 @@ def auto_detect_network_params() -> dict:
         "mac_address": mac_address,
         "port": 5000,
         "relay_port": 5050,
-        "language": "ru",
-        "cors_allowed_origins": [
-            "http://localhost:*",
-            "http://127.0.0.1:*",
-            "http://pccontrol.local",
-            "http://192.168.*",
-            "http://172.*",
-            "http://100.*",
-            "http://10.*"
-        ]
+        "language": default_language(),
+        "cors_allowed_origins": list(DEFAULT_CORS_ORIGINS),
     }
 
-_config_lock = threading.RLock()
+
+# Единые значения по умолчанию для всех, кто создаёт config.json (панель, сервер, сборщик APK).
+# Раньше панель и core/config.py создавали его по-разному: язык из Windows или всегда «ru»,
+# разные списки CORS — итог зависел от того, кто первым дотронулся до файла.
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+    "http://pccontrol.local",
+    "http://192.168.*",
+    "http://172.*",
+    "http://100.*",
+    "http://10.*",
+    "https://localhost:*",
+    "https://127.0.0.1:*",
+)
+
+
+def default_language() -> str:
+    """Язык при первом запуске: язык интерфейса Windows, затем региональный формат."""
+    primary = {0x19: "ru", 0x22: "uk", 0x23: "ru", 0x3F: "ru"}  # ru, uk, be, kk
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        for lang_id in (k32.GetUserDefaultUILanguage(), k32.GetUserDefaultLangID()):
+            lang = primary.get(lang_id & 0x3FF)
+            if lang:
+                return lang
+    except Exception:
+        pass
+    return "en"
+
+
+class InterProcessRLock:
+    """Блокировка config.json между процессами панели и сервера (+ реентерабельная внутри процесса).
+    Раньше каждый процесс защищал «прочитать → изменить → записать» только своей блокировкой:
+    панель (синхронизация сети раз в 10 с) могла перезаписать только что сменённый сервером пароль."""
+
+    def __init__(self, lock_path: Path):
+        self._thread_lock = threading.RLock()
+        self._path = lock_path
+        self._depth = 0
+        self._fh = None
+
+    def __enter__(self):
+        self._thread_lock.acquire()
+        if self._depth == 0:
+            self._fh = None
+            try:
+                import msvcrt
+                fh = open(self._path, "a+b")
+                fh.seek(0)
+                for _ in range(500):  # до ~5 с
+                    try:
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                        self._fh = fh
+                        break
+                    except OSError:
+                        time.sleep(0.01)
+                if self._fh is None:
+                    fh.close()
+            except Exception:
+                self._fh = None
+        self._depth += 1
+        return self
+
+    def __exit__(self, *exc):
+        self._depth -= 1
+        if self._depth == 0 and self._fh is not None:
+            try:
+                import msvcrt
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            except Exception:
+                pass
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+        self._thread_lock.release()
+        return False
+
+    def acquire(self):
+        self.__enter__()
+        return True
+
+    def release(self):
+        self.__exit__(None, None, None)
+
+
+CONFIG_LOCK = InterProcessRLock(LOGS_DIR / "config.lock")
+_config_lock = CONFIG_LOCK
 _cached_config: dict | None = None
 _cached_config_mtime: int = -1
 
@@ -195,10 +278,21 @@ def get_auth_token() -> str:
     return ""
 
 
+def _load_for_update() -> dict | None:
+    """Config to modify and save back, or None when config.json exists but could not be read (QA A-11:
+    an empty read used to be saved back with one section — every other setting and the password lost)."""
+    cfg = load_app_config()
+    if not cfg and CONFIG_FILE.exists():
+        return None
+    return cfg
+
+
 def update_config_section(key: str, values: dict) -> bool:
     """Merge a section against the latest disk configuration under our write lock."""
     with _config_lock:
-        cfg = load_app_config()
+        cfg = _load_for_update()
+        if cfg is None:
+            return False
         cfg[key] = dict(values)
         return save_app_config(cfg)
 
@@ -208,9 +302,12 @@ def update_auth_token(new_token: str) -> bool:
     new_token = str(new_token).strip()
     if not new_token:
         return False
-    cfg = load_app_config() or {}
-    cfg["token"] = new_token
-    ok = save_app_config(cfg)
+    with _config_lock:
+        cfg = _load_for_update()
+        if cfg is None:
+            return False
+        cfg["token"] = new_token
+        ok = save_app_config(cfg)
     if ok:
         AUTH_TOKEN = new_token
         if "PC_REMOTE_TOKEN" in os.environ:
@@ -222,21 +319,17 @@ def get_cors_allowed_origins() -> list[str]:
     origins = cfg.get("cors_allowed_origins")
     if isinstance(origins, list):
         return [str(o).strip() for o in origins if str(o).strip()]
-    return [
-        "http://localhost:*",
-        "http://127.0.0.1:*",
-        "http://pccontrol.local",
-        "http://192.168.*",
-        "http://172.*",
-        "http://100.*",
-        "http://10.*"
-    ]
+    return list(DEFAULT_CORS_ORIGINS)
 
 def update_cors_origins(origins: list[str]) -> bool:
-    cfg = load_app_config() or {}
-    cleaned = [str(o).strip() for o in origins if str(o).strip()]
-    cfg["cors_allowed_origins"] = cleaned
-    return save_app_config(cfg)
+    with _config_lock:
+        cfg = _load_for_update()
+        if cfg is None:
+            return False
+        # Только строки: раньше числа/null/объекты сохранялись как "1", "None", "{'a': 1}"
+        cleaned = [o.strip() for o in origins if isinstance(o, str) and o.strip()]
+        cfg["cors_allowed_origins"] = cleaned
+        return save_app_config(cfg)
 
 AUTH_TOKEN = get_auth_token()
 

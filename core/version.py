@@ -16,11 +16,11 @@ def get_version_info() -> dict:
             return json.loads(VERSION_FILE.read_text(encoding="utf-8"))
         except Exception:
             pass
-    return {"version": "2.4.0", "version_tuple": [2, 4, 0, 0], "name": "PC Control"}
+    return {"version": "2.4.4", "version_tuple": [2, 4, 4, 0], "name": "PC Control"}
 
 
 def get_version() -> str:
-    return str(get_version_info().get("version", "2.4.0"))
+    return str(get_version_info().get("version", "2.4.4"))
 
 
 __version__ = get_version()

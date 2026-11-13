@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -20,7 +21,7 @@ PACKAGE = 'PC_Control_Windows.zip'
 PENDING = '.pccontrol-update.pending'
 REPOSITORY = 'https://github.com/lavi-666/pc-control'
 API = 'https://api.github.com/repos/lavi-666/pc-control/releases/latest'
-DIRECTORIES = {'core', 'modules', 'scripts', 'web', 'tools', 'runtime', 'docs'}
+DIRECTORIES = {'core', 'modules', 'scripts', 'web', 'tools', 'runtime', 'docs', 'chrome_extension'}
 ROOT_FILES = {'Launcher.exe', 'Uninstall.exe', 'unstaller.exe', 'version.json', 'PC_Control.apk', 'pc_control.ico', 'server.py', 'open_app.pyw',
               'requirements.txt', 'requirements-runtime.lock', 'runtime-source.json', 'config.example.json',
               'README.md', 'README.ru.md', 'LICENSE', 'launcher.bat', 'start_server.bat',
@@ -203,6 +204,20 @@ def _check(base):
         changed, removed, old = compare(base, remote['manifest'])
         local = local_build(base)
         remote_date = _parse_iso(remote['date'])
+        remote_rev = remote['manifest'].get('revision') or ''
+        # QA L2-7: identical build (same build_id in the installed release-manifest.json) = nothing to do,
+        # also for test builds marked "-dirty"
+        if (old.get('build_id') and old.get('build_id') == remote['manifest'].get('build_id')
+                and not changed and not removed):
+            return {'ok': True, 'has_update': False, 'same_build': True, 'changed_count': 0, 'removed_count': 0,
+                    'changed_files': [], 'removed_files': [], 'current_version': str(old.get('revision', ''))[:12],
+                    'current_commit': str(old.get('revision', ''))[:12], 'latest_commit': remote_rev[:12],
+                    'commit_message': remote['title'], 'commit_date': remote['date'],
+                    'release_url': REPOSITORY + '/releases/latest',
+                    'message': 'Установлена последняя версия. Обновление не требуется.'}
+        if local and local['commit'].endswith('-dirty') and local['commit'][:-len('-dirty')] == remote_rev:
+            # a test build of the released commit: the clean release is the content to install
+            local = dict(local, date='1970-01-01T00:00:00+00:00')
         if local and local['commit'] == remote['manifest'].get('revision'):
             # Тот же коммит, что и в релизе: код одинаковый. Различаются только файлы, которых нет
             # в релизе (папка разработки, личный APK) — «обновление» удалило бы их.
@@ -463,9 +478,38 @@ def launch_and_verify(base, plan):
     subprocess.run([str(base / 'runtime/python.exe'), '-I', '-c', 'import flask, PIL, psutil, aiortc, winsdk.windows.media.control'], cwd=base, timeout=45, check=True, creationflags=NO_WINDOW)
     if plan['restart_server']:
         request = urllib.request.Request(f"http://127.0.0.1:{plan['port']}/api/action", data=b'{"action":"start_server"}', headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(request, timeout=90) as response:
-            if not json.load(response).get('ok'):
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                result = json.load(response)
+        except urllib.error.HTTPError as error:
+            try:
+                result = json.load(error)
+            except Exception:
+                result = {}
+        if not result.get('ok'):
+            # QA L-10: the panel gives up after 20 s, but a cold start right after an update (antivirus
+            # scanning the new files) can take longer — that rolled good updates back. A still-starting
+            # server gets up to 2 minutes in total.
+            if result.get('error_code') != 'ERR_STARTUP_TIMEOUT' or not wait_server_status(base, 100):
                 raise RuntimeError('Updated server failed to start')
+
+
+def wait_server_status(base, timeout):
+    try:
+        port = int(json.loads((base / 'config.json').read_text(encoding='utf-8-sig')).get('port', 5000))
+    except Exception:
+        port = 5000
+    identity = hashlib.sha256(str(base).lower().rstrip('\\/').encode()).hexdigest()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            data = json.loads(fetch(f"http://127.0.0.1:{port}/status"))
+            if data.get('status') == 'online' and data.get('instance') == identity:
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
 
 
 def worker(job, recover=False):

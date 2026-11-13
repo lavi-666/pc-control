@@ -262,7 +262,8 @@ async function toggleMic(){
         txt.innerText = t('btn_mic');
         micOn = false;
       };
-      audio.src = resolveApiUrl('/audio?t=' + Date.now() + '&token=' + encodeURIComponent(getToken()));
+      // mic=1: без него запасной поток отдавал звук ПК (loopback) вместо микрофона
+      audio.src = resolveApiUrl('/audio?mic=1&t=' + Date.now() + '&token=' + encodeURIComponent(getToken()));
       audio.play().catch(() => {});
       btn.classList.add('active-pill');
       txt.innerText = t('btn_mic_on');

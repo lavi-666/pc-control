@@ -87,13 +87,12 @@ def detect_language(req=None) -> str:
             lang_param = (r.args.get("lang") or "").strip().lower()
             if lang_param in ("ru", "en", "uk"):
                 return lang_param
+            # QA T-1: the app / web UI send their UI language first ("uk", "en-US,en;q=0.9" ...)
             accept = (r.headers.get("Accept-Language") or "").lower()
-            if "uk" in accept:
-                return "uk"
-            if "ru" in accept:
-                return "ru"
-            if "en" in accept:
-                return "en"
+            for part in accept.split(","):
+                tag = part.split(";")[0].strip()[:2]
+                if tag in ("uk", "ru", "en"):
+                    return tag
         except Exception:
             pass
     try:
@@ -125,7 +124,11 @@ LOCKOUT_LAN_DURATION = 30   # длительность блокировки ло
 # Tailscale CGNAT подсеть (100.64.0.0/10)
 TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
 
+LOCKOUT_MAX_DURATION = 3600  # cap of the growing lockout (s)
+MIN_PASSWORD_LEN = 8         # new passwords (QA A-8 / L-13); existing shorter ones keep working
+
 _failed_attempts: dict[str, list[float]] = {}   # ip -> [timestamps неудач]
+_lockout_strikes: dict[str, int] = {}           # ip -> lockouts so far (reset by a correct password)
 _locked_until: dict[str, float] = {}            # ip -> unix timestamp разблокировки
 _lock_guard = threading.Lock()
 
@@ -212,8 +215,14 @@ def register_failure(ip: str):
         attempts.append(now)
         _failed_attempts[ip] = attempts
         if len(attempts) >= max_att:
+            # QA A-8: every further lockout of the same address doubles (30 s → 1 min → … → 1 h), and
+            # the attempt counter starts again — before, ~40 000 guesses a day were possible from LAN.
+            strikes = _lockout_strikes.get(ip, 0)
+            duration = min(LOCKOUT_MAX_DURATION, duration * (2 ** strikes))
+            _lockout_strikes[ip] = strikes + 1
+            _failed_attempts[ip] = []
             _locked_until[ip] = now + duration
-            log_action("token_lockout", {"ip": ip, "duration": duration})
+            log_action("token_lockout", {"ip": ip, "duration": duration, "strike": strikes + 1})
     _save_persisted_lockouts()
 
 
@@ -225,11 +234,13 @@ def clear_lockout(ip: str | None = None):
                 _locked_until.pop(ip, None)
                 changed = True
             _failed_attempts.pop(ip, None)
+            _lockout_strikes.pop(ip, None)
         else:
             if _locked_until:
                 changed = True
             _locked_until.clear()
             _failed_attempts.clear()
+            _lockout_strikes.clear()
     if changed:
         _save_persisted_lockouts()
 
@@ -299,7 +310,9 @@ def check_token(allow_stream_query: bool = False) -> bool:
         clear_lockout(ip)
         return True
 
-    if not safe_test:
+    # QA A-9: test mode no longer switches the brute-force protection off for everyone — only for
+    # this PC itself (the test harness).
+    if not (safe_test and ip in ("127.0.0.1", "::1", "localhost")):
         register_failure(ip)
 
     return False
@@ -326,6 +339,16 @@ def create_pairing_ticket(ttl: int = PAIRING_TICKET_TTL) -> str:
             "used": False,
         }
         return ticket
+
+
+def is_valid_pairing_ticket(ticket: str) -> bool:
+    """Билет действителен (не истёк и не погашен) — без погашения. Нужен для скачивания APK по
+    QR-коду: браузер телефона только скачивает файл и не может обменять билет на cookie."""
+    if not ticket or not isinstance(ticket, str):
+        return False
+    with _pairing_lock:
+        data = _pairing_tickets.get(ticket)
+        return bool(data) and not data.get("used") and data.get("expires_at", 0) > time.time()
 
 
 def redeem_pairing_ticket(ticket: str) -> str | None:

@@ -581,6 +581,10 @@ def kill_process():
             "message": f"Отказано в доступе при попытке завершить процесс PID {pid}. Требуются права администратора."
         }), 403
     except Exception as e:
+        if is_safe_test_mode() or request.headers.get("X-Safe-Mode") == "1":
+            # Раньше сбой psutil в тестовом режиме вёл к НАСТОЯЩЕМУ taskkill /F
+            log_action("kill_process", {"pid": pid, "simulated": True})
+            return jsonify({"ok": True, "message": f"[SAFE_MODE] Завершение процесса {pid} сымитировано"})
         # Резервный вызов taskkill
         result = subprocess.run(
             ["taskkill", "/PID", str(pid), "/F"],

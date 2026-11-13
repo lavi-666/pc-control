@@ -7,8 +7,6 @@ Updates the shared configuration; clients accept the password in their settings.
 
 import json
 import os
-import re
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,10 +22,10 @@ except Exception:
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_FILE = BASE_DIR / "config.json"
-WEB_HTML = BASE_DIR / "web" / "index.html"
-APP_HTML = BASE_DIR / "android_app" / "assets" / "index.html"
+# Пароль хранится только в config.json: веб-пульт и Android-приложение (assets/pc_defaults.json,
+# создаётся build_apk.py) его не содержат (кроме сборки с --embed-token), поэтому менять файлы
+# клиентов и пересобирать APK при смене пароля не нужно.
 SERVER_PY = BASE_DIR / "server.py"
-BUILD_APK_SCRIPT = BASE_DIR / "scripts" / "build_apk.py"
 
 
 def get_current_token() -> str:
@@ -50,23 +48,6 @@ def save_token_to_config(token: str):
         raise ValueError("Password cannot be empty")
 
 
-def update_token_in_file(file_path: Path, token: str):
-    """В целях безопасности пароли хранятся исключительно в защищённом config.json
-    и НИКОГДА не зашиваются в HTML-файлы или бинарные APK."""
-    if not file_path.exists():
-        return
-    try:
-        content = file_path.read_text(encoding="utf-8")
-        content = re.sub(
-            r"const DEFAULT_APP_TOKEN = ['\"][^'\"]*['\"];",
-            "const DEFAULT_APP_TOKEN = '';",
-            content
-        )
-        file_path.write_text(content, encoding="utf-8")
-    except Exception as e:
-        print(f"[!] Error updating {file_path.name}: {e}")
-
-
 def restart_server():
     """Softly restarts the server.py process so that changes take effect."""
     try:
@@ -79,27 +60,14 @@ def restart_server():
     print(message)
 
 
-def rebuild_apk():
-    if not BUILD_APK_SCRIPT.exists():
-        return
-    print("[*] Rebuilding PC_Control.apk with new password...")
-    try:
-        res = subprocess.run([sys.executable, str(BUILD_APK_SCRIPT)], capture_output=True, text=True, timeout=30)
-        if res.returncode == 0:
-            print("[OK] Mobile app PC_Control.apk rebuilt and signed successfully!")
-        else:
-            print(f"[!] Warning during APK build: {res.stderr.strip()[:200]}")
-    except Exception as e:
-        print(f"[!] Skipping APK build: {e}")
-
-
 def main():
     print("=" * 68)
     print("               PC CONTROL - SERVER PASSWORD SETUP                 ")
     print("=" * 68)
 
     current_tok = get_current_token()
-    print(f"  Current server password: [ {current_tok} ]")
+    # QA L-13: the current password is not printed (screen sharing / console logs)
+    print(f"  Current server password: {'set (' + str(len(current_tok)) + ' characters)' if current_tok else 'not set'}")
     print("-" * 68)
 
     new_token = ""
@@ -107,7 +75,7 @@ def main():
         new_token = sys.argv[1].strip()
     else:
         try:
-            prompt_text = f"Enter new password (press Enter to keep '{current_tok}'): "
+            prompt_text = "Enter new password (at least 8 characters; press Enter to keep the current one): "
             entered = input(prompt_text).strip()
             if entered:
                 new_token = entered
@@ -120,6 +88,11 @@ def main():
     if not new_token:
         import secrets
         new_token = secrets.token_hex(8)
+    if new_token != current_tok and len(new_token) < 8:
+        print("[ERROR] The password must be at least 8 characters long. Nothing was changed.")
+        sys.exit(2)  # QA L2-5: scripts / the panel see the refusal
+    if len(sys.argv) > 1:
+        print("[!] Note: a password given on the command line stays in the shell history.")
 
     print(f"\n[*] Setting password: {new_token}")
 

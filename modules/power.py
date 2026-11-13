@@ -20,6 +20,7 @@ _shutdown_lock = threading.Lock()
 _shutdown_cancel = threading.Event()
 _shutdown_deadline = None  # unix timestamp срабатывания таймера
 _shutdown_gen = 0
+POWER_DELAY_SEC = 5  # shutdown / reboot grace period (QA P-1 / U-20)
 
 
 def do_shutdown_now():
@@ -28,7 +29,9 @@ def do_shutdown_now():
         return
     system = platform.system()
     if system == "Windows":
-        subprocess.run(["shutdown", "/s", "/f", "/t", "0"], check=False, creationflags=NO_WINDOW)
+        # /t 5 without /f: open apps can still save / ask the user (no forced data loss), and a mistaken
+        # tap can still be undone on the PC with "shutdown /a".
+        subprocess.run(["shutdown", "/s", "/t", str(POWER_DELAY_SEC)], check=False, creationflags=NO_WINDOW)
     elif system == "Darwin":
         subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'], check=False)
     else:
@@ -136,7 +139,7 @@ def action():
 
         elif act == "reboot":
             if system == "Windows":
-                subprocess.run(["shutdown", "/r", "/f", "/t", "0"], check=False, creationflags=NO_WINDOW)
+                subprocess.run(["shutdown", "/r", "/t", str(POWER_DELAY_SEC)], check=False, creationflags=NO_WINDOW)
             elif system == "Darwin":
                 subprocess.run(["osascript", "-e", 'tell app "System Events" to restart'], check=False)
             else:

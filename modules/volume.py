@@ -55,6 +55,43 @@ def _volume_interface():
     return interface.QueryInterface(IAudioEndpointVolume)
 
 
+# HRESULT «аудиоустройство недоступно»: устройство вывода отключено/сломано/переключается
+# (ERROR_GEN_FAILURE «A device attached to the system is not functioning», AUDCLNT_E_DEVICE_INVALIDATED,
+# E_NOTFOUND — нет устройства вывода по умолчанию). Раньше каждый запрос /volume давал 500 и полную
+# трассировку в logs/error_log.txt (телефон опрашивает громкость постоянно — журнал засорялся).
+_DEVICE_UNAVAILABLE_HRESULTS = {
+    -2147024865,  # 0x8007001F ERROR_GEN_FAILURE
+    -2004287484,  # 0x88890004 AUDCLNT_E_DEVICE_INVALIDATED
+    -2147023728,  # 0x80070490 E_NOTFOUND
+}
+DEVICE_UNAVAILABLE_MSG = "Аудиоустройство Windows недоступно (отключено или не работает)"
+_LOG_THROTTLE_SEC = 300.0
+_last_device_log = {}
+
+
+def is_audio_device_unavailable(e: BaseException) -> bool:
+    code = getattr(e, "hresult", None)
+    if code is None and getattr(e, "args", None):
+        code = e.args[0]
+    if isinstance(code, int):
+        if code > 0x7FFFFFFF:
+            code -= 1 << 32
+        return code in _DEVICE_UNAVAILABLE_HRESULTS
+    return False
+
+
+def _volume_error_response(where: str, e: Exception):
+    """Ответ на ошибку громкости: недоступное устройство — 503 без трассировки (раз в 5 мин в журнал)."""
+    if is_audio_device_unavailable(e):
+        now = time.monotonic()
+        if now - _last_device_log.get(where, -_LOG_THROTTLE_SEC) >= _LOG_THROTTLE_SEC:
+            _last_device_log[where] = now
+            log_error(where, e)
+        return jsonify({"message": DEVICE_UNAVAILABLE_MSG, "device_unavailable": True}), 503
+    log_error(where, e)
+    return jsonify({"message": f"Ошибка: {e}"}), 500
+
+
 def _with_volume_retry(fn):
     with _vol_retry_lock:
         try:
@@ -93,8 +130,7 @@ def get_volume_route():
         percent, is_muted = _get_cached_volume()
         return jsonify({"percent": percent, "muted": is_muted})
     except Exception as e:
-        log_error("get_volume", e)
-        return jsonify({"message": f"Ошибка: {e}"}), 500
+        return _volume_error_response("get_volume", e)
 
 
 @volume_bp.route("/volume", methods=["POST"])
@@ -123,8 +159,7 @@ def set_volume_route():
         log_action("set_volume", {"percent": percent})
         return jsonify({"message": f"Громкость: {percent}%"})
     except Exception as e:
-        log_error("set_volume", e)
-        return jsonify({"message": f"Ошибка: {e}"}), 500
+        return _volume_error_response("set_volume", e)
 
 
 @volume_bp.route("/mute", methods=["POST"])
@@ -144,8 +179,7 @@ def mute():
         log_action("mute" if state else "unmute")
         return jsonify({"message": "Звук выключен" if state else "Звук включён"})
     except Exception as e:
-        log_error("mute", e)
-        return jsonify({"message": f"Ошибка: {e}"}), 500
+        return _volume_error_response("mute", e)
 
 
 @volume_bp.route("/app_volumes")
@@ -174,8 +208,7 @@ def app_volumes():
         result.sort(key=lambda p: p["name"].lower())
         return jsonify(result)
     except Exception as e:
-        log_error("app_volumes", e)
-        return jsonify({"message": f"Ошибка: {e}"}), 500
+        return _volume_error_response("app_volumes", e)
 
 
 @volume_bp.route("/app_volume", methods=["POST"])
@@ -211,8 +244,7 @@ def set_app_volume():
                 return jsonify({"message": f"{s.Process.name()}: {percent}%"})
         return jsonify({"message": "Приложение не найдено среди аудио-сессий"}), 404
     except Exception as e:
-        log_error("set_app_volume", e)
-        return jsonify({"message": f"Ошибка: {e}"}), 500
+        return _volume_error_response("set_app_volume", e)
 
 
 @volume_bp.route("/app_volume/mute", methods=["POST"])
@@ -239,5 +271,4 @@ def mute_app_volume():
                 return jsonify({"message": f"{s.Process.name()}: {'выключен' if state else 'включён'}"})
         return jsonify({"message": "Приложение не найдено среди аудио-сессий"}), 404
     except Exception as e:
-        log_error("mute_app_volume", e)
-        return jsonify({"message": f"Ошибка: {e}"}), 500
+        return _volume_error_response("mute_app_volume", e)

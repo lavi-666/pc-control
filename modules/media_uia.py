@@ -263,6 +263,8 @@ def _read_ytm_live_dom(force: bool = False, current_idx: int = 0) -> dict:
             cache_req.AddProperty(30005)  # Name
             cache_req.AddProperty(30011)  # AutomationId
             cache_req.AddProperty(30012)  # ClassName
+            cache_req.AddProperty(30047)  # RangeValue.Value   (ползунок позиции, новая панель)
+            cache_req.AddProperty(30050)  # RangeValue.Maximum
 
             all_els = target_doc.FindAllBuildCache(4, uia.CreateTrueCondition(), cache_req)
             n = all_els.Length
@@ -357,7 +359,68 @@ def _read_ytm_live_dom(force: bool = False, current_idx: int = 0) -> dict:
                     i = j
                     continue
 
-                # Панель управления ytmusic-player-bar
+                # Новая панель плеера YouTube Music (2026, «Cairo»): у кнопок больше нет классов
+                # ytmusic-player-bar — раньше из-за этого не читались название, статус и позиция,
+                # а кнопки повтора/перемешивания не находились.
+                if cls.startswith("ytMusicMiniPlayerProgressBar"):
+                    try:
+                        mx = float(sub.GetCachedPropertyValue(30050) or 0)
+                        val = float(sub.GetCachedPropertyValue(30047) or 0)
+                        if mx > 0:
+                            player_bar["duration"] = mx
+                            player_bar["position"] = max(0.0, min(val, mx))
+                            m, s_ = divmod(int(mx), 60)
+                            player_bar["duration_str"] = f"{m}:{s_:02d}"
+                    except Exception:
+                        pass
+                    i += 1
+                    continue
+
+                if cls.startswith("ytmusicTrackInfoHost"):
+                    texts = []
+                    j = i + 1
+                    while j < n and j <= i + 5:
+                        s2 = all_els.GetElement(j)
+                        c2 = s2.CachedClassName or ""
+                        if c2.startswith("ytmusicPlayerControlsHost") or c2.startswith("ytMusicMiniPlayer"):
+                            break
+                        t2 = (s2.CachedName or "").strip()
+                        if t2 and s2.CachedControlType in (50020, 50000, 50005):
+                            texts.append(t2)
+                        j += 1
+                    if texts:
+                        player_bar["title"] = texts[0]
+                        rest = [t for t in texts[1:] if not t.startswith(("•", "·"))]
+                        if rest:
+                            player_bar["artist"] = rest[0]
+                        for t in texts[1:]:
+                            if t.startswith(("•", "·")):
+                                parts = [p.strip() for p in t.replace("·", "•").split("•") if p.strip()]
+                                album = [p for p in parts if not any(k in p.lower() for k in ("view", "like", "просмотр", "перегляд", "нрав", "подоба"))
+                                         and not p[:1].isdigit()]
+                                if album:
+                                    player_bar["album"] = album[0]
+                    i = j
+                    continue
+
+                if cls.startswith("ytmusicPlayerControlsHost"):
+                    # Кнопки по порядку: перемешать, назад, play/pause, вперёд, повтор (подписи зависят от языка)
+                    btn_names = []
+                    j = i + 1
+                    while j < n and len(btn_names) < 5:
+                        s2 = all_els.GetElement(j)
+                        if s2.CachedControlType == 50000:
+                            btn_names.append((s2.CachedName or "").strip())
+                        j += 1
+                    if len(btn_names) == 5:
+                        pp = btn_names[2]
+                        player_bar["status"] = "playing" if pp.startswith(("Pause", "Пауза", "Призупинити")) else "paused"
+                        player_bar["repeat_label"] = btn_names[4]
+                        player_bar["repeat_state"] = ytm_repeat_state_from_label(btn_names[4])
+                    i = j
+                    continue
+
+                # Панель управления ytmusic-player-bar (прежняя разметка)
                 if "play-pause-button" in cls and "ytmusic-player-bar" in cls and nm:
                     if nm.startswith(("Pause", "Пауза", "Призупинити")):
                         player_bar["status"] = "playing"
@@ -378,6 +441,11 @@ def _read_ytm_live_dom(force: bool = False, current_idx: int = 0) -> dict:
                                     player_bar["duration"] = _parse_dur_to_seconds(parts[1])
                                     player_bar["duration_str"] = parts[1]
                                 break
+
+                elif cls.startswith("repeat ") and "ytmusic-player-bar" in cls and nm:
+                    # Текущее состояние повтора в самом YouTube Music (мог поменять пользователь на ПК)
+                    player_bar["repeat_label"] = nm
+                    player_bar["repeat_state"] = ytm_repeat_state_from_label(nm)
 
                 elif "byline" in cls and "ytmusic-player-bar" in cls and nm:
                     sep = "•" if "•" in nm else ("·" if "·" in nm else None)
@@ -484,18 +552,21 @@ def _uia_invoke_ytm_player_bar_button(action: str) -> bool:
         import comtypes
         import comtypes.client
         UIA, uia = _get_uia()
+        key = {"play": "play", "pause": "play", "playpause": "play", "play_pause": "play",
+               "next": "next", "prev": "previous", "previous": "previous"}[action]
         try:
             for hwnd in hwnds[:2]:
                 root = uia.ElementFromHandle(hwnd)
-                el = root.FindFirst(4, uia.CreatePropertyCondition(30012, target_cls))
+                el = _ytm_control_buttons(uia, root).get(key)
+                if el is None:
+                    el = root.FindFirst(4, uia.CreatePropertyCondition(30012, target_cls))
                 if el:
                     nm = (el.CurrentName or "").strip()
                     if action == "play" and nm.startswith(("Pause", "Пауза", "Призупинити")):
                         return True
                     if action == "pause" and nm.startswith(("Play", "Воспроизвести", "Відтворити")):
                         return True
-                    btn = el.FindFirst(4, uia.CreatePropertyCondition(30003, 50000)) or el
-                    btn.GetCurrentPattern(10000).QueryInterface(UIA.IUIAutomationInvokePattern).Invoke()
+                    _invoke_element(UIA, uia, el)
                     return True
         finally:
             pass  # COM и объект UIA живут весь срок потока (см. _get_uia)
@@ -503,6 +574,151 @@ def _uia_invoke_ytm_player_bar_button(action: str) -> bool:
         pass
     return False
 
+
+
+def ytm_repeat_state_from_label(label: str) -> str | None:
+    """Состояние кнопки повтора YouTube Music по её подписи (title / aria-label):
+    'off' | 'all' | 'one' или None, если подпись не распознана (другой язык интерфейса)."""
+    n = (label or "").strip().lower()
+    if not n:
+        return None
+    if any(k in n for k in (" all", "все", "всі", "усі", "alle", "todo", "tout", "wszystk")):
+        return "all"
+    if any(k in n for k in (" one", "один", "одн", "одного", "одну", " eins", " uno", " un ", "jeden", "jedn")):
+        return "one"
+    if any(k in n for k in (" off", "выкл", "откл", "вимк", "не повтор", " aus", "desactiv", "désactiv", "wyłącz")):
+        return "off"
+    return None
+
+
+_CONTROL_ORDER = ("shuffle", "previous", "play", "next", "repeat")
+
+
+def _ytm_control_buttons(uia, root) -> dict:
+    """Кнопки плеера YouTube Music: {'shuffle','previous','play','next','repeat'} → элемент UIA.
+    Новая панель (ytmusicPlayerControlsHost) — по порядку кнопок, т.к. подписи зависят от языка;
+    прежняя панель (ytmusic-player-bar) — по CSS-классу."""
+    try:
+        host = root.FindFirst(4, uia.CreatePropertyCondition(30012, "ytmusicPlayerControlsHost"))
+        if host:
+            btns = host.FindAll(4, uia.CreatePropertyCondition(30003, 50000))
+            if btns.Length >= 5:
+                return {name: btns.GetElement(k) for k, name in enumerate(_CONTROL_ORDER)}
+    except Exception:
+        pass
+    legacy = {}
+    try:
+        found = _ytm_player_bar_elements(uia, root, ("shuffle", "previous-button", "play-pause-button", "next-button", "repeat"))
+        for old, new in (("shuffle", "shuffle"), ("previous-button", "previous"), ("play-pause-button", "play"),
+                         ("next-button", "next"), ("repeat", "repeat")):
+            if old in found:
+                legacy[new] = found[old]
+    except Exception:
+        pass
+    return legacy
+
+
+def _ytm_player_bar_elements(uia, doc, names: tuple) -> dict:
+    """Кнопки панели ytmusic-player-bar по первому CSS-классу (repeat / shuffle …)."""
+    req = uia.CreateCacheRequest()
+    for p in (30003, 30005, 30012):
+        req.AddProperty(p)
+    found: dict = {}
+    els = doc.FindAllBuildCache(4, uia.CreateTrueCondition(), req)
+    for i in range(els.Length):
+        el = els.GetElement(i)
+        cls = el.CachedClassName or ""
+        if "ytmusic-player-bar" not in cls:
+            continue
+        first = cls.split()[0] if cls.split() else ""
+        if first in names and first not in found:
+            found[first] = el
+    return found
+
+
+def _ytm_document(uia, hwnds):
+    for hwnd in hwnds[:3]:
+        try:
+            _wake_chrome_a11y(hwnd, force=False)
+            root = uia.ElementFromHandle(hwnd)
+            docs = root.FindAll(4, uia.CreatePropertyCondition(30003, 50030))
+            for d_i in range(docs.Length):
+                d = docs.GetElement(d_i)
+                d_name = d.CurrentName or ""
+                d_val = str(d.GetCurrentPropertyValue(30045) or "")
+                if "youtube music" in d_name.lower() or "music.youtube.com" in d_val.lower():
+                    return d
+        except Exception:
+            continue
+    return None
+
+
+def _invoke_element(UIA, uia, el) -> None:
+    """Нажимает кнопку. Кнопки новой панели YouTube Music («Повтор», «Перемешать») —
+    переключатели: шаблона Invoke у них нет, только Toggle / LegacyIAccessible."""
+    btn = el
+    try:
+        if el.CurrentControlType != 50000:
+            btn = el.FindFirst(4, uia.CreatePropertyCondition(30003, 50000)) or el
+    except Exception:
+        btn = el
+    if btn.GetCurrentPropertyValue(30031):      # IsInvokePatternAvailable
+        btn.GetCurrentPattern(10000).QueryInterface(UIA.IUIAutomationInvokePattern).Invoke()
+    elif btn.GetCurrentPropertyValue(30041):    # IsTogglePatternAvailable
+        btn.GetCurrentPattern(10015).QueryInterface(UIA.IUIAutomationTogglePattern).Toggle()
+    else:
+        btn.GetCurrentPattern(10018).QueryInterface(UIA.IUIAutomationLegacyIAccessiblePattern).DoDefaultAction()
+
+
+def uia_ytm_set_mode(mode: str) -> tuple[bool, str]:
+    """Включает режим прямо в YouTube Music (кнопки панели плеера), без эмуляции сервером.
+    repeat  → «Повторять один трек» (кнопка повтора по кругу off → all → one);
+    shuffle → кнопка «Перемешать» (YouTube Music перемешивает очередь, дальше она играет по порядку);
+    normal  → повтор выключен.
+    Возвращает (успех, описание). Если кнопки не найдены или подпись не распознана — (False, причина),
+    и вызывающий код переходит к эмуляции."""
+    if is_safe_test_mode():
+        return True, "safe-test"
+    try:
+        _attach_input_desktop()
+        hwnds = _find_ytm_chrome_hwnds()
+        if not hwnds:
+            return False, "YouTube Music не открыт"
+        UIA, uia = _get_uia()
+        doc = _ytm_document(uia, hwnds)
+        if doc is None:
+            return False, "вкладка YouTube Music не найдена"
+        btns = _ytm_control_buttons(uia, doc)
+        rep = btns.get("repeat")
+        want_repeat = "one" if mode == "repeat" else "off"
+        if mode == "shuffle":
+            shuf = btns.get("shuffle")
+            if shuf is None:
+                return False, "кнопка «Перемешать» не найдена"
+            _invoke_element(UIA, uia, shuf)
+            invalidate_dom_cache()
+            want_repeat = None  # повтор не трогаем: перемешанная очередь играет как обычно
+        if want_repeat is not None:
+            if rep is None:
+                return False, "кнопка повтора не найдена"
+            state = ytm_repeat_state_from_label(rep.CurrentName or "")
+            if state is None:
+                return False, f"подпись кнопки повтора не распознана: {rep.CurrentName!r}"
+            for _ in range(3):
+                if state == want_repeat:
+                    break
+                _invoke_element(UIA, uia, rep)
+                time.sleep(0.35)
+                rep = _ytm_control_buttons(uia, doc).get("repeat") or rep
+                state = ytm_repeat_state_from_label(rep.CurrentName or "")
+                if state is None:
+                    return False, "подпись кнопки повтора не распознана после нажатия"
+            if state != want_repeat:
+                return False, "YouTube Music не переключил повтор"
+        invalidate_dom_cache()
+        return True, "youtube-music"
+    except Exception as e:
+        return False, f"UIA: {e}"
 
 
 def _uia_invoke_ytm_queue_play(target_idx: int | None, target_title: str = "") -> bool:

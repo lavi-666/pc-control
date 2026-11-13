@@ -46,7 +46,17 @@ def _maybe_rotate_locked(kind: str, path, max_bytes: int):
 
 
 def log_action(name: str, extra: dict | None = None):
-    entry = {"ts": int(time.time()), "action": name}
+    now = time.time()
+    entry = {"ts": int(now), "ts_ms": int(now * 1000), "action": name}
+    # Measurements (QA): which phone request caused it — X-Request-Id of the current request
+    try:
+        from flask import has_request_context, request
+        if has_request_context():
+            rid = request.headers.get("X-Request-Id")
+            if rid:
+                entry["rid"] = str(rid)[:64]
+    except Exception:
+        pass
     if extra:
         entry.update(extra)
     try:

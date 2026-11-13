@@ -38,7 +38,9 @@ public class BackgroundAudioService extends Service {
         }
 
         startBackground();
-        return START_STICKY;
+        // QA A-12: no sticky restart — after the process dies there is no stream to keep alive, the
+        // restarted service only held wake / Wi-Fi locks and its notification.
+        return START_NOT_STICKY;
     }
 
     private void createNotificationChannel() {

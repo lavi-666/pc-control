@@ -52,11 +52,17 @@ LOGS_DIR.mkdir(exist_ok=True)
 CONTROL_PORT = int(os.environ.get("PC_CONTROL_PANEL_PORT", "5055"))
 if not 1 <= CONTROL_PORT <= 65535:
     raise ValueError("Invalid PC_CONTROL_PANEL_PORT")
-_settings_lock = threading.RLock()
+# Общая с сервером блокировка config.json (между процессами) — см. core/config.py
+from core.config import CONFIG_LOCK as _settings_lock  # noqa: E402
 
 
 def save_config_data(cfg):
     """Replace the config atomically; a failed write never reports success."""
+    with _settings_lock:
+        _save_config_data(cfg)
+
+
+def _save_config_data(cfg):
     import tempfile
     temp_path = None
     try:
@@ -197,15 +203,28 @@ def _idle_watchdog():
     time.sleep(30)
     while True:
         time.sleep(5)
+        # Пока идёт фоновая задача (установка библиотек, сборка APK — до 30 мин) или запуск/остановка
+        # сервера, не выходим: раньше закрытое окно панели обрывало такую задачу на середине.
+        if _is_busy or not _lifecycle_idle():
+            record_activity()
+            continue
         if (time.time() - _last_activity_time) > 300.0:
             os._exit(0)
+
+
+def _lifecycle_idle() -> bool:
+    """Никакой поток сейчас не запускает/не останавливает сервер."""
+    if _lifecycle_lock.acquire(blocking=False):
+        _lifecycle_lock.release()
+        return True
+    return False
 
 def _code_fingerprint() -> str:
     """Отпечаток кода панели (время изменения и размер файлов).
     Launcher.exe при уже запущенной панели только открывает её окно, поэтому после обновления или
     исправления старый процесс продолжал бы работать со старым кодом."""
     files = [BASE_DIR / "scripts" / "control_panel.py", BASE_DIR / "web" / "control_panel.html"]
-    for folder in (BASE_DIR / "core", BASE_DIR / "scripts"):
+    for folder in (BASE_DIR / "core", BASE_DIR / "core" / "launcher", BASE_DIR / "scripts"):
         try:
             files.extend(sorted(folder.glob("*.py")))
         except OSError:
@@ -234,7 +253,8 @@ def _self_restart_watcher():
         if _is_busy or _self_restart_blocked or _code_fingerprint() == PANEL_BUILD:
             continue
         time.sleep(2)  # даём дописать все файлы (обновление копирует их по одному)
-        if _is_busy or _self_restart_blocked:
+        # Не перезапускаемся посреди запуска/остановки сервера: ответ кнопке «Запустить» потерялся бы.
+        if _is_busy or _self_restart_blocked or not _lifecycle_idle():
             continue
         try:
             args = [a for a in sys.argv[1:] if a not in ("--no-browser", "--replace", "--check-update")]
@@ -266,274 +286,37 @@ def instance_id():
 
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
 
-_cached_ts = None
-_cached_ts_time = 0.0
-
-def find_tailscale_binaries() -> dict:
-    """Всесторонний поиск установленных компонентов Tailscale в системе (PATH, реестр, папки, ярлыки)."""
-    gui_path = None
-    cli_path = None
-    shortcut_path = None
-
-    # 1. Поиск в системной переменной PATH
-    w_gui = shutil.which("tailscale-ipn.exe") or shutil.which("tailscale-ipn")
-    if w_gui and Path(w_gui).is_file():
-        gui_path = Path(w_gui)
-    w_cli = shutil.which("tailscale.exe") or shutil.which("tailscale")
-    if w_cli and Path(w_cli).is_file():
-        cli_path = Path(w_cli)
-
-    # 2. Поиск в системном реестре Windows
-    reg_dirs = []
-    if winreg is not None and platform.system() == "Windows":
-        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-            for subkey in (
-                r"SOFTWARE\Tailscale IPN",
-                r"SOFTWARE\WOW6432Node\Tailscale IPN",
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\tailscale-ipn.exe",
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\tailscale.exe",
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Tailscale",
-            ):
-                try:
-                    with winreg.OpenKey(root, subkey) as k:
-                        for val_name in ("", "InstallDir", "InstallLocation", "DisplayIcon"):
-                            try:
-                                val, _ = winreg.QueryValueEx(k, val_name)
-                                if val and isinstance(val, str):
-                                    p = Path(val.strip('"'))
-                                    if p.is_file():
-                                        reg_dirs.append(p.parent)
-                                        if p.name.lower() == "tailscale-ipn.exe" and not gui_path:
-                                            gui_path = p
-                                        elif p.name.lower() == "tailscale.exe" and not cli_path:
-                                            cli_path = p
-                                    elif p.is_dir():
-                                        reg_dirs.append(p)
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-
-    # 3. Стандартные каталоги установки Windows
-    candidate_dirs = list(reg_dirs)
-    for env_key in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA", "ProgramData"):
-        val = os.environ.get(env_key)
-        if val:
-            candidate_dirs.append(Path(val) / "Tailscale")
-            candidate_dirs.append(Path(val) / "Programs" / "Tailscale")
-    candidate_dirs.extend([
-        Path(r"C:\Program Files\Tailscale"),
-        Path(r"C:\Program Files (x86)\Tailscale")
-    ])
-
-    for d in candidate_dirs:
-        if not gui_path and (d / "tailscale-ipn.exe").is_file():
-            gui_path = d / "tailscale-ipn.exe"
-        if not cli_path and (d / "tailscale.exe").is_file():
-            cli_path = d / "tailscale.exe"
-
-    # 4. Ярлыки в меню «Пуск»
-    shortcut_candidates = [
-        Path(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Tailscale.lnk"),
-    ]
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        shortcut_candidates.append(Path(appdata) / r"Microsoft\Windows\Start Menu\Programs\Tailscale.lnk")
-    for sc in shortcut_candidates:
-        if sc.is_file():
-            shortcut_path = sc
-            break
-
-    return {
-        "gui": gui_path,
-        "cli": cli_path,
-        "shortcut": shortcut_path,
-        "installed": bool(gui_path or cli_path or shortcut_path)
-    }
-
-
-def get_desktop_window_layout() -> dict:
-    """Рассчитывает адаптивные координаты и размеры окон для комфортной работы бок о бок.
-
-    1. Главное окно (PC Control Launcher) — всегда фиксируется на левой стороне экрана.
-    2. Окно удалённого управления (Remote Control Panel) — открывается СПРАВА от PC Control,
-       не распахнуто, оптимальной ширины для комфортной работы со всеми функциями.
-    3. Окно Tailscale — открывается СПРАВА от PC Control в компактном нормальном окне (не Maximized),
-       где видны все элементы управления и статус.
-    """
-    import ctypes
-    work_x, work_y, work_w, work_h = 0, 0, 1920, 1040
-    try:
-        class RECT(ctypes.Structure):
-            _fields_ = [
-                ("left", ctypes.c_long),
-                ("top", ctypes.c_long),
-                ("right", ctypes.c_long),
-                ("bottom", ctypes.c_long)
-            ]
-        rect = RECT()
-        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
-            work_x = rect.left
-            work_y = rect.top
-            work_w = rect.right - rect.left
-            work_h = rect.bottom - rect.top
-    except Exception:
-        pass
-
-    margin = 16
-    gap = 16
-
-    # 1. Лаунчер PC Control (слева)
-    if work_w >= 1800:
-        launcher_w = 900
-    elif work_w >= 1400:
-        launcher_w = min(880, int((work_w - margin * 2 - gap) * 0.49))
-    else:
-        launcher_w = min(work_w - 32, max(600, int((work_w - margin * 2 - gap) * 0.5)))
-
-    launcher_h = min(980, max(650, work_h - margin * 2))
-    launcher_x = work_x + margin
-    launcher_y = work_y + margin
-
-    # 2. Правая позиция (ровно справа от PC Control)
-    right_x = launcher_x + launcher_w + gap
-    available_right_w = max(480, (work_x + work_w) - right_x - margin)
-
-    # 3. Окно удалённого управления (Remote Control Panel) справа
-    remote_w = min(980, max(600, available_right_w))
-    remote_h = launcher_h
-    remote_x = right_x
-    remote_y = launcher_y
-
-    # 4. Окно Tailscale (компактное окно справа от PC Control)
-    tailscale_w = min(600, max(480, int(available_right_w * 0.72)))
-    tailscale_h = min(820, max(580, work_h - margin * 2))
-    tailscale_x = right_x
-    tailscale_y = launcher_y
-
-    return {
-        "launcher": {"x": launcher_x, "y": launcher_y, "w": launcher_w, "h": launcher_h},
-        "remote": {"x": remote_x, "y": remote_y, "w": remote_w, "h": remote_h},
-        "tailscale": {"x": tailscale_x, "y": tailscale_y, "w": tailscale_w, "h": tailscale_h},
-    }
-
-
-def enforce_window_geometry_async(title_keywords: list[str], x: int, y: int, w: int, h: int, timeout_sec: float = 4.0):
-    """Фоновый поток Win32 отслеживает появление окна приложения, снимает режим Maximized
-    (развернуто на весь экран) и точно выставляет позицию и размеры, исключая случайные сдвиги."""
-    def _worker():
-        import ctypes
-        import time
-        user32 = ctypes.windll.user32
-        SW_RESTORE = 9
-        SWP_NOZORDER = 0x0004
-        SWP_SHOWWINDOW = 0x0040
-
-        start = time.time()
-        while time.time() - start < timeout_sec:
-            time.sleep(0.18)
-            matched_hwnds = []
-
-            def _enum_cb(hwnd, lparam):
-                if user32.IsWindowVisible(hwnd):
-                    length = user32.GetWindowTextLengthW(hwnd)
-                    if length > 0:
-                        buf = ctypes.create_unicode_buffer(length + 1)
-                        user32.GetWindowTextW(hwnd, buf, length + 1)
-                        val = buf.value.lower()
-                        if any(k.lower() in val for k in title_keywords):
-                            matched_hwnds.append(hwnd)
-                return True
-
-            WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-            try:
-                user32.EnumWindows(WNDENUMPROC(_enum_cb), 0)
-            except Exception:
-                pass
-
-            if matched_hwnds:
-                for hwnd in matched_hwnds:
-                    try:
-                        if user32.IsZoomed(hwnd):
-                            user32.ShowWindow(hwnd, SW_RESTORE)
-                        user32.SetWindowPos(hwnd, 0, int(x), int(y), int(w), int(h), SWP_NOZORDER | SWP_SHOWWINDOW)
-                    except Exception:
-                        pass
-                break
-
-    threading.Thread(target=_worker, daemon=True).start()
-
-
-def check_tailscale_web_accessible(url: str, timeout: float = 0.6) -> bool:
-    """Проверка доступности локального веб-клиента Tailscale по указанному URL."""
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "PC-Control-Launcher"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
+# Логика панели по областям — core/launcher/ (здесь остаются тонкие обёртки с прежними именами).
+from core.launcher import firewall as _fw  # noqa: E402
+from core.launcher import tailscale as _ts  # noqa: E402
+from core.launcher import deps as _deps  # noqa: E402
+from core.launcher.apk import ApkBuilder  # noqa: E402
+from core.launcher.deps import REQUIRED_PACKAGES  # noqa: E402,F401
+from core.launcher.elevation import run_elevated_command, run_elevated_and_wait  # noqa: E402
+from core.launcher.firewall import (  # noqa: E402,F401
+    firewall_rule_matches, firewall_rule_allows_runtime, firewall_rule_blocks_own_program,
+)
+from core.launcher.status import BackgroundStatus  # noqa: E402
+from core.launcher.tailscale import find_tailscale_binaries  # noqa: E402
+from core.launcher.windows_signin import (  # noqa: E402
+    get_windows_hello_status, set_windows_hello_state, launch_netplwiz, open_signin_settings,
+)
+from core.launcher.windows_ui import (  # noqa: E402
+    get_desktop_window_layout, enforce_window_geometry_async, check_tailscale_web_accessible,
+)
+from core.launcher import windows_ui as _ui  # noqa: E402
 
 
 def launch_tailscale_app_window(target_url: str = "http://100.100.100.100") -> bool:
-    """Запуск приложения Tailscale в компактном нормальном окне справа от PC Control."""
-    layout = get_desktop_window_layout()["tailscale"]
-    edge_anti_translate = [
-        "--disable-features=Translate,msEdgeTranslate,TranslateUI,AutofillServerCommunication",
-        "--disable-translate",
-        "--no-first-run",
-        "--disable-save-password-bubble",
-    ]
-    window_flags = [
-        f"--window-position={layout['x']},{layout['y']}",
-        f"--window-size={layout['w']},{layout['h']}",
-    ]
-    edge_paths = [
-        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
-        Path(os.environ.get("LocalAppData", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
-    ]
-    for edge_path in edge_paths:
-        if edge_path.is_file():
-            try:
-                cmd = [
-                    str(edge_path),
-                    f"--app={target_url}",
-                ] + window_flags + edge_anti_translate
-                subprocess.Popen(cmd)
-                enforce_window_geometry_async(["tailscale", "100.100.100.100"], layout['x'], layout['y'], layout['w'], layout['h'])
-                append_log("Tailscale application opened in compact window on the right side.")
-                return True
-            except Exception as e:
-                append_log(f"Failed to launch Edge app window for Tailscale: {e}")
+    return _ui.launch_tailscale_app_window(target_url, log=append_log)
 
-    chrome_paths = [
-        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Google" / "Chrome" / "Application" / "chrome.exe",
-        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Google" / "Chrome" / "Application" / "chrome.exe",
-        Path(os.environ.get("LocalAppData", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
-    ]
-    for cp in chrome_paths:
-        if cp.is_file():
-            try:
-                subprocess.Popen([
-                    str(cp),
-                    f"--app={target_url}",
-                ] + window_flags + edge_anti_translate)
-                enforce_window_geometry_async(["tailscale", "100.100.100.100"], layout['x'], layout['y'], layout['w'], layout['h'])
-                append_log("Tailscale application opened in compact Chrome window on the right side.")
-                return True
-            except Exception as e:
-                append_log(f"Failed to launch Chrome app window for Tailscale: {e}")
 
-    try:
-        webbrowser.open(target_url)
-        append_log("Tailscale interface opened in default browser.")
-        return True
-    except Exception as e:
-        append_log(f"Failed to open Tailscale interface in browser: {e}")
-        return False
+_cached_ts = None
+_cached_ts_time = 0.0
 
 
 def get_tailscale_info() -> dict:
+    """Состояние Tailscale (кэш 5 с). Поиск и опрос — core/launcher/tailscale.py."""
     global _cached_ts, _cached_ts_time
     now = time.time()
     if _cached_ts is not None and (now - _cached_ts_time < 5.0):
@@ -543,56 +326,14 @@ def get_tailscale_info() -> dict:
     ts_cli = bins.get("cli")
     ts_gui = bins.get("gui")
     installer_exists = (BASE_DIR / "tailscale-setup-1.102.4.exe").exists() or bool(list(BASE_DIR.glob("tailscale-setup*.exe")))
-
-    ip = ""
-    account = ""
-    device_name = ""
-    magic_dns = ""
-    peers = []
-    backend_state = "Stopped"
-
-    # Расширенный опрос параметров через tailscale.exe status --json
-    if ts_cli and ts_cli.is_file():
-        try:
-            res = subprocess.run(
-                [str(ts_cli), "status", "--json"],
-                capture_output=True,
-                text=True,
-                timeout=1.2,
-                creationflags=0x08000000 if os.name == "nt" else 0
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                data = json.loads(res.stdout)
-                backend_state = data.get("BackendState", "Running" if ip else "Stopped")
-                self_node = data.get("Self") or {}
-                device_name = self_node.get("HostName", "")
-                magic_dns = self_node.get("DNSName", "").rstrip(".")
-                ts_ips = data.get("TailscaleIPs") or self_node.get("TailscaleIPs") or []
-                if ts_ips:
-                    ip = next((v for v in ts_ips if ':' not in v), '')
-                users = data.get("User") or {}
-                if users:
-                    first_user = users.get(str(self_node.get("UserID", "")), {})
-                    account = first_user.get("LoginName") or first_user.get("DisplayName", "")
-                raw_peers = data.get("Peer") or {}
-                for p in raw_peers.values():
-                    p_ips = p.get("TailscaleIPs") or []
-                    peers.append({
-                        "name": p.get("HostName") or "Unknown Device",
-                        "ip": p_ips[0] if p_ips else "",
-                        "online": bool(p.get("Online")),
-                        "os": p.get("OS", "")
-                    })
-        except Exception:
-            pass
-
-    is_running = backend_state == "Running" and bool(ip)
-    is_installed = bool((ts_cli and ts_cli.is_file()) or (ts_gui and ts_gui.is_file()) or is_running or bins.get("installed"))
-
+    st = _ts.read_status(ts_cli)
+    ip = st["ip"]
+    is_running = st["backend_state"] == "Running" and bool(ip)
+    is_installed = bool((ts_cli and Path(ts_cli).is_file()) or (ts_gui and Path(ts_gui).is_file()) or is_running or bins.get("installed"))
     if not is_installed:
         details = "Tailscale is not installed"
     elif is_running:
-        details = f"Connected ({ip})" if ip else "Running"
+        details = f"Connected ({ip})"
     else:
         details = "Installed, but not running"
 
@@ -602,11 +343,11 @@ def get_tailscale_info() -> dict:
         "ip": ip,
         "installer_exists": installer_exists,
         "details": details,
-        "account": account,
-        "device_name": device_name,
-        "magic_dns": magic_dns,
-        "peers": peers,
-        "backend_state": backend_state,
+        "account": st["account"],
+        "device_name": st["device_name"],
+        "magic_dns": st["magic_dns"],
+        "peers": st["peers"],
+        "backend_state": st["backend_state"],
         "gui_path": str(ts_gui) if ts_gui else "",
         "cli_path": str(ts_cli) if ts_cli else ""
     }
@@ -614,7 +355,7 @@ def get_tailscale_info() -> dict:
     return _cached_ts
 
 
-def is_server_running(port: int | None = None) -> bool:
+def is_server_running(port: int | None = None, timeout: float = 0.45) -> bool:
     if port is None:
         try:
             if CONFIG_FILE.exists():
@@ -626,7 +367,7 @@ def is_server_running(port: int | None = None) -> bool:
             port = 5000
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/status", headers={"User-Agent": "PC-Control-Launcher"})
-        with urllib.request.urlopen(req, timeout=0.45) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status == 200:
                 body = json.load(resp)
                 return body.get("status") == "online" and body.get("instance") == instance_id()
@@ -635,131 +376,103 @@ def is_server_running(port: int | None = None) -> bool:
     return False
 
 
+def is_dev_folder(base: Path | None = None) -> bool:
+    """QA L-7: a development checkout (.git / Rust sources) — the uninstaller refuses to run there."""
+    root = base or BASE_DIR
+    return ((root / ".git").exists() or (root / "Cargo.toml").is_file()
+            or (root / "streamer_rs" / "Cargo.toml").is_file() or (root / "media_helper_rs" / "Cargo.toml").is_file())
+
+
+def _usb_status(server_up: bool, port: int) -> dict:
+    """Phones connected by cable: written by the server (core/usb_link.py → logs/usb_link.json)."""
+    try:
+        from core import usb_link
+        data = usb_link.read_status_file()
+    except Exception:
+        data = {}
+    if not server_up or not data or int(data.get("port") or 0) != int(port) or not data.get("running", True):
+        return {"active": False, "devices": []}
+    devices = [{
+        "model": str(d.get("model") or d.get("serial") or "Android"),
+        "state": str(d.get("state") or ""),
+        "ready": bool(d.get("reverse")),
+    } for d in (data.get("devices") or []) if isinstance(d, dict)]
+    return {"active": True, "adb": str(data.get("adb") or ""), "devices": devices}
+
+
 _cached_fw_ok = False
 _cached_fw_time = 0.0
 _cached_fw_port = None
+_cached_fw_blocking: list = []
 
 
-def firewall_rule_matches(value, port):
-    fields = dict(part.split("=", 1) for part in str(value).split("|") if "=" in part)
-    return (fields.get("Name") == "PC Control Server" and fields.get("Active", "").upper() == "TRUE"
-            and fields.get("Action") == "Allow" and fields.get("Dir") == "In"
-            and fields.get("Protocol") == "6" and fields.get("LPort") == str(port))
+def firewall_blocking_programs() -> list:
+    is_firewall_configured()
+    return list(_cached_fw_blocking)
+
 
 def is_firewall_configured() -> bool:
-    global _cached_fw_ok, _cached_fw_time, _cached_fw_port
+    """Правило для сервера есть и Windows не блокирует программы установки (кэш 2 с).
+    Разбор правил — core/launcher/firewall.py."""
+    global _cached_fw_ok, _cached_fw_time, _cached_fw_port, _cached_fw_blocking
     port = load_config_data().get("port", 5000)
     now = time.time()
     if now - _cached_fw_time < 2.0 and port == _cached_fw_port:
         return _cached_fw_ok
-
     if platform.system() != "Windows":
-        _cached_fw_ok = True
-        _cached_fw_time = now
-        return True
-
-    # Чистый Python реестр Windows (HKLM) без запуска netsh.exe (ноль всплывающих окон)
-    try:
-        import winreg
-        with winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
-            r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules",
-            0,
-            winreg.KEY_READ
-        ) as key:
-            num_values = winreg.QueryInfoKey(key)[1]
-            found = False
-            for i in range(num_values):
-                val_name, val_data, _ = winreg.EnumValue(key, i)
-                if firewall_rule_matches(val_data, port):
-                    found = True
-                    break
-            _cached_fw_ok = found
-    except Exception:
-        _cached_fw_ok = False
-
+        _cached_fw_ok, _cached_fw_blocking = True, []
+    else:
+        result = _fw.scan(BASE_DIR, port)
+        _cached_fw_ok, _cached_fw_blocking = result.configured, result.blocking
     _cached_fw_time = now
     _cached_fw_port = port
     return _cached_fw_ok
 
 
-REQUIRED_PACKAGES = [
-    ("Flask", "flask"),
-    ("Pillow", "PIL"),
-    ("pycaw", "pycaw"),
-    ("comtypes", "comtypes"),
-    ("winsdk", "winsdk"),
-    ("psutil", "psutil"),
-    ("pyaudiowpatch", "pyaudiowpatch"),
-    ("mss", "mss"),
-    ("qrcode", "qrcode"),
-    ("numpy", "numpy"),
-]
+# Сборка персонального APK — core/launcher/apk.py
+_apk = ApkBuilder(BASE_DIR, LOGS_DIR, lambda: get_python_cli_path(), lambda: load_config_data(),
+                  lambda line: append_log(line))
+APK_BUILD_INFO = _apk.info_file
+
+
+def apk_sources_available() -> bool:
+    return _apk.sources_available()
+
+
+def is_apk_personalized(cfg: dict) -> bool:
+    return _apk.is_personalized(cfg)
+
+
+def run_apk_build(script_path: Path) -> tuple:
+    return _apk.run(script_path)
+
+
+# Фоновый статус для /api/status (core/launcher/status.py). Поставщики вызывают функции модуля
+# по имени — подмены в тестах (mock.patch.object(control_panel, ...)) продолжают работать.
+_status = BackgroundStatus()
+_status.register("tailscale", lambda: get_tailscale_info(), 4.0)
+_status.register("firewall", lambda: (is_firewall_configured(), firewall_blocking_programs()), 3.0)
+_status.register("deps", lambda: check_python_deps(), 20.0)
+_status.register("network", lambda: sync_network_settings(load_config_data(), get_tailscale_info()), 10.0)
 
 _cached_deps = None
 _cached_deps_time = 0.0
 _deps_lock = threading.Lock()
 
-def check_python_deps() -> dict:
-    with _deps_lock:
-        return _check_python_deps()
 
-
-def _check_python_deps() -> dict:
+def check_python_deps(timeout: float | None = None, force: bool = False) -> dict:
+    """Библиотеки сервера (кэш 30 с). Проверка — core/launcher/deps.py.
+    Неудавшаяся проверка (таймаут/сбой процесса) кэшируется лишь на 5 с и НЕ означает «нет библиотек»."""
     global _cached_deps, _cached_deps_time
-    now = time.time()
-    if _cached_deps is not None and (now - _cached_deps_time < 30.0):
+    with _deps_lock:
+        now = time.time()
+        ttl = 5.0 if (_cached_deps or {}).get("probe_failed") else 30.0
+        if not force and _cached_deps is not None and (now - _cached_deps_time < ttl):
+            return _cached_deps
+        has_runtime = (BASE_DIR / "runtime" / "python.exe").exists() or (BASE_DIR / "venv" / "Scripts" / "python.exe").exists()
+        _cached_deps = _deps.probe(get_python_cli_path(), has_runtime, timeout or _deps.DEFAULT_TIMEOUT)
+        _cached_deps_time = time.time()
         return _cached_deps
-
-    # Probe the interpreter that actually runs the server. Importing into this
-    # long-lived panel would cache obsolete modules and mix virtual environments.
-    probe = """
-import importlib, json, sys
-result = {'installed_list': [], 'errors': {}, 'python_version': sys.version.split()[0]}
-for name, module in json.loads(sys.argv[1]):
-    try:
-        importlib.import_module(module)
-        if module == 'winsdk':
-            importlib.import_module('winsdk.windows.media.control')
-        result['installed_list'].append(name)
-    except Exception as exc:
-        result['errors'][name] = str(exc)
-print(json.dumps(result))
-"""
-    try:
-        process = subprocess.run([get_python_cli_path(), "-I", "-c", probe, json.dumps(REQUIRED_PACKAGES)],
-                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                 timeout=30, creationflags=NO_WINDOW)
-        if process.returncode:
-            raise RuntimeError(process.stderr.strip() or f"Python exit code {process.returncode}")
-        result = json.loads(process.stdout.strip().splitlines()[-1])
-    except Exception as exc:
-        result = {"installed_list": [], "errors": {name: str(exc) for name, _ in REQUIRED_PACKAGES},
-                  "python_version": "unavailable"}
-    has_venv = (BASE_DIR / "runtime" / "python.exe").exists() or (BASE_DIR / "venv" / "Scripts" / "python.exe").exists()
-    missing = list(result["errors"])
-    installed_list = result["installed_list"]
-
-    is_all_installed = len(missing) == 0
-
-    if is_all_installed:
-        details = "All required Python libraries are installed."
-    else:
-        details = f"Missing packages ({len(missing)}): {', '.join(missing)}"
-
-    _cached_deps = {
-        "has_venv": has_venv,
-        "installed": is_all_installed,
-        "missing": missing,
-        "missing_count": len(missing),
-        "installed_list": installed_list,
-        "details": details,
-        "python_version": result["python_version"],
-        "errors": result["errors"],
-        "interpreter": get_python_cli_path()
-    }
-    _cached_deps_time = now
-    return _cached_deps
 
 
 _network_sync_time = 0.0
@@ -791,17 +504,8 @@ def sync_network_settings(cfg, ts, force=False):
 def _detect_default_language() -> str:
     """Язык панели при первом запуске: язык интерфейса Windows, затем региональный формат.
     (locale.getdefaultlocale устарел и удаляется в Python 3.15.)"""
-    primary = {0x19: "ru", 0x22: "uk", 0x23: "ru", 0x3F: "ru"}  # ru, uk, be, kk
-    try:
-        import ctypes
-        k32 = ctypes.windll.kernel32
-        for lang_id in (k32.GetUserDefaultUILanguage(), k32.GetUserDefaultLangID()):
-            lang = primary.get(lang_id & 0x3FF)
-            if lang:
-                return lang
-    except Exception:
-        pass
-    return "en"
+    from core.config import default_language
+    return default_language()
 
 
 def load_config_data() -> dict:
@@ -811,7 +515,7 @@ def load_config_data() -> dict:
 
 def _load_config_data() -> dict:
     if CONFIG_FILE.exists():
-        for attempt in range(5):
+        for attempt in range(60):
             try:
                 # utf-8-sig: файл, сохранённый Блокнотом/PowerShell с BOM, тоже читается.
                 with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
@@ -822,8 +526,13 @@ def _load_config_data() -> dict:
                     data["language"] = "en"
                 return data
             except PermissionError:
-                if attempt < 4:
-                    time.sleep(0.02)
+                # QA A-11: the file is locked for a moment (antivirus, the server saving it). Before,
+                # after 5 tries (0.1 s) a NEW config with a NEW password was written over it and the
+                # phone lost access. Wait longer, and never regenerate an existing file.
+                if attempt < 59:
+                    time.sleep(0.05)
+                    continue
+                raise RuntimeError("config.json is locked by another program; try again in a moment")
             except Exception as e:
                 # Повреждённый файл не затираем молча: сохраняем копию, чтобы токен и настройки
                 # можно было восстановить, и честно сообщаем об этом в журнале.
@@ -836,40 +545,12 @@ def _load_config_data() -> dict:
                     append_log(f"[ERROR] config.json is damaged ({e}) and could not be backed up: {copy_err}")
                 break
 
-    # Первоначальное создание config.json с авто-определением сетевых настроек
-    lan_ip = get_local_ip()
+    # Первоначальное создание config.json — одни и те же значения, что у сервера (core/config.py)
+    from core.config import auto_detect_network_params
+    cfg = auto_detect_network_params()
     ts = get_tailscale_info()
-    vpn_ip = ts.get("ip", "") if ts.get("running") else ""
-
-    from scripts.network_setup import detect_network
-    detected = detect_network()
-    lan_ip = detected['lan_ip']
-    mac_address = detected['mac_address']
-
-    default_lang = _detect_default_language()
-
-    cfg = {
-        "auto_network": True,
-        "token": secrets.token_hex(8),
-        "lan_ip": lan_ip,
-        "vpn_ip": vpn_ip,
-        "wol_relay_ip": "",
-        "mac_address": mac_address,
-        "port": 5000,
-        "relay_port": 5050,
-        "language": default_lang,
-        "cors_allowed_origins": [
-            "http://localhost:*",
-            "http://127.0.0.1:*",
-            "http://pccontrol.local",
-            "http://192.168.*",
-            "http://172.*",
-            "http://100.*",
-            "http://10.*",
-            "https://localhost:*",
-            "https://127.0.0.1:*"
-        ]
-    }
+    if ts.get("running") and ts.get("ip"):
+        cfg["vpn_ip"] = ts["ip"]
     try:
         save_config_data(cfg)
         append_log("[FIRST RUN] Auto-generated config.json with detected system network parameters.")
@@ -924,6 +605,7 @@ def run_install_dependencies_task(auto_start_server: bool = False):
 
             proc.wait()
             _cached_deps_time = 0.0
+            _status.invalidate("deps")
 
             deps_after = check_python_deps()
             if deps_after.get("installed", False):
@@ -947,6 +629,7 @@ def run_install_dependencies_task(auto_start_server: bool = False):
             _is_busy = False
             _busy_action = ""
             _cached_deps_time = 0.0
+            _status.invalidate("deps")
             _background_lock.release()
 
     threading.Thread(target=_worker, daemon=True).start()
@@ -966,9 +649,17 @@ def check_first_run_setup():
 
     # 2. Проверка библиотек и автоматическая установка на первом запуске
     deps = check_python_deps()
-    if not deps.get("installed", False):
+    if deps.get("probe_failed"):
+        # Проверка не успела/упала (например, сразу после входа в Windows) — это не повод
+        # переустанавливать библиотеки; фоновый статус повторит проверку.
+        append_log(f"[WARNING] {deps.get('details')}. The check will be repeated automatically.")
+    elif _deps.definitely_missing(deps):
         append_log("[FIRST RUN] Missing Python dependencies detected. Starting automated environment preparation...")
-        run_install_dependencies_task(auto_start_server=True)
+        # Сервер сам не запускаем, пока не пройдена настройка: первый запуск до правила брандмауэра
+        # вызывает окно Windows, которое в общедоступной сети создаёт БЛОКИРУЮЩЕЕ правило.
+        run_install_dependencies_task(auto_start_server=bool(load_config_data().get("setup_completed")))
+    elif not deps.get("installed", False):
+        append_log(f"[WARNING] {deps.get('details')}")
     else:
         append_log("[READY] Components verified. Use Start server when ready.")
 
@@ -988,41 +679,141 @@ def _port_bindable(port: int) -> bool:
 
 
 def _find_free_port(start: int, attempts: int = 100) -> int | None:
+    # Те же запреты, что в validate_network_settings: раньше здесь не было порта стримера (5051)
+    # и настроенного порта WOL-реле — автоматически выбранный порт мог совпасть с ними.
+    try:
+        relay = int(load_config_data().get("relay_port", 5050) or 5050)
+    except (TypeError, ValueError):
+        relay = 5050
+    reserved = {5050, 5051, 5055, CONTROL_PORT, relay}
     for candidate in range(max(1024, start), min(65535, start + attempts)):
-        if candidate in (5050, 5055) or candidate == CONTROL_PORT:
-            continue  # порт WOL-реле и панели управления
+        if candidate in reserved:
+            continue  # порт WOL-реле, стримера и панели управления
         if _port_bindable(candidate):
             return candidate
     return None
 
 
+STARTUP_TIMEOUT_SEC = 20.0
+
+
+def start_lock_name() -> str:
+    """Имя мьютекса «запуск сервера» этой установки — общее для панели, autostart и watchdog.pyw."""
+    key = str(BASE_DIR).lower()
+    data_dir = os.environ.get("PC_CONTROL_DATA_DIR") or ""
+    if data_dir:
+        key += "|" + os.path.normcase(os.path.abspath(data_dir))
+    return "Local\\PCControlServerStart_" + hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+class _CrossProcessStartLock:
+    """Запуск сервера — по одному на установку МЕЖДУ процессами. Раньше панель и autostart при входе
+    в Windows могли одновременно пройти проверки (проверка библиотек длится секунды), и второй
+    убивал только что запущенный первым server.py: первый сообщал «Сбой при запуске сервера».
+    Мьютекс освобождается и при аварийном завершении процесса; без kernel32 — работаем как раньше."""
+
+    def __init__(self, timeout: float):
+        self.timeout = timeout
+        self.handle = None
+        self.owned = False
+        self.waited = False
+
+    def __enter__(self):
+        try:
+            import ctypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+            k32.CreateMutexW.restype = ctypes.c_void_p
+            k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            k32.WaitForSingleObject.restype = ctypes.c_uint32
+            k32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
+            self._k32 = k32
+            self.handle = k32.CreateMutexW(None, False, start_lock_name())
+            if self.handle:
+                rc = k32.WaitForSingleObject(self.handle, 0)
+                if rc not in (0, 0x80):  # WAIT_OBJECT_0 / WAIT_ABANDONED
+                    self.waited = True
+                    rc = k32.WaitForSingleObject(self.handle, int(max(0.0, self.timeout) * 1000))
+                self.owned = rc in (0, 0x80)
+        except Exception:
+            self.owned = False
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            if self.handle:
+                if self.owned:
+                    self._k32.ReleaseMutex(self.handle)
+                self._k32.CloseHandle(self.handle)
+        except Exception:
+            pass
+        self.handle = None
+        self.owned = False
+        return False
+
+
 @serialize_lifecycle
-def start_server_process() -> tuple:
+def start_server_process(startup_timeout: float = STARTUP_TIMEOUT_SEC, deps_timeout: float | None = None,
+                         clear_manual_stop: bool = True) -> tuple:
+    """Запуск сервера под межпроцессной блокировкой (см. _CrossProcessStartLock)."""
+    with _CrossProcessStartLock(startup_timeout + 90.0) as lock:
+        if lock.waited:
+            append_log("[INFO] Another PC Control process was starting the server - waited for it.")
+        return _start_server_process_locked(startup_timeout, deps_timeout, clear_manual_stop)
+
+
+def _start_server_process_locked(startup_timeout: float = STARTUP_TIMEOUT_SEC, deps_timeout: float | None = None,
+                                 clear_manual_stop: bool = True) -> tuple:
     """
     Выполняет запуск server.py и сторожевого таймера.
     Возвращает (success: bool, error_code: str, error_title: str, details: str)
+
+    ERR_STARTUP_TIMEOUT означает: процесс сервера жив, но ещё не ответил (медленный «холодный» старт
+    Windows). Его НЕ убиваем — за ним уже следит watchdog, а вызывающий код может подождать ещё.
     """
-    deps = check_python_deps()
-    if not deps.get("installed", False):
+    deps = check_python_deps(timeout=deps_timeout)
+    if _deps.definitely_missing(deps):
         return (
             False,
             "ERR_PYTHON_DEPS_MISSING",
             "Не установлены библиотеки Python",
-            "Для работы сервера требуются библиотеки Flask, Pillow, Winsdk и др.\nНажмите кнопку 'Установить' в Шаге 1 чек-листа перед запуском."
+            "Для работы сервера требуются библиотеки Flask, Pillow, Winsdk и др.\nНажмите кнопку 'Установить' в Шаге 1 чек-листа перед запуском.\n"
+            + str(deps.get("details", ""))
         )
+    if not deps.get("installed", False):
+        # Проверка не удалась (таймаут/сбой) или модуль временно не загрузился — это не «нет библиотек».
+        # Пробуем запустить: если библиотек правда нет, сервер упадёт и покажет причину в stderr.
+        append_log(f"[WARNING] {deps.get('details')} - starting the server anyway.")
 
     cfg = load_config_data()
     port = int(cfg.get("port", 5000))
 
-    if is_server_running(port):
+    # Дольше обычного ждём ответа: занятый (трансляция экрана) сервер может отвечать дольше 0,45 с,
+    # а ниже его процессы завершаются — работающий сервер нельзя убить из-за медленного ответа.
+    if is_server_running(port, timeout=3.0):
         return (True, "", "", f"Сервер уже запущен и принимает подключения на порту {port}.")
 
+    # A start by the user clears «stopped manually». Autostart / watchdog must NOT (QA L-2): a Stop
+    # pressed while autostart retries has to win, not be erased by the next attempt.
     flag = LOGS_DIR / "manual_stop.flag"
-    if flag.exists():
+    if clear_manual_stop and flag.exists():
         try:
             flag.unlink()
         except Exception:
             pass
+
+    # Сервер этой установки только что запущен (автозапуск при входе в Windows, watchdog) и ещё
+    # грузится — не убиваем его, а ждём ответа. Раньше «Запустить» в этот момент обрывал запуск.
+    if _youngest_owned_server_age() is not None:
+        append_log("[INFO] The server process is already starting - waiting for it instead of starting another one.")
+        start_t = time.time()
+        while time.time() - start_t < startup_timeout:
+            if is_server_running(port):
+                return (True, "", "", f"Сервер успешно запущен на порту {port}.")
+            if _youngest_owned_server_age() is None:
+                break  # процесс завершился — запускаем заново ниже
+            time.sleep(0.5)
 
     # Сначала убираем СВОИ зависшие процессы server.py (раньше это делалось уже после проверки
     # порта — и порт, занятый собственным зависшим сервером, давал ошибку вместо исправления).
@@ -1094,9 +885,6 @@ def start_server_process() -> tuple:
                 err_f.close()
             except Exception:
                 pass
-        watchdog_script = SCRIPTS_DIR / "watchdog.pyw"
-        if watchdog_script.exists():
-            subprocess.Popen([pyw_bin, "-E", "-s", str(watchdog_script)], cwd=str(BASE_DIR), creationflags=NO_WINDOW)
     except Exception as e:
         return (
             False,
@@ -1105,9 +893,13 @@ def start_server_process() -> tuple:
             f"Не удалось запустить процесс server.py через {pyw_bin}:\n{e}"
         )
 
+    # Сторож запускается отдельно: его сбой не должен выдаваться за «сервер не запустился»
+    # (раньше исключение здесь возвращало ERR_SPAWN_FAILED при уже запущенном server.py).
+    ensure_watchdog_running(pyw_bin)
+
     # Success means the HTTP health endpoint answered, not merely a live PID.
     start_t = time.time()
-    while time.time() - start_t < 20:
+    while time.time() - start_t < startup_timeout:
         ret = proc.poll()
         if ret is not None:
             # Процесс упал сразу после запуска!
@@ -1129,11 +921,24 @@ def start_server_process() -> tuple:
             return (True, "", "", f"Сервер успешно запущен на порту {port}.{port_note}")
         time.sleep(0.25)
 
+    if is_server_running(port):
+        return (True, "", "", f"Сервер успешно запущен на порту {port}.{port_note}")
+    if proc.poll() is None:
+        # Процесс жив и ещё запускается: не оставляем «полусостояние» без присмотра — его ведёт
+        # watchdog (запущен выше), а панель покажет «Работает», как только сервер ответит.
+        return (
+            False,
+            "ERR_STARTUP_TIMEOUT",
+            "Сервер ещё запускается",
+            f"Сервер не ответил на порту {port} за {int(startup_timeout)} с, но его процесс продолжает запуск "
+            f"(после входа в Windows это бывает дольше обычного). Он не остановлен: сторожевой процесс следит за ним, "
+            f"статус обновится автоматически.{port_note}"
+        )
     return (
         False,
-        "ERR_STARTUP_TIMEOUT",
-        "Таймаут ожидания запуска",
-        f"Сервер не ответил на порту {port} за отведенное время."
+        "ERR_SERVER_CRASHED",
+        "Сбой при запуске сервера",
+        f"Процесс server.py завершился с кодом {proc.poll()} до ответа на порту {port}."
     )
 
 
@@ -1164,15 +969,48 @@ def get_pids_on_port(port: int = 5000) -> list:
     return pids
 
 
+def _same_path(a, b) -> bool:
+    try:
+        return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+    except Exception:
+        return False
+
+
+def process_runs_own_script(process, script_paths) -> bool:
+    """Процесс — Python, выполняющий один из script_paths ЭТОЙ установки (рабочий, не тестовый).
+
+    Строже прежней проверки: скриптом считается только ПЕРВЫЙ позиционный аргумент (а не любой
+    аргумент, похожий на путь), путь сравнивается после resolve() без учёта регистра, а процесс с
+    другой папкой данных (PC_CONTROL_DATA_DIR — изолированный тестовый сервер) не считается нашим.
+    Любая ошибка (нет доступа к процессу, процесс завершился) — «не наш»: чужое не трогаем."""
+    try:
+        if not (process.name() or "").lower().startswith("python"):
+            return False
+        args = [a for a in (process.cmdline() or [])[1:] if a and not a.startswith("-")]
+        if not args:
+            return False
+        script = Path(process.cwd()) / args[0]
+        if not any(_same_path(script, target) for target in script_paths):
+            return False
+        try:
+            other_data = process.environ().get("PC_CONTROL_DATA_DIR") or ""
+        except Exception:
+            other_data = ""
+        own_data = os.environ.get("PC_CONTROL_DATA_DIR") or ""
+        if other_data or own_data:
+            if not (other_data and own_data and _same_path(other_data, own_data)):
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def kill_pid(pid: int):
     # Never terminate an unrelated application just because it owns our port.
     try:
         import psutil
         process = psutil.Process(pid)
-        cmdline = process.cmdline()
-        owned_scripts = {(BASE_DIR / "server.py").resolve(), (SCRIPTS_DIR / "watchdog.pyw").resolve()}
-        cwd = Path(process.cwd())
-        if not any((cwd / arg).resolve() in owned_scripts for arg in cmdline[1:] if not arg.startswith("-")):
+        if not process_runs_own_script(process, (BASE_DIR / "server.py", SCRIPTS_DIR / "watchdog.pyw")):
             return
     except Exception:
         return
@@ -1191,14 +1029,71 @@ def kill_pid(pid: int):
 def kill_processes_by_name(process_script: str):
     if platform.system() != "Windows":
         return
+    # Только процессы ЭТОЙ установки: другие установленные копии и тестовые серверы не трогаем.
+    for pid in owned_script_pids(process_script):
+        kill_pid(pid)
+
+
+def owned_script_pids(process_script: str) -> list:
+    """PID процессов Python этой установки, выполняющих scripts/<process_script> или server.py."""
+    pids = []
+    if platform.system() != "Windows":
+        return pids
+    target = (BASE_DIR / process_script) if process_script == "server.py" else (SCRIPTS_DIR / process_script)
     try:
         import psutil
         for process in psutil.process_iter(["pid", "name", "cmdline"]):
-            if (process.info.get("name") or "").lower().startswith("python"):
-                if any(Path(arg).name == process_script for arg in (process.info.get("cmdline") or [])[1:]):
-                    kill_pid(process.pid)
+            try:
+                # Быстрый отсев по имени файла, затем строгая проверка принадлежности
+                if not any(Path(a).name.lower() == process_script.lower()
+                           for a in (process.info.get("cmdline") or [])[1:]):
+                    continue
+                if process_runs_own_script(process, (target,)):
+                    pids.append(process.pid)
+            except Exception:
+                continue
     except Exception:
         pass
+    return pids
+
+
+SERVER_BOOT_GRACE_SEC = 90.0
+
+
+def _youngest_owned_server_age(max_age: float = SERVER_BOOT_GRACE_SEC) -> float | None:
+    """Возраст (с) самого молодого процесса server.py этой установки, если он моложе max_age."""
+    pids = owned_script_pids("server.py")
+    if not pids:
+        return None
+    try:
+        import psutil
+        ages = []
+        for pid in pids:
+            try:
+                ages.append(time.time() - psutil.Process(pid).create_time())
+            except Exception:
+                continue
+        young = [a for a in ages if a < max_age]
+        return min(young) if young else None
+    except Exception:
+        return None
+
+
+def ensure_watchdog_running(pyw_bin: str | None = None) -> bool:
+    """Запускает сторожевой процесс, если он ещё не работает (повторный запуск безопасен:
+    watchdog.pyw сам выходит при уже занятом мьютексе)."""
+    watchdog_script = SCRIPTS_DIR / "watchdog.pyw"
+    if not watchdog_script.exists():
+        return False
+    if owned_script_pids("watchdog.pyw"):
+        return True
+    try:
+        subprocess.Popen([pyw_bin or get_pythonw_path(), "-E", "-s", str(watchdog_script)],
+                         cwd=str(BASE_DIR), creationflags=NO_WINDOW)
+        return True
+    except Exception as e:
+        append_log(f"[WARNING] Could not start the watchdog supervisor: {e}")
+        return False
 
 
 @serialize_lifecycle
@@ -1238,12 +1133,13 @@ def stop_server_process() -> tuple:
             break
         time.sleep(0.15)
 
-    # 4. Если порт всё ещё занят или остались процессы server.py / watchdog.pyw — завершаем их принудительно
+    # 4. Если порт всё ещё занят или остались процессы server.py / watchdog.pyw — завершаем их принудительно.
+    # Сначала сторожа: иначе он мог успеть запустить новый server.py уже после завершения старого.
+    kill_processes_by_name("watchdog.pyw")
     for pid in get_pids_on_port(port):
         kill_pid(pid)
 
     kill_processes_by_name("server.py")
-    kill_processes_by_name("watchdog.pyw")
 
     # 5. Проверка освобождения порта
     time.sleep(0.2)
@@ -1396,295 +1292,27 @@ def apply_github_update() -> dict:
             _background_lock.release()
 
 
+UPDATE_STATUS_SHOW_SEC = 15 * 60
+
+
 def get_update_status():
+    """Состояние последнего обновления для окна панели. Завершённое обновление («complete»,
+    «rolled_back») показываем только 15 минут: раньше файл оставался навсегда, и при каждом
+    открытии панели снова всплывали сообщение и уведомление о давнем обновлении.
+    Сам файл не трогаем — его читает full_update.py."""
     try:
-        return json.loads((LOGS_DIR / 'update_status.json').read_text(encoding='utf-8'))
+        status = json.loads((LOGS_DIR / 'update_status.json').read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
-
-
-def get_windows_hello_status() -> dict:
-    """
-    Проверяет реальное состояние настройки Windows Hello PasswordLess в реестре Windows.
-    HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\PasswordLess\\Device
-    DevicePasswordLessBuildVersion:
-      2 (или отсутствует по умолчанию в Win10/11) -> Enabled (Windows Hello required for MS accounts, netplwiz checkbox hidden)
-      0 -> Disabled (Windows Hello requirement disabled, netplwiz checkbox visible)
-    """
-    if platform.system() != "Windows":
-        return {"supported": False, "enabled": False, "raw_value": None}
-    try:
-        import winreg
+    if not isinstance(status, dict):
+        return None
+    if status.get('phase') in ('complete', 'rolled_back'):
         try:
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device") as k:
-                val, _ = winreg.QueryValueEx(k, "DevicePasswordLessBuildVersion")
-                enabled = (int(val) != 0)
-                raw_val = int(val)
-        except FileNotFoundError:
-            enabled = True
-            raw_val = None
-        except Exception:
-            enabled = True
-            raw_val = None
-
-        return {
-            "supported": True,
-            "enabled": enabled,
-            "raw_value": raw_val,
-        }
-    except Exception as e:
-        return {"supported": False, "enabled": False, "raw_value": None, "error": str(e)}
-
-
-def run_elevated_command(target: str, params: str = "", work_dir: str = "", show: bool = True, timeout: int = 120) -> tuple[bool, str, str]:
-    """
-    Выполняет запуск команды/процесса с запросом прав администратора (UAC) в Windows.
-    Решает проблему песочниц (включая Microsoft Store/MSIX Python, где прямой Win32 ShellExecute
-    блокируется ядром ОС с кодом 5 ERROR_ACCESS_DENIED или кодом 50 без вывода окна UAC).
-    
-    Обеспечивает гарантированное появление системного окна подтверждения UAC на экране пользователя.
-    
-    Возвращает:
-        (ok: bool, code: str, message: str)
-    """
-    if platform.system() != "Windows":
-        return False, "ERR_NOT_SUPPORTED", "UAC elevation is only supported on Windows."
-
-    # Способ 1: Прямой ShellExecuteW (работает в стандартном Win32 Python окружении)
-    try:
-        import ctypes
-        from ctypes import wintypes
-        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-        shell32.ShellExecuteW.argtypes = [
-            wintypes.HWND,
-            wintypes.LPCWSTR,
-            wintypes.LPCWSTR,
-            wintypes.LPCWSTR,
-            wintypes.LPCWSTR,
-            ctypes.c_int,
-        ]
-        shell32.ShellExecuteW.restype = wintypes.HINSTANCE
-        hwnd = ctypes.windll.user32.GetForegroundWindow() or None
-        ctypes.set_last_error(0)
-        res = shell32.ShellExecuteW(
-            hwnd,
-            "runas",
-            target,
-            params,
-            work_dir or None,
-            1 if show else 0
-        )
-        last_err = ctypes.get_last_error()
-        res_val = int(res) if res is not None else 0
-        if res_val > 32:
-            return True, "OK", "Elevation launched successfully via ShellExecuteW"
-        if last_err == 1223:  # ERROR_CANCELLED - user explicitly declined UAC
-            return False, "ERR_UAC_DENIED", "Запрос прав администратора (UAC) был отклонен пользователем."
-    except Exception:
-        res_val = 0
-
-    # Способ 2: Shell.Application COM через powershell.exe
-    # Этот способ работает из любого окружения (включая Store/MSIX Python и фоновые процессы),
-    # так как обращается к COM-серверу Проводника (Explorer Shell) на интерактивном рабочем столе пользователя.
-    t_esc = target.replace("'", "''")
-    p_esc = params.replace("'", "''")
-    w_esc = work_dir.replace("'", "''")
-    n_show = 1 if show else 0
-
-    ps_script = (
-        f"$ErrorActionPreference = 'Stop'; "
-        f"try {{ "
-        f"  $sh = New-Object -ComObject Shell.Application; "
-        f"  $sh.ShellExecute('{t_esc}', '{p_esc}', '{w_esc}', 'runas', {n_show}); "
-        f"  Write-Output 'UAC_OK'; "
-        f"}} catch {{ "
-        f"  $msg = $_.Exception.Message; "
-        f"  if ($msg -match '0x800704C7' -or $msg -match '1223' -or $msg -match 'canceled' -or $msg -match 'cancel' -or $msg -match 'отменен' -or $msg -match 'отклон') {{ "
-        f"    Write-Output 'UAC_CANCELLED'; "
-        f"  }} else {{ "
-        f"    Write-Output ('UAC_ERROR:' + $msg); "
-        f"  }} "
-        f"  exit 1; "
-        f"}}"
-    )
-
-    try:
-        proc = subprocess.run([
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-WindowStyle", "Hidden",
-            "-Command", ps_script
-        ], capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW)
-
-        out = proc.stdout.strip()
-        if "UAC_OK" in out:
-            return True, "OK", "Команда с правами администратора успешно запущена."
-        elif "UAC_CANCELLED" in out:
-            return False, "ERR_UAC_DENIED", "Запрос прав администратора (UAC) был отклонен пользователем."
-        else:
-            err_line = next((l for l in out.splitlines() if l.startswith("UAC_ERROR:")), out or proc.stderr.strip())
-            return False, "ERR_UAC_FAILED", f"Не удалось повысить привилегии: {err_line}"
-
-    except subprocess.TimeoutExpired:
-        return False, "ERR_UAC_TIMEOUT", "Истекло время ожидания подтверждения запроса прав администратора (UAC)."
-    except Exception as e:
-        return False, "ERR_UAC_EXCEPTION", f"Сбой вызова механизма UAC: {e}"
-
-
-def run_elevated_and_wait(target: str, params: str = "", work_dir: str = "", timeout: int = 180) -> tuple[bool, str, str, int | None]:
-    """Запуск с правами администратора С ОЖИДАНИЕМ завершения и кодом возврата.
-
-    run_elevated_command (ShellExecuteW) только запускает процесс: дождаться его и узнать
-    результат нельзя, поэтому лаунчер мог сообщить об успехе, когда настройка ещё не прошла
-    или завершилась ошибкой. Возвращает (ok, code, message, exit_code)."""
-    if platform.system() != "Windows":
-        return False, "ERR_NOT_SUPPORTED", "UAC elevation is only supported on Windows.", None
-    import ctypes
-    from ctypes import wintypes
-
-    class SHELLEXECUTEINFOW(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.DWORD), ("fMask", ctypes.c_ulong), ("hwnd", wintypes.HWND),
-                    ("lpVerb", wintypes.LPCWSTR), ("lpFile", wintypes.LPCWSTR), ("lpParameters", wintypes.LPCWSTR),
-                    ("lpDirectory", wintypes.LPCWSTR), ("nShow", ctypes.c_int), ("hInstApp", wintypes.HINSTANCE),
-                    ("lpIDList", ctypes.c_void_p), ("lpClass", wintypes.LPCWSTR), ("hkeyClass", wintypes.HKEY),
-                    ("dwHotKey", wintypes.DWORD), ("hIconOrMonitor", wintypes.HANDLE), ("hProcess", wintypes.HANDLE)]
-
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
-    shell32.ShellExecuteExW.restype = wintypes.BOOL
-    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-    kernel32.WaitForSingleObject.restype = wintypes.DWORD
-    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-
-    info = SHELLEXECUTEINFOW()
-    info.cbSize = ctypes.sizeof(info)
-    info.fMask = 0x00000040 | 0x00000100  # SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
-    info.hwnd = ctypes.windll.user32.GetForegroundWindow() or None
-    info.lpVerb = "runas"
-    info.lpFile = target
-    info.lpParameters = params
-    info.lpDirectory = work_dir or None
-    info.nShow = 0  # SW_HIDE: окно консоли не нужно, вывод идёт в журнал
-    if not shell32.ShellExecuteExW(ctypes.byref(info)):
-        err = ctypes.get_last_error()
-        if err == 1223:
-            return False, "ERR_UAC_DENIED", "Запрос прав администратора (UAC) был отклонен пользователем.", None
-        return False, "ERR_UAC_FAILED", f"Не удалось запустить с правами администратора (код Windows {err}).", None
-    if not info.hProcess:
-        return False, "ERR_UAC_FAILED", "Процесс с правами администратора не был создан.", None
-    try:
-        if kernel32.WaitForSingleObject(info.hProcess, int(timeout * 1000)) != 0:
-            return False, "ERR_UAC_TIMEOUT", "Настройка не завершилась за отведённое время.", None
-        code = wintypes.DWORD()
-        kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
-        return code.value == 0, ("OK" if code.value == 0 else "ERR_EXIT_CODE"), f"exit code {code.value}", int(code.value)
-    finally:
-        kernel32.CloseHandle(info.hProcess)
-
-
-def set_windows_hello_state(enabled: bool) -> tuple[bool, str]:
-    """
-    Устанавливает DevicePasswordLessBuildVersion (2 = Включено, 0 = Отключено).
-    Запрашивает права администратора (UAC) гарантированно через run_elevated_command.
-    После выполнения обязательно проверяет фактическое значение в реестре!
-    """
-    if platform.system() != "Windows":
-        return (False, "Изменение параметров Windows Hello поддерживается только в ОС Windows.")
-
-    target_val = 2 if enabled else 0
-    current_status = get_windows_hello_status()
-    if current_status.get("supported") and current_status.get("enabled") == enabled:
-        return (True, f"Настройка Windows Hello уже {'включена' if enabled else 'отключена'}.")
-
-    try:
-        from core.system_state import capture_windows_hello_before_change
-        capture_windows_hello_before_change(enabled)
-    except Exception:
-        pass
-
-    ps_cmd = (
-        f"$p = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\PasswordLess\\Device'; "
-        f"if (-not (Test-Path $p)) {{ New-Item -Path $p -Force | Out-Null }}; "
-        f"Set-ItemProperty -Path $p -Name 'DevicePasswordLessBuildVersion' -Value {target_val} -Type DWord"
-    )
-
-    ok, code, msg = run_elevated_command(
-        "powershell.exe",
-        f'-NoProfile -NonInteractive -WindowStyle Hidden -Command "{ps_cmd}"',
-        show=False
-    )
-    if not ok:
-        return (False, msg)
-
-    # Ждём до 3 секунд и проверяем фактическое значение в реестре
-    for _ in range(15):
-        time.sleep(0.2)
-        new_status = get_windows_hello_status()
-        if new_status.get("enabled") == enabled:
-            return (True, f"Windows Hello успешно {'включен' if enabled else 'отключен'}.")
-
-    return (False, "Значение реестра не изменилось. Возможно, действуют групповые политики Windows или изменение заблокировано системой.")
-
-
-def launch_netplwiz() -> tuple[bool, str]:
-    """
-    Запускает только системную утилиту netplwiz.exe (или control userpasswords2).
-    НЕ изменяет никаких учетных данных или системных параметров.
-    """
-    if platform.system() != "Windows":
-        return (False, "Утилита netplwiz доступна только в ОС Windows.")
-    try:
-        import ctypes
-        res = ctypes.windll.shell32.ShellExecuteW(
-            None,
-            "open",
-            "netplwiz.exe",
-            None,
-            None,
-            1  # SW_SHOWNORMAL
-        )
-        if res > 32:
-            return (True, "Системное окно netplwiz успешно открыто.")
-        else:
-            res2 = ctypes.windll.shell32.ShellExecuteW(
-                None,
-                "open",
-                "control.exe",
-                "userpasswords2",
-                None,
-                1
-            )
-            if res2 > 32:
-                return (True, "Системное окно netplwiz (userpasswords2) открыто.")
-            return (False, f"Не удалось открыть netplwiz (код ошибки {res}).")
-    except Exception as e:
-        return (False, f"Ошибка при запуске netplwiz: {e}")
-
-
-def open_signin_settings() -> tuple[bool, str]:
-    """
-    Открывает системный раздел «Параметры -> Учетные записи -> Варианты входа» (ms-settings:signinoptions).
-    """
-    if platform.system() != "Windows":
-        return (False, "Параметры Windows доступны только в ОС Windows.")
-    try:
-        import ctypes
-        res = ctypes.windll.shell32.ShellExecuteW(
-            None,
-            "open",
-            "ms-settings:signinoptions",
-            None,
-            None,
-            1
-        )
-        if res > 32:
-            return (True, "Раздел параметров входа Windows открыт.")
-        return (False, f"Не удалось открыть параметры входа (код ошибки {res}).")
-    except Exception as e:
-        return (False, f"Ошибка при открытии параметров входа: {e}")
+            if time.time() - float(status.get('time', 0)) > UPDATE_STATUS_SHOW_SEC:
+                return None
+        except (TypeError, ValueError):
+            return None
+    return status
 
 
 def run_command_async(cmd, name=""):
@@ -1814,15 +1442,21 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 pass
             return
         elif path == "/api/status":
+            # Дорогие проверки (Tailscale, брандмауэр, библиотеки, определение сети) считает фоновый
+            # поток _status; здесь — только готовые значения и дешёвая проверка «сервер отвечает».
             cfg = load_config_data()
             port = int(cfg.get("port", 5000))
             server_up = is_server_running(port)
-            lan_ip = cfg.get("lan_ip") or get_local_ip()
-            ts_info = get_tailscale_info()
-            cfg = sync_network_settings(cfg, ts_info)
+            ts_info = _status.get("tailscale")
+            if _status.running:
+                _status.get("network")
+                cfg = load_config_data()
+            else:
+                cfg = sync_network_settings(cfg, ts_info)
+            port = int(cfg.get("port", 5000))
             lan_ip = cfg.get("lan_ip", "")
-            fw_ok = is_firewall_configured()
-            py_deps = check_python_deps()
+            fw_ok, fw_blocking = _status.get("firewall")
+            py_deps = _status.get("deps")
 
             self.send_json({
                 "server_running": server_up,
@@ -1831,12 +1465,17 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "lan_ip": lan_ip,
                 "tailscale": ts_info,
                 "firewall_configured": fw_ok,
+                "firewall_blocking": fw_blocking,
                 "python_deps": py_deps,
-                "apk_build_available": (SCRIPTS_DIR / "build_apk.py").is_file(),
+                "apk_build_available": apk_sources_available(),
+                "apk_build": _apk.snapshot(),
+                "apk_personalized": is_apk_personalized(cfg),
                 "apk_exists": (BASE_DIR / "PC_Control.apk").is_file() or (BASE_DIR / "PC-Control.apk").is_file(),
-                "uninstaller_available": (BASE_DIR / "unstaller.exe").is_file() or (BASE_DIR / "Uninstall.exe").is_file() or (BASE_DIR / "uninstall.bat").is_file(),
+                "uninstaller_available": not is_dev_folder() and ((BASE_DIR / "unstaller.exe").is_file() or (BASE_DIR / "Uninstall.exe").is_file() or (BASE_DIR / "uninstall.bat").is_file()),
+                "dev_folder": is_dev_folder(),
                 "windows_hello": get_windows_hello_status(),
                 "token": cfg.get("token", ""),
+                "password_weak": 0 < len(str(cfg.get("token", "") or "")) < 8,  # QA L-13
                 "mac_address": cfg.get("mac_address", "AA-BB-CC-DD-EE-FF"),
                 "language": cfg.get("language", "en"),
                 "cors_allowed_origins": cfg.get("cors_allowed_origins", [
@@ -1853,6 +1492,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "setup_in_progress": bool(_is_busy and "Dependencies Installation" in _busy_action),
                 "setup_completed": bool(cfg.get("setup_completed", False)),
                 "panel_build": PANEL_BUILD,
+                "usb": _usb_status(server_up, port),
                 "update_info": LATEST_UPDATE_INFO,
                 "full_update_status": get_update_status()
             })
@@ -1955,6 +1595,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
 
             if action == "detect_network":
                 cfg = sync_network_settings(load_config_data(), get_tailscale_info(), force=True)
+                _status.invalidate("network")
                 interfaces = []
                 try:
                     from scripts.network_setup import list_network_interfaces
@@ -1992,6 +1633,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     if manual_addresses:
                         cfg["auto_network"] = False
                     save_config_data(cfg)
+                _status.invalidate("network", "firewall")  # порт мог смениться — правило проверяется заново
                 self.send_json({"ok": True, "settings": settings})
                 return
 
@@ -2040,7 +1682,8 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
             if action == "start_server":
                 append_log("Starting server...")
                 deps = check_python_deps()
-                if not deps.get("installed", False):
+                # Установку запускаем только если библиотек ТОЧНО нет; неудавшаяся проверка — не повод.
+                if _deps.definitely_missing(deps):
                     append_log("[FIRST RUN] Missing Python dependencies detected. Starting automated installation...")
                     if not run_install_dependencies_task(auto_start_server=True):
                         self.send_json({"ok": False, "message": "Another background task is already running"}, 409)
@@ -2091,7 +1734,8 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             if action == "install_deps":
-                started = run_install_dependencies_task(auto_start_server=True)
+                # Мастер настройки передаёт start_server=false: сервер он запустит сам, после брандмауэра.
+                started = run_install_dependencies_task(auto_start_server=bool(req_data.get("start_server", True)))
                 self.send_json({"ok": started, "message": "Dependencies installation started" if started else "Another background task is already running"}, 200 if started else 409)
                 return
 
@@ -2130,6 +1774,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 )
                 global _cached_fw_time
                 _cached_fw_time = 0.0
+                _status.invalidate("firewall")
                 fw_active = is_firewall_configured()
                 if ok and fw_active:
                     append_log("Windows Firewall rules successfully applied and verified.")
@@ -2276,6 +1921,12 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 if not new_pwd:
                     self.send_json({"ok": False, "message": "Password cannot be empty"}, 400)
                     return
+                # QA L-13 / A-8: at least 8 characters for a NEW password (an existing shorter one keeps
+                # working; the panel only refuses to set a new short one).
+                if len(new_pwd) < 8:
+                    self.send_json({"ok": False, "error_code": "ERR_PASSWORD_SHORT",
+                                    "message": "The password must be at least 8 characters long"}, 400)
+                    return
                 if not save_token_everywhere(new_pwd):
                     self.send_json({"ok": False, "message": "Could not save password"}, 500)
                     return
@@ -2313,55 +1964,34 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 append_log("Starting Android APK rebuild (PC_Control.apk)...")
                 _is_busy = True
                 _busy_action = "Rebuild PC_Control.apk"
-                try:
-                    py_cli = get_python_cli_path()
-                    proc = subprocess.Popen(
-                        [py_cli, str(script_path), "--bootstrap-sdk", "--embed-token"],
-                        cwd=str(BASE_DIR),
-                        shell=False,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        creationflags=NO_WINDOW
-                    )
-                    out_lines = []
-                    for line in proc.stdout:
-                        line_str = line.strip()
-                        if line_str:
-                            out_lines.append(line_str)
-                            append_log(line_str)
-                    proc.wait()
-                    if proc.returncode == 0:
-                        append_log("PC_Control.apk rebuild completed successfully.")
-                        self.send_json({
-                            "ok": True,
-                            "message": "Android APK успешно пересобран и подписан!"
-                        })
-                    else:
-                        details_text = "\n".join(out_lines[-25:])
-                        append_log(f"PC_Control.apk rebuild failed with exit code {proc.returncode}.")
-                        self.send_json({
-                            "ok": False,
-                            "error_code": f"ERR_APK_BUILD_{proc.returncode}",
-                            "error_title": "Ошибка сборки APK",
-                            "message": f"Сборка APK завершилась с ошибкой (код {proc.returncode}).",
-                            "details": details_text
-                        }, 500)
-                except Exception as e:
-                    append_log(f"Error during APK rebuild: {e}")
+                _apk.mark_running()
+
+                def _apk_job():
+                    global _is_busy, _busy_action
+                    try:
+                        return run_apk_build(script_path)
+                    finally:
+                        _is_busy = False
+                        _busy_action = ""
+                        _background_lock.release()
+
+                if req_data.get("background"):
+                    # Мастер настройки: сборка (с загрузкой Android SDK ~300 МБ при первом запуске)
+                    # идёт в фоне, а ход и результат читаются из /api/status → apk_build.
+                    threading.Thread(target=_apk_job, name="apk-build", daemon=True).start()
+                    self.send_json({"ok": True, "started": True, "message": "Сборка APK запущена"}, 202)
+                    return
+                ok, code, details_text = _apk_job()
+                if ok:
+                    self.send_json({"ok": True, "message": "Android APK успешно пересобран и подписан!"})
+                else:
                     self.send_json({
                         "ok": False,
-                        "error_code": "ERR_APK_BUILD_EXCEPTION",
-                        "error_title": "Сбой сборки APK",
-                        "message": str(e),
-                        "details": str(e)
+                        "error_code": code,
+                        "error_title": "Ошибка сборки APK",
+                        "message": _apk.snapshot().get("message") or "Сборка APK завершилась с ошибкой.",
+                        "details": details_text
                     }, 500)
-                finally:
-                    _is_busy = False
-                    _busy_action = ""
-                    _background_lock.release()
                 return
 
             if action == "launch_tailscale":
@@ -2404,6 +2034,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
 
                 # 2. Tailscale установлен — проверяем процесс трея (tailscale-ipn.exe)
                 _cached_ts_time = 0.0
+                _status.invalidate("tailscale", "network")
                 is_ipn_running = False
                 try:
                     import psutil
@@ -2439,6 +2070,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                         try:
                             subprocess.Popen([str(bins["cli"]), "up", "--unattended"], creationflags=NO_WINDOW)
                             _cached_ts_time = 0.0
+                            _status.invalidate("tailscale", "network")
                         except Exception:
                             pass
 
@@ -2490,6 +2122,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
 
                 if gui_started or is_ipn_running:
                     _cached_ts_time = 0.0
+                    _status.invalidate("tailscale", "network")
                     self.send_json({"ok": True, "message": succ_msg})
                 else:
                     self.send_json({"ok": False, "message": "Интерфейс Tailscale пока недоступен. Откройте значок Tailscale в трее, войдите в аккаунт и повторите."}, 503)
@@ -2503,9 +2136,13 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     append_log("Starting PC Control server before opening remote...")
                     ok, code, title, msg = start_server_process()
                     if not ok:
-                        self.send_json({"ok": False, "message": msg or "Failed to start server"}, 500)
+                        self.send_json({"ok": False, "error_code": code, "error_title": title,
+                                        "message": msg or "Failed to start server"}, 500)
                         return
                     time.sleep(0.8)
+                    # Порт мог смениться автоматически (прежний был занят) — берём актуальный.
+                    cfg = load_config_data()
+                    port = int(cfg.get("port", 5000))
 
                 lang = req_data.get("lang") or cfg.get("language", "ru")
                 token = cfg.get("token", "")
@@ -2692,7 +2329,8 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                         with urllib.request.urlopen(req_lan, timeout=1.2) as r_lan:
                             if r_lan.status == 200:
                                 b_lan = json.load(r_lan)
-                                lan_reachable = (b_lan.get("status") == "online")
+                                # Отвечать должен именно наш сервер, а не другая программа на этом порту
+                                lan_reachable = (b_lan.get("status") == "online" and b_lan.get("instance") == instance_id())
                     except Exception:
                         lan_reachable = False
                 interfaces = []
@@ -2708,6 +2346,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     "port": port,
                     "lan_reachable": lan_reachable,
                     "firewall_configured": fw_ok,
+                    "firewall_blocking": firewall_blocking_programs(),
                     "interfaces": interfaces,
                 })
                 return
@@ -2778,7 +2417,13 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             if action == "launch_uninstaller":
-                uninst_exe = BASE_DIR / "unstaller.exe" if (BASE_DIR / "unstaller.exe").is_file() else BASE_DIR / "Uninstall.exe"
+                if is_dev_folder():
+                    # QA L-7: never offer to delete a development checkout
+                    self.send_json({"ok": False, "error_code": "ERR_DEV_FOLDER",
+                                    "message": "This folder is a development checkout (.git / Rust sources); "
+                                               "the uninstaller is disabled here."}, 409)
+                    return
+                uninst_exe =BASE_DIR / "unstaller.exe" if (BASE_DIR / "unstaller.exe").is_file() else BASE_DIR / "Uninstall.exe"
                 uninst_bat = BASE_DIR / "uninstall.bat"
                 if uninst_exe.is_file():
                     try:
@@ -2839,7 +2484,7 @@ def launch_browser_gui(url: str):
         if p.exists():
             try:
                 subprocess.Popen([str(p), f"--app={cache_bust_url}"] + window_flags + edge_anti_translate)
-                enforce_window_geometry_async(["control panel", "панель управления", "5055"], layout['x'], layout['y'], layout['w'], layout['h'])
+                enforce_window_geometry_async(["control panel", "панель управления", str(CONTROL_PORT)], layout['x'], layout['y'], layout['w'], layout['h'])
                 return
             except Exception:
                 pass
@@ -2858,7 +2503,7 @@ def launch_browser_gui(url: str):
                     "--no-first-run",
                     "--disable-save-password-bubble",
                 ])
-                enforce_window_geometry_async(["control panel", "панель управления", "5055"], layout['x'], layout['y'], layout['w'], layout['h'])
+                enforce_window_geometry_async(["control panel", "панель управления", str(CONTROL_PORT)], layout['x'], layout['y'], layout['w'], layout['h'])
                 return
             except Exception:
                 pass
@@ -2907,6 +2552,8 @@ def main():
 
     # Проверка первого запуска: авто-создание config.json и автоустановка библиотек
     threading.Timer(0.8, check_first_run_setup).start()
+    # Фоновый расчёт статуса: /api/status отдаёт готовые значения
+    _status.start()
 
     # Фоновая автоматическая проверка обновлений при старте лаунчера
     threading.Timer(2.0, check_github_updates).start()

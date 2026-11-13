@@ -618,6 +618,7 @@ from modules.media_uia import (
     _uia_invoke_ytm_queue_play,
     _uia_invoke_ytm_queue_menu,
     invalidate_dom_cache,
+    uia_ytm_set_mode,
 )
 from modules.media_volume import (
     _match_player_process,
@@ -772,9 +773,139 @@ def _update_latest_media_info(info: dict):
         _latest_media_info = dict(info)
 
 
+#   Режимы воспроизведения (обычный / повтор трека / перемешивание).
+#
+# Раньше режим всегда эмулировался сервером: поток раз в 0,75 с ждал «последние 1,8 с трека»,
+# чтобы перемотать в начало или прыгнуть на случайный трек. Позиция YouTube Music читается
+# с задержкой, окно в 1,8 с часто пропускалось — трек просто переключался дальше, и казалось,
+# что режим не меняется. Сам плеер о режиме ничего не знал, а включённый на ПК повтор телефон
+# не видел. Теперь режим включается в самом плеере, эмуляция — только запасной путь:
+#   1. SMTC (Windows): плееры, которые сами поддерживают перемешивание/повтор (Spotify и др.);
+#   2. YouTube Music в браузере: кнопки «Повтор» и «Перемешать» на панели плеера (UIA);
+#   3. эмуляция: по факту смены трека (надёжно) и в конце трека (для повтора).
+_mode_backend = {"name": "none"}          # "smtc" | "youtube-music" | "emulated" | "none"
+_mode_set_at = {"ts": 0.0}                # когда режим меняли с телефона (не перетирать его сразу)
+_emu_state = {"title": "", "since": 0.0}  # последний увиденный трек для эмуляции
+_EMU_OWN_ACTION_GRACE = 6.0               # смена трека в течение 6 с после нашей команды — наша
+
+
+def _native_mode_from_info(info: dict) -> str | None:
+    """Режим, который сейчас реально включён в плеере (если плеер его сообщает)."""
+    native = info.get("native_mode")
+    return native if native in ("normal", "repeat", "shuffle") else None
+
+
+async def _smtc_set_mode(mode: str) -> tuple[bool, str]:
+    session = await _select_media_session()
+    if session is None:
+        return False, "нет активного плеера"
+    try:
+        pb = session.get_playback_info()
+        controls = pb.controls if pb is not None else None
+    except Exception:
+        controls = None
+    if controls is None:
+        return False, "плеер не сообщает свои возможности"
+    shuffle_ok = bool(getattr(controls, "is_shuffle_enabled", False))
+    repeat_ok = bool(getattr(controls, "is_repeat_enabled", False))
+    if not shuffle_ok and not repeat_ok:
+        return False, "плеер не поддерживает режимы через Windows"
+    if mode == "shuffle" and not shuffle_ok:
+        return False, "плеер не поддерживает перемешивание через Windows"
+    if mode == "repeat" and not repeat_ok:
+        return False, "плеер не поддерживает повтор через Windows"
+    from winsdk.windows.media import MediaPlaybackAutoRepeatMode
+    ok = True
+    if shuffle_ok:
+        ok = await asyncio.wait_for(session.try_change_shuffle_active_async(mode == "shuffle"), timeout=1.5) and ok
+    if repeat_ok:
+        rep = MediaPlaybackAutoRepeatMode.TRACK if mode == "repeat" else MediaPlaybackAutoRepeatMode.NONE
+        ok = await asyncio.wait_for(session.try_change_auto_repeat_mode_async(rep), timeout=1.5) and ok
+    return bool(ok), "smtc"
+
+
+def apply_playback_mode(mode: str) -> tuple[str, str]:
+    """Включает режим самым надёжным доступным способом. Возвращает (backend, пояснение)."""
+    if is_safe_test_mode():
+        return "emulated", "safe-test"
+    reasons = []
+    try:
+        ok, why = asyncio.run(_smtc_set_mode(mode))
+        if ok:
+            return "smtc", why
+        reasons.append("Windows: " + why)
+    except Exception as e:
+        reasons.append(f"Windows: {e}")
+    with _media_info_lock:
+        app = str(_latest_media_info.get("app") or "").lower()
+        has_ytm = bool(_latest_media_info.get("ytm_dom"))
+    if has_ytm or not app or any(b in app for b in ("chrome", "msedge", "firefox", "brave", "opera")):
+        ok, why = uia_ytm_set_mode(mode)
+        if ok:
+            return "youtube-music", why
+        reasons.append("YouTube Music: " + why)
+    return "emulated", "; ".join(reasons)
+
+
+def _emulate_mode_tick(info: dict, mode: str):
+    """Запасной путь, когда плеер не умеет режим сам. Реагирует на факт смены трека,
+    а не только на «последние секунды» (их легко пропустить при опросе раз в 0,75 с)."""
+    global _last_auto_action, _repeat_locked_title
+    dur = float(info.get("duration") or 0)
+    pos = float(info.get("position") or 0)
+    title = info.get("title") or ""
+    now = time.time()
+    prev_title = _emu_state["title"]
+    changed = bool(title and prev_title and _norm_title(title) != _norm_title(prev_title))
+    if title:
+        if changed or not prev_title:
+            _emu_state["since"] = now
+        _emu_state["title"] = title
+    by_user = (now - _mq._last_manual_skip) < 4.0
+    by_us = (now - _mq._last_auto_action) < _EMU_OWN_ACTION_GRACE
+
+    if mode == "repeat":
+        if not _mq._repeat_locked_title and title:
+            _mq._repeat_locked_title = title
+            _repeat_locked_title = title
+        if changed and by_user:
+            # Пользователь сам переключил трек — теперь повторяется новый
+            _mq._repeat_locked_title = title
+            _repeat_locked_title = title
+            return
+        locked = _mq._repeat_locked_title
+        if dur > 5 and pos >= dur - 2.5 and not by_us and locked and _norm_title(title) == _norm_title(locked):
+            _mq._last_auto_action = now
+            _last_auto_action = now
+            asyncio.run(_control_media("seek", 0))
+            asyncio.run(_control_media("play"))
+        elif locked and title and _norm_title(title) != _norm_title(locked) and not by_user and not by_us:
+            # Плеер уже перешёл к следующему треку — возвращаемся к повторяемому
+            _mq._last_auto_action = now
+            _last_auto_action = now
+            asyncio.run(_control_media("prev"))
+            time.sleep(0.2)
+            asyncio.run(_control_media("seek", 0))
+
+    elif mode == "shuffle":
+        if changed and not by_user and not by_us:
+            # Трек сменился сам (закончился предыдущий) → вместо следующего по порядку — случайный
+            _mq._last_auto_action = now
+            _last_auto_action = now
+            with _queue_lock:
+                q_len = len(_queue_items)
+                cur = _mq._queue_current_idx
+            if q_len > 2:
+                choices = [i for i in range(q_len) if i != cur]
+                asyncio.run(_play_queue_index(target_idx=random.choice(choices)))
+            else:
+                for _ in range(random.randint(1, 3)):
+                    asyncio.run(_control_media("next"))
+                    time.sleep(0.14)
+
+
 def _media_monitor_worker():
     """Фоновый поток, непрерывно синхронизирующий медиа-сессию и живую очередь YouTube Music 24/7."""
-    global _last_auto_action, _repeat_locked_title
     # Поток живёт всё время работы сервера и не обрабатывает оконные сообщения, поэтому COM
     # здесь — MTA (так Microsoft рекомендует для клиентов UI Automation): вызовы UIA и
     # аудиосессий не ждут прокачки очереди сообщений однопоточного апартамента.
@@ -786,51 +917,25 @@ def _media_monitor_worker():
     while True:
         try:
             info = asyncio.run(_read_media_info())
+            mode = _media_mode.get("mode", "normal")
+            native = _native_mode_from_info(info) if info.get("available") else None
+            backend = _mode_backend["name"]
+            if native is not None and backend in ("smtc", "youtube-music", "none") and \
+                    (time.time() - _mode_set_at["ts"]) > 3.0:
+                # Режим поменяли в самом плеере на ПК — телефон показывает реальное состояние.
+                # Перемешивание YouTube Music — разовое действие без состояния, его не сбрасываем.
+                if not (mode == "shuffle" and backend == "youtube-music" and native == "normal"):
+                    if native != mode:
+                        _media_mode["mode"] = native
+                        mode = native
+            info["mode"] = mode
+            info["mode_backend"] = backend
             _update_latest_media_info(info)
 
-            mode = _media_mode.get("mode", "normal")
-            if info.get("available") and mode != "normal" and not is_safe_test_mode():
-                dur = float(info.get("duration") or 0)
-                pos = float(info.get("position") or 0)
-                title = info.get("title") or ""
-                now = time.time()
-
-                if mode == "repeat":
-                    if not _mq._repeat_locked_title and title:
-                        _mq._repeat_locked_title = title
-                        _repeat_locked_title = title
-                    if dur > 5 and pos >= dur - 1.8 and (now - _mq._last_auto_action) > 2.5:
-                        _mq._last_auto_action = now
-                        _last_auto_action = now
-                        asyncio.run(_control_media("seek", 0))
-                        asyncio.run(_control_media("play"))
-                    elif (
-                        _mq._repeat_locked_title
-                        and title
-                        and _norm_title(title) != _norm_title(_mq._repeat_locked_title)
-                        and (now - _mq._last_manual_skip) > 4.0
-                        and (now - _mq._last_auto_action) > 3.0
-                    ):
-                        _mq._last_auto_action = now
-                        _last_auto_action = now
-                        asyncio.run(_control_media("prev"))
-                        time.sleep(0.15)
-                        asyncio.run(_control_media("seek", 0))
-
-                elif mode == "shuffle":
-                    if dur > 6 and pos >= dur - 1.8 and (now - _mq._last_auto_action) > 4.0:
-                        _mq._last_auto_action = now
-                        _last_auto_action = now
-                        with _queue_lock:
-                            q_len = len(_queue_items)
-                        if q_len > 2:
-                            rand_idx = random.randint(0, q_len - 1)
-                            asyncio.run(_play_queue_index(target_idx=rand_idx))
-                        else:
-                            hops = random.randint(1, 3)
-                            for _ in range(hops):
-                                asyncio.run(_control_media("next"))
-                                time.sleep(0.14)
+            if info.get("available") and mode != "normal" and backend == "emulated" and not is_safe_test_mode():
+                _emulate_mode_tick(info, mode)
+            elif info.get("title"):
+                _emu_state["title"] = info.get("title") or ""
         except Exception:
             pass
 
@@ -937,17 +1042,29 @@ def media_mode():
     mode = str(data.get("mode", "")).strip().lower()
     if mode not in ("normal", "repeat", "shuffle"):
         return jsonify({"message": "Неизвестный режим"}), 400
+    backend, detail = apply_playback_mode(mode)
+    _mode_backend["name"] = backend
+    _mode_set_at["ts"] = time.time()
     _media_mode["mode"] = mode
     _mq._repeat_locked_title = ""
     _repeat_locked_title = ""
+    with _media_info_lock:
+        _emu_state["title"] = str(_latest_media_info.get("title") or "")
+        _latest_media_info["mode"] = mode
+        _latest_media_info["mode_backend"] = backend
     _media_wake_event.set()
     labels = {
         "normal": "Обычный порядок воспроизведения",
         "repeat": "Повтор текущего трека включён",
         "shuffle": "Перемешивание треков включено",
     }
-    log_action("media_mode", {"mode": mode})
-    return jsonify({"mode": mode, "message": labels.get(mode, f"Режим установлен: {mode}")})
+    where = {
+        "smtc": " (в плеере)",
+        "youtube-music": " (в YouTube Music)",
+        "emulated": " (управляет PC Control)",
+    }.get(backend, "")
+    log_action("media_mode", {"mode": mode, "backend": backend, "detail": detail[:200]})
+    return jsonify({"mode": mode, "backend": backend, "message": labels.get(mode, f"Режим установлен: {mode}") + where})
 
 
 @media_bp.route("/media/queue")

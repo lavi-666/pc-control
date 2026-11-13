@@ -3,6 +3,7 @@ PC Control — Модуль персистентной истории просл
 """
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -18,6 +19,40 @@ def get_listening_history() -> list[dict]:
     return _listening_history
 
 
+_YT_THUMB_ID_RE = re.compile(r"/vi(?:_webp)?/([A-Za-z0-9_-]{11})/")
+
+
+def _sanitize_history(items: list[dict]) -> list[dict]:
+    """Чинит записи, испорченные прежними версиями:
+      * обложки data:URL (до ~100 КБ каждая) — ответ /media/queue раздувался до 2 МБ;
+      * чужой video_id: запись наследовала его от «похожего» названия («Серия 1» → «Серия 10»),
+        и «Играть из истории» включало другой трек. Если ссылка на обложку YouTube указывает
+        на другой ролик — верим обложке; если один video_id у разных названий и обложка его
+        не подтверждает — сбрасываем (трек найдётся поиском по названию)."""
+    out = []
+    for x in items:
+        if not isinstance(x, dict) or not x.get("title"):
+            continue
+        h = dict(x)
+        thumb = str(h.get("thumbnail") or "")
+        if not thumb.startswith("http"):
+            h["thumbnail"] = ""
+        m = _YT_THUMB_ID_RE.search(thumb)
+        if m and h.get("video_id") != m.group(1):
+            h["video_id"] = m.group(1)
+        out.append(h)
+    titles_by_vid: dict[str, set] = {}
+    for h in out:
+        vid = h.get("video_id") or ""
+        if vid:
+            titles_by_vid.setdefault(vid, set()).add(str(h.get("title", "")).strip().lower())
+    for h in out:
+        vid = h.get("video_id") or ""
+        if vid and len(titles_by_vid.get(vid, ())) > 1 and f"/{vid}/" not in str(h.get("thumbnail") or ""):
+            h["video_id"] = ""
+    return out
+
+
 def _load_listening_history_impl(cache_meta_fn=None):
     global _listening_history
     if not LISTENING_HISTORY_FILE.exists():
@@ -25,7 +60,7 @@ def _load_listening_history_impl(cache_meta_fn=None):
     try:
         data = json.loads(LISTENING_HISTORY_FILE.read_text(encoding="utf-8"))
         if isinstance(data, list):
-            _listening_history[:] = [x for x in data if isinstance(x, dict) and x.get("title")][:LISTENING_HISTORY_MAX]
+            _listening_history[:] = _sanitize_history(data)[:LISTENING_HISTORY_MAX]
             if cache_meta_fn:
                 for h in _listening_history:
                     cache_meta_fn(
@@ -69,6 +104,8 @@ def _record_listening_history_locked_impl(
         meta = lookup_meta_fn(title, artist)
         if meta.get("thumbnail", "").startswith("http"):
             clean_t = meta["thumbnail"]
+    if clean_t and not clean_t.startswith("http"):
+        clean_t = ""  # data:URL в файл истории не пишем (каждая до ~100 КБ)
 
     if _listening_history:
         top_norm = norm_title_fn(_listening_history[0].get("title", "")) if norm_title_fn else _listening_history[0].get("title", "").strip().lower()
@@ -91,11 +128,17 @@ def _record_listening_history_locked_impl(
                 _save_listening_history_locked_impl()
             return
 
+    # Прежняя запись того же трека — только при точном совпадении названия. Раньше хватало
+    # вхождения строки («Серия 1» внутри «Серия 10», «Intro» внутри «Intro (Live)»): чужая запись
+    # удалялась, а новая наследовала её video_id — «Играть из истории» включало другой трек.
     prev_entry = None
     for idx in range(len(_listening_history) - 1, -1, -1):
         it = _listening_history[idx]
         it_norm = norm_title_fn(it.get("title", "")) if norm_title_fn else it.get("title", "").strip().lower()
-        if it_norm == norm_t or (len(norm_t) >= 5 and (norm_t in it_norm or it_norm in norm_t)):
+        if it_norm == norm_t:
+            prev_vid = it.get("video_id") or ""
+            if video_id and prev_vid and prev_vid != video_id:
+                continue  # то же название, другой ролик — это другая запись
             prev_entry = _listening_history.pop(idx)
             break
 

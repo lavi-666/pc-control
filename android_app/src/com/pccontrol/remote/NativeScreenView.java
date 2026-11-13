@@ -89,6 +89,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         void onCloseRequested();
         void onFullscreenToggled(boolean isFullscreen);
         void onSettingsChanged(int monitor, int height, int fps, int bitrate);
+        /** Громкость звука ПК изменена в настройках демонстрации (шестерёнка). */
+        void onStreamVolumeChanged(int percent, boolean muted);
     }
 
     // Режим работы
@@ -143,10 +145,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private boolean isMouseAbsolute = false;
     private float scrollSpeed = 1.0f;
     private boolean invertScroll = false;
-    private int opacityTpZone = 0;   // зона тачпада по умолчанию полностью прозрачна (но работает)
+    private int opacityTpZone = DEF_OP_TP_ZONE; // лёгкая подсветка зоны тачпада (QA U-25)
 
     // Цвет (оттенок) отдельных элементов интерфейса — настраивается в «Прозрачность и цвета»
     private static final int DEF_COL_TP_ZONE = PcUi.PC_ACCENT;
+    /** Default touchpad-zone tint, % (QA U-25: was 0 = invisible). */
+    private static final int DEF_OP_TP_ZONE = 12;
     private static final int DEF_COL_TP_BORDER = PcUi.PC_ACCENT;
     private int colTpZone = DEF_COL_TP_ZONE;
     private int colGear = PcUi.TEXT;
@@ -205,7 +209,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private boolean isAudioEnabled = true;
     private int audioVolume = 80;
     private boolean isAudioMuted = false;
-    private volatile String audioStatus = "Выключен";
+    private volatile String audioStatus = T("nsv_off_2", "Выключен");
     private volatile int audioStatusColor = PcUi.SUBTEXT;
     private AudioPlayerThread audioThread = null;
     private final Object audioLock = new Object();
@@ -227,7 +231,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private TextView diagFpsMinVal;
     private TextView diagBitrateVal;
     private TextView diagDroppedVal;
-    private TextView diagLatencyVal;
+    private TextView diagLatencyVal, diagRttVal;
+    private volatile long rttMs = -1, rttAt = 0;
     private TextView diagColorVal;
     private boolean isDiagVisible = false;
 
@@ -254,7 +259,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     // Параметры стрима
-    private String serverUrl = "";
+    private volatile String serverUrl = "";
     private String authToken = "";
     private int targetMonitor = 1;
     private int targetHeight = 1080;
@@ -313,7 +318,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
 
     private void init(Context context) {
-        setBackgroundColor(Color.parseColor("#030303"));
+        // Поля вокруг видео (letterbox) — чистый чёрный, как у самого экрана на OLED.
+        setBackgroundColor(Color.BLACK);
         loadPreferences();
         initInputEngine();
 
@@ -386,9 +392,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         inputClient.setListener(new PcInputClient.Listener() {
             @Override
-            public void onInputStateChanged(int state, String detail) {
+            public void onInputStateChanged(final int state, String detail) {
                 mainHandler.post(new Runnable() {
-                    @Override public void run() { updateQuickActionStates(); }
+                    @Override public void run() {
+                        updateQuickActionStates();
+                        announceInputLink(state);
+                    }
                 });
             }
 
@@ -427,7 +436,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (isMouseActive()) ensureInputClient();
         updateQuickActionStates();
         updateTouchpadZoneVisibility();
-        Toast.makeText(getContext(), isMouseActive() ? "Управление мышью включено" : "Управление мышью выключено", Toast.LENGTH_SHORT).show();
+        Toast.makeText(getContext(), isMouseActive() ? T("nsv_mouse_control_on", "Управление мышью включено") : T("nsv_mouse_control_off", "Управление мышью выключено"), Toast.LENGTH_SHORT).show();
     }
 
     /** Открывает поток ввода на ПК (только «Управление ПК» и только во время трансляции). */
@@ -440,7 +449,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void updateTouchpadZoneVisibility() {
         if (touchpadZoneView == null) return;
         boolean show = isMouseActive() && !isMouseAbsolute && !isTouchpadEditing && opacityTpZone > 0
-                && !isSplitSettingsOpen;
+                && !isSplitSettingsOpen && !isZoomMode;
         touchpadZoneView.setVisibility(show ? View.VISIBLE : View.GONE);
         touchpadZoneView.invalidate();
     }
@@ -509,7 +518,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 floatingControlsGroup.setVisibility(View.VISIBLE);
                 applyOpacities();
             }
-            if (titleView != null) titleView.setText("Управление ПК");
+            if (titleView != null) titleView.setText(T("nsv_pc_control", "Управление ПК"));
             if (isStreaming.get()) ensureInputClient();
         } else {
             // Демонстрация экрана — только просмотр: никакого ввода на ПК
@@ -522,9 +531,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             if (inputClient.isRunning()) inputClient.stop();
             // Микрофон — функция «Управления ПК»: в демонстрации нет кнопки, чтобы его выключить
             if (isMicStreaming) stopMicStreaming();
+            // Лупа — функция «Управления ПК»: в демонстрации картинка всегда 1×
+            setZoomMode(false, false);
+            resetZoom(false);
             isViewMouseEnabled = false;
             if (topToolbar != null) topToolbar.setVisibility(View.VISIBLE);
-            if (titleView != null) titleView.setText("Демонстрация экрана");
+            if (titleView != null) titleView.setText(T("nsv_screen_sharing", "Демонстрация экрана"));
         }
         updateQuickActionStates();
         updateTouchpadZoneVisibility();
@@ -540,6 +552,27 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
      * Меню по умолчанию закрыто; шестерёнка или стрелка плавно выдвигают его влево.
      */
     private LinearLayout floatingMenuStrip;
+    private MaxWidthScroll menuScroll;
+
+    /** HorizontalScrollView that never gets wider than maxW (QA P2-1). */
+    private static final class MaxWidthScroll extends android.widget.HorizontalScrollView {
+        int maxW;
+
+        MaxWidthScroll(Context c) {
+            super(c);
+        }
+
+        @Override
+        protected void onMeasure(int wSpec, int hSpec) {
+            if (maxW > 0) {
+                int size = MeasureSpec.getSize(wSpec);
+                int mode = MeasureSpec.getMode(wSpec);
+                int cap = mode == MeasureSpec.UNSPECIFIED ? maxW : Math.min(size, maxW);
+                wSpec = MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST);
+            }
+            super.onMeasure(wSpec, hSpec);
+        }
+    }
     private PcUi.IconBtn floatingSettingsBtn;
     private PcUi.IconBtn floatingFsBtn;
     private PcUi.IconBtn floatingMicBtn;
@@ -553,7 +586,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         // Шестерёнка: открывает полноценные настройки демонстрации и управления ПК
         // (выдвижное меню быстрых функций — только по стрелке). Можно перетащить в другое место.
-        floatingGearBtn = new PcUi.IconBtn(context, PcIcons.GEAR, 46, 22, true, "Настройки");
+        floatingGearBtn = new PcUi.IconBtn(context, PcIcons.GEAR, 46, 22, true, T("nsv_settings", "Настройки"));
         floatingGearBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -608,7 +641,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         });
 
         // Стрелка слева от шестерёнки, направлена влево (куда выдвигается меню)
-        floatingArrowBtn = new PcUi.IconBtn(context, PcIcons.CHEVRON_LEFT, 40, 20, true, "Развернуть меню");
+        floatingArrowBtn = new PcUi.IconBtn(context, PcIcons.CHEVRON_LEFT, 40, 20, true, T("nsv_expand_the_menu", "Развернуть меню"));
         floatingArrowBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -625,22 +658,27 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         // Настройки открываются шестерёнкой, поэтому отдельной кнопки настроек в меню нет
         floatingSettingsBtn = null;
-        floatingSoundBtn = menuButton(context, PcIcons.HEADPHONES, "Звук ПК", new Runnable() {
+        floatingSoundBtn = menuButton(context, PcIcons.HEADPHONES, T("nsv_pc_sound", "Звук ПК"), new Runnable() {
             @Override public void run() { setAudioEnabled(!isAudioEnabled); updateQuickActionStates(); }
         });
-        floatingMicBtn = menuButton(context, PcIcons.MIC, "Микрофон", new Runnable() {
+        floatingMicBtn = menuButton(context, PcIcons.MIC, tr("btn_my_voice", "Мой голос на ПК"), new Runnable() {
             @Override public void run() { toggleMicStreaming(); }
         });
-        floatingFsBtn = menuButton(context, isFullscreen ? PcIcons.FULLSCREEN_EXIT : PcIcons.FULLSCREEN, "Полноэкранный режим", new Runnable() {
+        floatingFsBtn = menuButton(context, isFullscreen ? PcIcons.FULLSCREEN_EXIT : PcIcons.FULLSCREEN, T("nsv_full_screen", "Полноэкранный режим"), new Runnable() {
             @Override public void run() { toggleFullscreen(); }
         });
-        floatingKbdBtn = menuButton(context, PcIcons.KEYBOARD, "Клавиатура", new Runnable() {
+        floatingKbdBtn = menuButton(context, PcIcons.KEYBOARD, T("nsv_keyboard", "Клавиатура"), new Runnable() {
             @Override public void run() { toggleCustomKeyboard(); }
         });
-        floatingMouseBtn = menuButton(context, PcIcons.MOUSE, "Мышь (тачпад)", new Runnable() {
+        floatingMouseBtn = menuButton(context, PcIcons.MOUSE, T("nsv_mouse_touchpad", "Мышь (тачпад)"), new Runnable() {
             @Override public void run() { toggleMouseControl(); }
         });
-        View[] items = {floatingSoundBtn, floatingMicBtn, floatingFsBtn, floatingKbdBtn, floatingMouseBtn};
+        // QA U-24: visible exit (✕ «Завершить») at the start of the drawer
+        PcUi.IconBtn floatingExitBtn = menuButton(context, PcIcons.CLOSE, tr("stream_exit", "Завершить"), new Runnable() {
+            @Override public void run() { closeStreamAndExit(); }
+        });
+        floatingExitBtn.setState(PcUi.ST_DANGER);
+        View[] items = {floatingExitBtn, floatingSoundBtn, floatingMicBtn, floatingFsBtn, floatingKbdBtn, floatingMouseBtn};
         for (View b : items) {
             floatingMenuStrip.addView(b);
             addToolbarSpacer(context, floatingMenuStrip, 8);
@@ -650,12 +688,74 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         headRow.setOrientation(LinearLayout.HORIZONTAL);
         headRow.setGravity(Gravity.CENTER_VERTICAL);
         headRow.setClipChildren(false);
-        headRow.addView(floatingMenuStrip);
+        // QA P2-1: in portrait the drawer was wider than the screen (the gear went off-screen, «Лупа»
+        // clipped) — it scrolls horizontally inside the width that is left (set in onMeasure).
+        menuScroll = new MaxWidthScroll(context);
+        menuScroll.setHorizontalScrollBarEnabled(false);
+        menuScroll.setClipChildren(false);
+        menuScroll.addView(floatingMenuStrip);
+        headRow.addView(menuScroll);
         headRow.addView(floatingArrowBtn);
         addToolbarSpacer(context, headRow, 8);
         headRow.addView(floatingGearBtn);
 
-        floatingControlsGroup.addView(headRow);
+        // Под шестерёнкой: [плашка «2.4×»] [лупа]. Лупа включает режим масштаба (тачпад на паузе):
+        // щипок — масштаб, палец — сдвиг, двойной тап — 1×/2.5×. Долгое нажатие / тап по плашке — 1×.
+        floatingZoomBtn = new PcUi.IconBtn(context, PcIcons.ZOOM_IN, 46, 22, true, tr("zoom_btn", "Лупа"));
+        floatingZoomBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setZoomMode(!isZoomMode, true);
+            }
+        });
+        floatingZoomBtn.setOnLongClickListener(new OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View v) {
+                v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+                resetZoom(true);
+                return true;
+            }
+        });
+
+        zoomPill = new TextView(context);
+        zoomPill.setTextColor(PcUi.TEXT);
+        zoomPill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        zoomPill.setTypeface(PcUi.medium());
+        zoomPill.setIncludeFontPadding(false);
+        zoomPill.setGravity(Gravity.CENTER);
+        zoomPill.setPadding(dpToPx(12), 0, dpToPx(12), 0);
+        zoomPill.setMinWidth(dpToPx(52));
+        zoomPill.setBackground(PcUi.shape(PcUi.FLOAT_BG, dpToPx(16), PcUi.BORDER_STRONG, dpToPx(1)));
+        zoomPill.setContentDescription(tr("zoom_reset", "Сбросить масштаб (1×)"));
+        zoomPill.setVisibility(View.GONE);
+        zoomPill.setClickable(true);
+        PcUi.pressable(zoomPill);
+        zoomPill.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                resetZoom(true);
+            }
+        });
+
+        LinearLayout zoomRow = new LinearLayout(context);
+        zoomRow.setOrientation(LinearLayout.HORIZONTAL);
+        zoomRow.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        zoomRow.setClipChildren(false);
+        zoomRow.addView(zoomPill, new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, dpToPx(32)));
+        addToolbarSpacer(context, zoomRow, 8);
+        zoomRow.addView(floatingZoomBtn);
+
+        LinearLayout column = new LinearLayout(context);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setGravity(Gravity.END);
+        column.setClipChildren(false);
+        column.addView(headRow, new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams zlp = new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
+        zlp.gravity = Gravity.END;
+        zlp.topMargin = dpToPx(10);
+        column.addView(zoomRow, zlp);
+
+        floatingControlsGroup.addView(column);
         addView(floatingControlsGroup, new FrameLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
 
         applyUserTints();
@@ -701,8 +801,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void maybeWarnLegacyServer(int state) {
         if (state == PcInputClient.STATE_LEGACY && !legacyWarningShown) {
             legacyWarningShown = true;
-            Toast.makeText(getContext(), "Сервер PC Control на ПК устарел: мышь работает в медленном режиме. "
-                    + "Перезапустите сервер на ПК.", Toast.LENGTH_LONG).show();
+            Toast.makeText(getContext(), T("nsv_the_pc_control_server_on_the_pc_is_o_2", "Сервер PC Control на ПК устарел: мышь работает в медленном режиме. ")
+                    + T("nsv_restart_the_server_on_the_pc", "Перезапустите сервер на ПК."), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -712,7 +812,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         isQuickDrawerOpen = !isQuickDrawerOpen;
         floatingArrowBtn.animate().rotation(isQuickDrawerOpen ? 180f : 0f).setDuration(240)
                 .setInterpolator(new DecelerateInterpolator()).start();
-        floatingArrowBtn.setContentDescription(isQuickDrawerOpen ? "Свернуть меню" : "Развернуть меню");
+        floatingArrowBtn.setContentDescription(isQuickDrawerOpen ? T("nsv_collapse_the_menu", "Свернуть меню") : T("nsv_expand_the_menu", "Развернуть меню"));
         final int n = floatingMenuStrip.getChildCount();
         final float step = dpToPx(52);
         floatingMenuStrip.animate().cancel();
@@ -824,6 +924,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             keyboardPanel.setVisibility(View.GONE);
         }
         releaseLocalInputState(false);
+        setZoomMode(false, false);
         if (touchpadZoneView != null) touchpadZoneView.setVisibility(View.GONE);
 
         splitSettingsContainer.animate().cancel();
@@ -915,6 +1016,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private void renderSplitSettingsContent() {
         splitSettingsCard.removeAllViews();
+        volMuteTile = null;
+        volValueText = null;
+        volBar = null;
         Context ctx = getContext();
         int s = activeSettingsSection;
 
@@ -929,7 +1033,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             tile.setBackground(PcUi.shape(PcUi.RED_SOFT, dpToPx(8), 0, 0));
             head.addView(tile, new LinearLayout.LayoutParams(dpToPx(28), dpToPx(28)));
         } else {
-            PcUi.IconBtn back = new PcUi.IconBtn(ctx, PcIcons.CHEVRON_LEFT, 30, 18, true, "Назад к разделам");
+            PcUi.IconBtn back = new PcUi.IconBtn(ctx, PcIcons.CHEVRON_LEFT, 30, 18, true, T("nsv_back_to_sections", "Назад к разделам"));
             back.setBackground(PcUi.oval(0x14FFFFFF, 0, 0));
             back.setOnClickListener(new OnClickListener() {
                 @Override
@@ -947,7 +1051,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         tlp.rightMargin = dpToPx(8);
         head.addView(title, tlp);
 
-        PcUi.IconBtn closeX = new PcUi.IconBtn(ctx, PcIcons.CLOSE, 30, 16, true, "Закрыть настройки");
+        PcUi.IconBtn closeX = new PcUi.IconBtn(ctx, PcIcons.CLOSE, 30, 16, true, T("nsv_close_settings", "Закрыть настройки"));
         closeX.setBackground(PcUi.oval(0x14FFFFFF, 0, 0));
         closeX.icon.setColor(0x99FFFFFF);
         closeX.setOnClickListener(new OnClickListener() {
@@ -986,41 +1090,46 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private String getSectionTitle(int s) {
         switch (s) {
-            case 1: return "Экран";
-            case 2: return "Качество изображения";
-            case 3: return "Частота кадров";
-            case 4: return "Тачпад и мышь";
-            case 5: return "Клавиатура ПК";
-            case 6: return "Прозрачность и цвета";
-            default: return "Настройки";
+            case 1: return T("nsv_screen", "Экран");
+            case 2: return T("nsv_picture_quality", "Качество изображения");
+            case 3: return T("nsv_frame_rate_2", "Частота кадров");
+            case 4: return T("nsv_touchpad_mouse", "Тачпад и мышь");
+            case 5: return T("nsv_pc_keyboard", "Клавиатура ПК");
+            case 6: return T("nsv_opacity_and_colours", "Прозрачность и цвета");
+            default: return T("nsv_settings", "Настройки");
         }
     }
 
     private String getSectionSubtitle(int s) {
         switch (s) {
-            case 1: return "Какой монитор ПК транслировать.";
-            case 2: return "Разрешение и битрейт видеопотока.";
-            case 3: return "Частота кадров трансляции.";
-            case 4: return "Перетаскивайте зону и её маркеры прямо на видео справа.";
-            case 5: return "Собственная клавиатура PC Control — системная клавиатура Android не используется.";
-            case 6: return "Прозрачность и цвет каждого элемента управления.";
-            default: return operatingMode == MODE_PC_CONTROL ? "Управление ПК · трансляция, мышь и клавиатура" : "Демонстрация экрана · трансляция";
+            case 1: return T("nsv_which_pc_monitor_to_stream", "Какой монитор ПК транслировать.");
+            case 2: return T("nsv_resolution_and_bitrate_of_the_video_", "Разрешение и битрейт видеопотока.");
+            case 3: return T("nsv_frame_rate_of_the_stream", "Частота кадров трансляции.");
+            case 4: return getHeight() > getWidth()
+                    // QA P2-2: in portrait the settings cover the video
+                    ? T("nsv_drag_area_portrait", "Нажмите «Редактор тачпада» и перетаскивайте зону и её маркеры прямо на видео.")
+                    : T("nsv_drag_the_area_and_its_handles_right_", "Перетаскивайте зону и её маркеры прямо на видео справа.");
+            case 5: return T("nsv_pc_control_s_own_keyboard_the_androi", "Собственная клавиатура PC Control — системная клавиатура Android не используется.");
+            case 6: return T("nsv_opacity_and_colour_of_every_control", "Прозрачность и цвет каждого элемента управления.");
+            default: return operatingMode == MODE_PC_CONTROL ? T("nsv_pc_control_stream_mouse_and_keyboard", "Управление ПК · трансляция, мышь и клавиатура") : T("nsv_screen_sharing_stream", "Демонстрация экрана · трансляция");
         }
     }
 
     private void buildMainSettingsMenu(final Context ctx) {
-        addNav(ctx, PcIcons.MONITOR, "Экран", "Выбор монитора", 1);
-        addNav(ctx, PcIcons.IMAGE, "Качество изображения", "Разрешение и битрейт", 2);
-        addNav(ctx, PcIcons.CLOCK, "Частота кадров", "30 · 60 · 90 FPS", 3);
+        addNav(ctx, PcIcons.MONITOR, T("nsv_screen", "Экран"), T("nsv_choose_the_monitor", "Выбор монитора"), 1);
+        // Второй пункт — громкость звука ПК прямо в меню (без отдельной кнопки на экране)
+        settingsBody.addView(buildStreamVolumeRow(ctx));
+        addNav(ctx, PcIcons.IMAGE, T("nsv_picture_quality", "Качество изображения"), T("nsv_resolution_and_bitrate", "Разрешение и битрейт"), 2);
+        addNav(ctx, PcIcons.CLOCK, T("nsv_frame_rate_2", "Частота кадров"), "30 · 60 · 90 FPS", 3);
         if (operatingMode == MODE_PC_CONTROL) {
             // Ввод настраивается только в «Управлении ПК»; в демонстрации — лишь параметры видео
-            addNav(ctx, PcIcons.MOUSE, "Тачпад и мышь", "Зона, чувствительность, прокрутка", 4);
-            addNav(ctx, PcIcons.KEYBOARD, "Клавиатура ПК", "Размер, положение, язык", 5);
-            addNav(ctx, PcIcons.EYE, "Прозрачность и цвета", "Зона тачпада, шестерёнка, меню, клавиатура", 6);
+            addNav(ctx, PcIcons.MOUSE, T("nsv_touchpad_mouse", "Тачпад и мышь"), T("nsv_area_sensitivity_scrolling", "Зона, чувствительность, прокрутка"), 4);
+            addNav(ctx, PcIcons.KEYBOARD, T("nsv_pc_keyboard", "Клавиатура ПК"), T("nsv_size_position_language", "Размер, положение, язык"), 5);
+            addNav(ctx, PcIcons.EYE, T("nsv_opacity_and_colours", "Прозрачность и цвета"), T("nsv_touchpad_area_gear_menu_keyboard", "Зона тачпада, шестерёнка, меню, клавиатура"), 6);
         }
 
         settingsBody.addView(PcUi.divider(ctx));
-        PcUi.Btn diagBtn = new PcUi.Btn(ctx, PcIcons.CHART, "Диагностика потока", true);
+        PcUi.Btn diagBtn = new PcUi.Btn(ctx, PcIcons.CHART, T("nsv_stream_diagnostics", "Диагностика потока"), true);
         diagBtn.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1031,6 +1140,114 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
         lp.topMargin = dpToPx(8);
         settingsBody.addView(diagBtn, lp);
+
+        // QA U-24: a visible way out (the system Back gesture was the only one in «Управление ПК»)
+        PcUi.Btn exitBtn = new PcUi.Btn(ctx, PcIcons.CLOSE, tr("stream_exit", "Завершить"), true);
+        exitBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeSplitSettingsWithAnimation();
+                closeStreamAndExit();
+            }
+        });
+        LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+        elp.topMargin = dpToPx(8);
+        settingsBody.addView(exitBtn, elp);
+    }
+
+    // ---- громкость звука ПК в меню настроек ----------------------------------------
+    private android.widget.ImageView volMuteTile;
+    private TextView volValueText;
+    private SeekBar volBar;
+
+    /**
+     * Карточка как у пунктов меню (navRow: surface2, радиус 14, рамка): плитка-значок = кнопка
+     * «без звука», заголовок + подпись, значение справа; под ней ползунок 0–200 %
+     * (как SliderRow раздела). Общая с ползунком громкости демонстрации на главном экране.
+     */
+    private View buildStreamVolumeRow(Context ctx) {
+        LinearLayout card = new LinearLayout(ctx);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dpToPx(12), dpToPx(11), dpToPx(12), dpToPx(4));
+        card.setBackground(PcUi.shape(PcUi.SURFACE2, dpToPx(14), PcUi.BORDER, dpToPx(1)));
+
+        LinearLayout head = new LinearLayout(ctx);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        volMuteTile = new android.widget.ImageView(ctx);
+        volMuteTile.setScaleType(android.widget.ImageView.ScaleType.CENTER);
+        volMuteTile.setClickable(true);
+        volMuteTile.setFocusable(true);
+        volMuteTile.setContentDescription(T("nsv_muted", "Без звука"));
+        PcUi.pressable(volMuteTile);
+        volMuteTile.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                applyStreamVolumeFromSettings(streamVolumePercent, !streamVolumeMuted);
+            }
+        });
+        head.addView(volMuteTile, new LinearLayout.LayoutParams(dpToPx(32), dpToPx(32)));
+
+        LinearLayout names = new LinearLayout(ctx);
+        names.setOrientation(LinearLayout.VERTICAL);
+        names.setPadding(dpToPx(12), 0, dpToPx(8), 0);
+        TextView t = PcUi.text(ctx, T("nsv_pc_sound", "Звук ПК"), 14f, PcUi.TEXT, PcUi.medium());
+        t.setSingleLine(true);
+        t.setEllipsize(TextUtils.TruncateAt.END);
+        names.addView(t);
+        TextView st = PcUi.text(ctx, T("nsv_stream_volume_on_the_phone", "Громкость трансляции на телефоне"), 11f, PcUi.SUBTEXT, null);
+        st.setPadding(0, dpToPx(3), 0, 0);
+        st.setSingleLine(true);
+        st.setEllipsize(TextUtils.TruncateAt.END);
+        names.addView(st);
+        head.addView(names, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
+
+        volValueText = PcUi.text(ctx, "", 12f, PcUi.TEXT, Typeface.MONOSPACE);
+        volValueText.setGravity(Gravity.END);
+        volValueText.setMinWidth(dpToPx(40));
+        head.addView(volValueText);
+        card.addView(head);
+
+        volBar = PcUi.slider(ctx, 0, PcAudioGain.MAX_PERCENT, streamVolumePercent, new PcUi.SliderListener() {
+            @Override
+            public void onValue(int value) {
+                // ползунок выше нуля снимает «без звука» (как на главном экране)
+                applyStreamVolumeFromSettings(value, value > 0 ? false : streamVolumeMuted);
+            }
+        });
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, dpToPx(32));
+        blp.topMargin = dpToPx(4);
+        blp.leftMargin = -dpToPx(4);
+        blp.rightMargin = -dpToPx(4);
+        card.addView(volBar, blp);
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dpToPx(8);
+        card.setLayoutParams(lp);
+        syncStreamVolumeRow();
+        return card;
+    }
+
+    /** Изменение из меню: применяется к звуку сразу, приложение сохраняет на ПК и обновляет главный экран. */
+    private void applyStreamVolumeFromSettings(int percent, boolean muted) {
+        streamVolumePercent = Math.max(0, Math.min(PcAudioGain.MAX_PERCENT, percent));
+        streamVolumeMuted = muted;
+        syncStreamVolumeRow();
+        if (playerCallback != null) playerCallback.onStreamVolumeChanged(streamVolumePercent, streamVolumeMuted);
+    }
+
+    /** Отрисовать текущую громкость в карточке меню (если она открыта). */
+    private void syncStreamVolumeRow() {
+        if (volMuteTile == null || volValueText == null || volBar == null) return;
+        boolean off = streamVolumeMuted || streamVolumePercent == 0;
+        volMuteTile.setImageDrawable(new PcIconDrawable(off ? PcAppIcons.VOL_MUTE : PcAppIcons.VOL_ON,
+                off ? PcUi.DANGER : PcUi.TEXT, dpToPx(18)));
+        volMuteTile.setBackground(off ? PcUi.shape(PcUi.DANGER_BG, dpToPx(8), PcUi.DANGER_BORDER, dpToPx(1))
+                : PcUi.shape(PcUi.SURFACE3, dpToPx(8), 0, 0));
+        volValueText.setText(streamVolumePercent + "%");
+        volValueText.setTextColor(off ? PcUi.MUTED : PcUi.TEXT);
+        if (volBar.getProgress() != streamVolumePercent) volBar.setProgress(streamVolumePercent);
+        volBar.setAlpha(streamVolumeMuted ? 0.55f : 1f);
     }
 
     private void addNav(Context ctx, String[] icon, String title, String subtitle, final int section) {
@@ -1165,8 +1382,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             touchpadVisualEditor.invalidate();
         }
 
-        addTitle("Зона тачпада");
-        final SliderRow wRow = addValueSlider("Ширина", 15, 95, Math.round(tpNormW * 100), new SliderChange() {
+        addTitle(T("nsv_touchpad_area", "Зона тачпада"));
+        final SliderRow wRow = addValueSlider(T("nsv_width_3", "Ширина"), 15, 95, Math.round(tpNormW * 100), new SliderChange() {
             @Override
             public String onChange(int val) {
                 tpNormW = Math.min(val / 100f, 1f - tpNormX);
@@ -1175,7 +1392,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
         wRow.row.set(pct(tpNormW));
-        final SliderRow hRow = addValueSlider("Высота", 15, 95, Math.round(tpNormH * 100), new SliderChange() {
+        final SliderRow hRow = addValueSlider(T("nsv_height_3", "Высота"), 15, 95, Math.round(tpNormH * 100), new SliderChange() {
             @Override
             public String onChange(int val) {
                 tpNormH = Math.min(val / 100f, 1f - tpNormY);
@@ -1193,24 +1410,24 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         };
 
-        addTitle("Точная подстройка (±1%)");
+        addTitle(T("nsv_fine_tuning_1", "Точная подстройка (±1%)"));
         addButtonRow(
                 smallBtn("X −", new Runnable() { @Override public void run() { tpNormX = Math.max(0f, tpNormX - 0.01f); invalidateTouchpadEditor(); } }),
                 smallBtn("X +", new Runnable() { @Override public void run() { tpNormX = Math.min(1f - tpNormW, tpNormX + 0.01f); invalidateTouchpadEditor(); } }),
                 smallBtn("Y −", new Runnable() { @Override public void run() { tpNormY = Math.max(0f, tpNormY - 0.01f); invalidateTouchpadEditor(); } }),
                 smallBtn("Y +", new Runnable() { @Override public void run() { tpNormY = Math.min(1f - tpNormH, tpNormY + 0.01f); invalidateTouchpadEditor(); } }));
         addButtonRow(
-                smallBtn("Шир −", new Runnable() { @Override public void run() {
+                smallBtn(T("nsv_width_2", "Шир −"), new Runnable() { @Override public void run() {
                     tpNormW = Math.max(0.15f, tpNormW - 0.01f); wRow.set(Math.round(tpNormW * 100), pct(tpNormW)); invalidateTouchpadEditor(); } }),
-                smallBtn("Шир +", new Runnable() { @Override public void run() {
+                smallBtn(T("nsv_width", "Шир +"), new Runnable() { @Override public void run() {
                     tpNormW = Math.min(1f - tpNormX, tpNormW + 0.01f); wRow.set(Math.round(tpNormW * 100), pct(tpNormW)); invalidateTouchpadEditor(); } }),
-                smallBtn("Выс −", new Runnable() { @Override public void run() {
+                smallBtn(T("nsv_height_2", "Выс −"), new Runnable() { @Override public void run() {
                     tpNormH = Math.max(0.15f, tpNormH - 0.01f); hRow.set(Math.round(tpNormH * 100), pct(tpNormH)); invalidateTouchpadEditor(); } }),
-                smallBtn("Выс +", new Runnable() { @Override public void run() {
+                smallBtn(T("nsv_height", "Выс +"), new Runnable() { @Override public void run() {
                     tpNormH = Math.min(1f - tpNormY, tpNormH + 0.01f); hRow.set(Math.round(tpNormH * 100), pct(tpNormH)); invalidateTouchpadEditor(); } }));
 
-        addTitle("Мышь");
-        SliderRow sens = addValueSlider("Чувствительность", 2, 30, Math.round(mouseSensitivity * 10), new SliderChange() {
+        addTitle(T("nsv_mouse", "Мышь"));
+        SliderRow sens = addValueSlider(T("nsv_sensitivity", "Чувствительность"), 2, 30, Math.round(mouseSensitivity * 10), new SliderChange() {
             @Override
             public String onChange(int val) {
                 mouseSensitivity = val / 10f;
@@ -1219,14 +1436,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
         sens.row.set(fmt1(mouseSensitivity));
-        addSeg("Режим", new String[]{"Тачпад", "Прямое касание"}, isMouseAbsolute ? 1 : 0, new PcUi.SegListener() {
+        addSeg(T("nsv_mode", "Режим"), new String[]{T("nsv_touchpad", "Тачпад"), T("nsv_direct_touch", "Прямое касание")}, isMouseAbsolute ? 1 : 0, new PcUi.SegListener() {
             @Override
             public void onSelect(int i) {
                 isMouseAbsolute = i == 1;
                 applyTouchpadConfig();
             }
         });
-        addSeg("Ускорение указателя", new String[]{"Вкл", "Выкл"}, mouseAccel ? 0 : 1, new PcUi.SegListener() {
+        addSeg(T("nsv_pointer_acceleration", "Ускорение указателя"), new String[]{T("nsv_on", "Вкл"), T("nsv_off", "Выкл")}, mouseAccel ? 0 : 1, new PcUi.SegListener() {
             @Override
             public void onSelect(int i) {
                 mouseAccel = i == 0;
@@ -1234,8 +1451,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
 
-        addTitle("Прокрутка двумя пальцами");
-        SliderRow sc = addValueSlider("Скорость прокрутки", 3, 30, Math.round(scrollSpeed * 10), new SliderChange() {
+        addTitle(T("nsv_two_finger_scrolling", "Прокрутка двумя пальцами"));
+        SliderRow sc = addValueSlider(T("nsv_scroll_speed", "Скорость прокрутки"), 3, 30, Math.round(scrollSpeed * 10), new SliderChange() {
             @Override
             public String onChange(int val) {
                 scrollSpeed = val / 10f;
@@ -1244,7 +1461,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
         sc.row.set(fmt1(scrollSpeed));
-        addSeg("Направление", new String[]{"Естественное", "Обратное"}, invertScroll ? 1 : 0, new PcUi.SegListener() {
+        addSeg(T("nsv_direction", "Направление"), new String[]{T("nsv_natural", "Естественное"), T("nsv_reversed", "Обратное")}, invertScroll ? 1 : 0, new PcUi.SegListener() {
             @Override
             public void onSelect(int i) {
                 invertScroll = i == 1;
@@ -1252,8 +1469,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
 
-        addTitle("Отображение");
-        SliderRow zone = addValueSlider("Видимость зоны на видео", 0, 100, opacityTpZone, new SliderChange() {
+        addTitle(T("nsv_display", "Отображение"));
+        SliderRow zone = addValueSlider(T("nsv_area_visibility_on_the_video", "Видимость зоны на видео"), 0, 100, opacityTpZone, new SliderChange() {
             @Override
             public String onChange(int val) {
                 opacityTpZone = val;
@@ -1261,14 +1478,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         });
         zone.row.set(opacityTpZone + "%");
-        addHint("0% — зона не видна поверх изображения ПК, но работает.");
-        addColorRow("Цвет зоны", colTpZone, new PcUi.ColorListener() {
+        addHint(T("nsv_0_the_area_is_invisible_over_the_pc_", "0% — зона не видна поверх изображения ПК, но работает."));
+        addColorRow(T("nsv_area_colour", "Цвет зоны"), colTpZone, new PcUi.ColorListener() {
             @Override public void onColor(int c) { colTpZone = c; applyUserTints(); }
         });
 
         settingsBody.addView(PcUi.divider(ctx));
         addButtonRow(
-                actionBtn(PcIcons.RESET, "Сброс", PcUi.ST_NORMAL, new Runnable() {
+                actionBtn(PcIcons.RESET, T("nsv_reset", "Сброс"), PcUi.ST_NORMAL, new Runnable() {
                     @Override
                     public void run() {
                         tpNormX = 0.55f;
@@ -1280,13 +1497,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         isMouseAbsolute = false;
                         scrollSpeed = 1.0f;
                         invertScroll = false;
-                        opacityTpZone = 0;
+                        opacityTpZone = DEF_OP_TP_ZONE;
                         applyTouchpadConfig();
                         savePreferences();
                         renderSplitSettingsContent();
                     }
                 }),
-                actionBtn(null, "Отмена", PcUi.ST_NORMAL, new Runnable() {
+                actionBtn(null, T("nsv_cancel", "Отмена"), PcUi.ST_NORMAL, new Runnable() {
                     @Override
                     public void run() {
                         tpNormX = initX;
@@ -1294,15 +1511,15 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         tpNormW = initW;
                         tpNormH = initH;
                         closeSplitSettingsWithAnimation();
-                        Toast.makeText(getContext(), "Изменения зоны тачпада отменены", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(getContext(), T("nsv_touchpad_area_changes_discarded", "Изменения зоны тачпада отменены"), Toast.LENGTH_SHORT).show();
                     }
                 }));
-        addButtonRow(actionBtn(PcIcons.CHECK, "Применить", PcUi.ST_PRIMARY, new Runnable() {
+        addButtonRow(actionBtn(PcIcons.CHECK, T("nsv_apply", "Применить"), PcUi.ST_PRIMARY, new Runnable() {
             @Override
             public void run() {
                 savePreferences();
                 closeSplitSettingsWithAnimation();
-                Toast.makeText(getContext(), "Настройки тачпада сохранены", Toast.LENGTH_SHORT).show();
+                Toast.makeText(getContext(), T("nsv_touchpad_settings_saved", "Настройки тачпада сохранены"), Toast.LENGTH_SHORT).show();
             }
         }));
     }
@@ -1315,8 +1532,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     // РАЗДЕЛ: КЛАВИАТУРА (СОБСТВЕННАЯ КЛАВИАТУРА И ПАРАМЕТРЫ)
     // -----------------------------------------------------------------------
     private void buildKeyboardSettingsSection(Context ctx) {
-        addTitle("Размер");
-        addValueSlider("Высота", 140, 360, kbdHeightDp, new SliderChange() {
+        addTitle(T("nsv_size", "Размер"));
+        addValueSlider(T("nsv_height_3", "Высота"), 140, 360, kbdHeightDp, new SliderChange() {
             @Override
             public String onChange(int val) {
                 kbdHeightDp = val;
@@ -1324,7 +1541,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 return val + " dp";
             }
         }).row.set(kbdHeightDp + " dp");
-        addValueSlider("Ширина", 40, 100, kbdWidthPct, new SliderChange() {
+        addValueSlider(T("nsv_width_3", "Ширина"), 40, 100, kbdWidthPct, new SliderChange() {
             @Override
             public String onChange(int val) {
                 kbdWidthPct = val;
@@ -1333,9 +1550,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         }).row.set(kbdWidthPct + "%");
 
-        addTitle("Положение");
-        addHint("Клавиатуру можно перетащить за полоску сверху.");
-        addValueSlider("По горизонтали", 0, 100, Math.round(kbdPosX * 100), new SliderChange() {
+        addTitle(T("nsv_position", "Положение"));
+        addHint(T("nsv_drag_the_keyboard_by_the_bar_at_its_", "Клавиатуру можно перетащить за полоску сверху."));
+        addValueSlider(T("nsv_horizontal", "По горизонтали"), 0, 100, Math.round(kbdPosX * 100), new SliderChange() {
             @Override
             public String onChange(int val) {
                 kbdPosX = val / 100f;
@@ -1343,7 +1560,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 return val + "%";
             }
         }).row.set(Math.round(kbdPosX * 100) + "%");
-        addValueSlider("Отступ снизу", 0, 400, kbdOffsetYDp, new SliderChange() {
+        addValueSlider(T("nsv_bottom_offset", "Отступ снизу"), 0, 400, kbdOffsetYDp, new SliderChange() {
             @Override
             public String onChange(int val) {
                 kbdOffsetYDp = val;
@@ -1352,8 +1569,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         }).row.set(kbdOffsetYDp + " dp");
 
-        addTitle("Прозрачность");
-        addValueSlider("Подложка", 0, 100, opacityKbdBg, new SliderChange() {
+        addTitle(T("nsv_opacity", "Прозрачность"));
+        addValueSlider(T("nsv_background", "Подложка"), 0, 100, opacityKbdBg, new SliderChange() {
             @Override
             public String onChange(int val) {
                 opacityKbdBg = val;
@@ -1361,7 +1578,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 return val + "%";
             }
         }).row.set(opacityKbdBg + "%");
-        addValueSlider("Клавиши", 15, 100, opacityKbdKeys, new SliderChange() {
+        addValueSlider(T("nsv_keys", "Клавиши"), 15, 100, opacityKbdKeys, new SliderChange() {
             @Override
             public String onChange(int val) {
                 opacityKbdKeys = val;
@@ -1370,22 +1587,22 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             }
         }).row.set(opacityKbdKeys + "%");
 
-        addTitle("Ввод");
-        addSeg("Язык (переключается и клавишей на клавиатуре)", new String[]{"EN", "RU", "UK"}, kbdLayoutIdx, new PcUi.SegListener() {
+        addTitle(T("nsv_input", "Ввод"));
+        addSeg(T("nsv_language_also_switched_with_a_key_on", "Язык (переключается и клавишей на клавиатуре)"), new String[]{"EN", "RU", "UK"}, kbdLayoutIdx, new PcUi.SegListener() {
             @Override
             public void onSelect(int i) {
                 kbdLayoutIdx = i;
                 if (keyboardLogic != null) keyboardLogic.setLang(i);
             }
         });
-        addSeg("Буквенные клавиши", new String[]{"Текст (Unicode)", "Клавиши (игры)"}, kbdGameKeys ? 1 : 0, new PcUi.SegListener() {
+        addSeg(T("nsv_letter_keys", "Буквенные клавиши"), new String[]{T("nsv_text_unicode", "Текст (Unicode)"), T("nsv_keys_games", "Клавиши (игры)")}, kbdGameKeys ? 1 : 0, new PcUi.SegListener() {
             @Override
             public void onSelect(int i) {
                 kbdGameKeys = i == 1;
                 if (keyboardLogic != null) keyboardLogic.setGameKeys(kbdGameKeys);
             }
         });
-        addSeg("Вибрация", new String[]{"Вкл", "Выкл"}, kbdHaptics ? 0 : 1, new PcUi.SegListener() {
+        addSeg(T("nsv_vibration", "Вибрация"), new String[]{T("nsv_on", "Вкл"), T("nsv_off", "Выкл")}, kbdHaptics ? 0 : 1, new PcUi.SegListener() {
             @Override
             public void onSelect(int i) {
                 kbdHaptics = i == 0;
@@ -1394,18 +1611,18 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         });
 
         settingsBody.addView(PcUi.divider(ctx));
-        addButtonRow(actionBtn(PcIcons.KEYBOARD, "Проверить", PcUi.ST_NORMAL, new Runnable() {
+        addButtonRow(actionBtn(PcIcons.KEYBOARD, T("nsv_check", "Проверить"), PcUi.ST_NORMAL, new Runnable() {
             @Override
             public void run() {
                 savePreferences();
                 closeSplitSettingsWithAnimation();
                 showCustomKeyboard(true);
             }
-        }), actionBtn(PcIcons.CHECK, "Сохранить", PcUi.ST_PRIMARY, new Runnable() {
+        }), actionBtn(PcIcons.CHECK, T("nsv_save", "Сохранить"), PcUi.ST_PRIMARY, new Runnable() {
             @Override
             public void run() {
                 savePreferences();
-                Toast.makeText(getContext(), "Настройки клавиатуры сохранены", Toast.LENGTH_SHORT).show();
+                Toast.makeText(getContext(), T("nsv_keyboard_settings_saved", "Настройки клавиатуры сохранены"), Toast.LENGTH_SHORT).show();
             }
         }));
     }
@@ -1425,9 +1642,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
 
     private void buildOpacitySettingsSection(Context ctx) {
-        addTitle("Зона тачпада");
-        addHint("По умолчанию 0% — зона не видна поверх изображения ПК, но работает.");
-        addValueSlider("Видимость зоны", 0, 100, opacityTpZone, new SliderChange() {
+        addTitle(T("nsv_touchpad_area", "Зона тачпада"));
+        addHint(T("nsv_0_the_area_is_invisible_over_the_pc_", "По умолчанию 0% — зона не видна поверх изображения ПК, но работает."));
+        addValueSlider(T("nsv_area_visibility", "Видимость зоны"), 0, 100, opacityTpZone, new SliderChange() {
             @Override
             public String onChange(int val) {
                 opacityTpZone = val;
@@ -1435,68 +1652,68 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 return val + "%";
             }
         }).row.set(opacityTpZone + "%");
-        addColorRow("Цвет зоны", colTpZone, new PcUi.ColorListener() {
+        addColorRow(T("nsv_area_colour", "Цвет зоны"), colTpZone, new PcUi.ColorListener() {
             @Override public void onColor(int c) { colTpZone = c; applyUserTints(); }
         });
 
-        addTitle("Шестерёнка");
-        addOpacitySlider("Прозрачность", opacityGear, new OpacitySetter() { @Override public void set(int v) { opacityGear = v; } });
-        addColorRow("Цвет", colGear, new PcUi.ColorListener() {
+        addTitle(T("nsv_gear", "Шестерёнка"));
+        addOpacitySlider(T("nsv_opacity", "Прозрачность"), opacityGear, new OpacitySetter() { @Override public void set(int v) { opacityGear = v; } });
+        addColorRow(T("nsv_colour", "Цвет"), colGear, new PcUi.ColorListener() {
             @Override public void onColor(int c) { colGear = c; applyUserTints(); }
         });
 
-        addTitle("Стрелка меню");
-        addOpacitySlider("Прозрачность", opacityArrow, new OpacitySetter() { @Override public void set(int v) { opacityArrow = v; } });
-        addColorRow("Цвет", colArrow, new PcUi.ColorListener() {
+        addTitle(T("nsv_menu_arrow", "Стрелка меню"));
+        addOpacitySlider(T("nsv_opacity", "Прозрачность"), opacityArrow, new OpacitySetter() { @Override public void set(int v) { opacityArrow = v; } });
+        addColorRow(T("nsv_colour", "Цвет"), colArrow, new PcUi.ColorListener() {
             @Override public void onColor(int c) { colArrow = c; applyUserTints(); }
         });
 
-        addTitle("Выдвижное меню");
-        addOpacitySlider("Всё меню", opacityQuickDrawer, new OpacitySetter() { @Override public void set(int v) { opacityQuickDrawer = v; } });
-        addOpacitySlider("Кнопка «Мышь»", opacityBtnTouchpad, new OpacitySetter() { @Override public void set(int v) { opacityBtnTouchpad = v; } });
-        addOpacitySlider("Кнопка «Клавиатура»", opacityBtnKeyboard, new OpacitySetter() { @Override public void set(int v) { opacityBtnKeyboard = v; } });
-        addOpacitySlider("Кнопка «Микрофон»", opacityBtnMic, new OpacitySetter() { @Override public void set(int v) { opacityBtnMic = v; } });
-        addOpacitySlider("Кнопка «Звук ПК»", opacityBtnSound, new OpacitySetter() { @Override public void set(int v) { opacityBtnSound = v; } });
-        addColorRow("Цвет значков меню", colMenu, new PcUi.ColorListener() {
+        addTitle(T("nsv_slide_out_menu", "Выдвижное меню"));
+        addOpacitySlider(T("nsv_whole_menu", "Всё меню"), opacityQuickDrawer, new OpacitySetter() { @Override public void set(int v) { opacityQuickDrawer = v; } });
+        addOpacitySlider(T("nsv_mouse_button", "Кнопка «Мышь»"), opacityBtnTouchpad, new OpacitySetter() { @Override public void set(int v) { opacityBtnTouchpad = v; } });
+        addOpacitySlider(T("nsv_keyboard_button", "Кнопка «Клавиатура»"), opacityBtnKeyboard, new OpacitySetter() { @Override public void set(int v) { opacityBtnKeyboard = v; } });
+        addOpacitySlider(T("nsv_microphone_button", "Кнопка «Микрофон»"), opacityBtnMic, new OpacitySetter() { @Override public void set(int v) { opacityBtnMic = v; } });
+        addOpacitySlider(T("nsv_pc_sound_button", "Кнопка «Звук ПК»"), opacityBtnSound, new OpacitySetter() { @Override public void set(int v) { opacityBtnSound = v; } });
+        addColorRow(T("nsv_menu_icon_colour", "Цвет значков меню"), colMenu, new PcUi.ColorListener() {
             @Override public void onColor(int c) { colMenu = c; applyUserTints(); }
         });
 
-        addTitle("Клавиатура");
-        addOpacitySlider("Подложка клавиатуры", opacityKbdBg, new OpacitySetter() { @Override public void set(int v) { opacityKbdBg = v; } });
-        addOpacitySlider("Клавиши", opacityKbdKeys, new OpacitySetter() { @Override public void set(int v) { opacityKbdKeys = v; } });
-        addOpacitySlider("Ряд спец-клавиш", opacityKbdSpecial, new OpacitySetter() { @Override public void set(int v) { opacityKbdSpecial = v; } });
-        addColorRow("Цвет букв", colKbdText, new PcUi.ColorListener() {
+        addTitle(T("nsv_keyboard", "Клавиатура"));
+        addOpacitySlider(T("nsv_keyboard_background", "Подложка клавиатуры"), opacityKbdBg, new OpacitySetter() { @Override public void set(int v) { opacityKbdBg = v; } });
+        addOpacitySlider(T("nsv_keys", "Клавиши"), opacityKbdKeys, new OpacitySetter() { @Override public void set(int v) { opacityKbdKeys = v; } });
+        addOpacitySlider(T("nsv_special_keys_row", "Ряд спец-клавиш"), opacityKbdSpecial, new OpacitySetter() { @Override public void set(int v) { opacityKbdSpecial = v; } });
+        addColorRow(T("nsv_letter_colour", "Цвет букв"), colKbdText, new PcUi.ColorListener() {
             @Override public void onColor(int c) { colKbdText = c; applyUserTints(); }
         });
 
-        addTitle("Панели");
-        addOpacitySlider("Фон панели настроек", opacitySettings, new OpacitySetter() { @Override public void set(int v) { opacitySettings = v; } });
-        addOpacitySlider("Панель диагностики", opacityDiag, new OpacitySetter() { @Override public void set(int v) { opacityDiag = v; } });
+        addTitle(T("nsv_panels", "Панели"));
+        addOpacitySlider(T("nsv_settings_panel_background", "Фон панели настроек"), opacitySettings, new OpacitySetter() { @Override public void set(int v) { opacitySettings = v; } });
+        addOpacitySlider(T("nsv_diagnostics_panel", "Панель диагностики"), opacityDiag, new OpacitySetter() { @Override public void set(int v) { opacityDiag = v; } });
 
-        addTitle("Редактор тачпада");
-        addOpacitySlider("Рамка зоны", opacityTpBorder, new OpacitySetter() { @Override public void set(int v) { opacityTpBorder = v; } });
-        addOpacitySlider("Значок перемещения", opacityTpCenter, new OpacitySetter() { @Override public void set(int v) { opacityTpCenter = v; } });
-        addColorRow("Цвет рамки", colTpBorder, new PcUi.ColorListener() {
+        addTitle(T("nsv_touchpad_editor", "Редактор тачпада"));
+        addOpacitySlider(T("nsv_area_border", "Рамка зоны"), opacityTpBorder, new OpacitySetter() { @Override public void set(int v) { opacityTpBorder = v; } });
+        addOpacitySlider(T("nsv_move_handle", "Значок перемещения"), opacityTpCenter, new OpacitySetter() { @Override public void set(int v) { opacityTpCenter = v; } });
+        addColorRow(T("nsv_border_colour", "Цвет рамки"), colTpBorder, new PcUi.ColorListener() {
             @Override public void onColor(int c) { colTpBorder = c; applyUserTints(); }
         });
 
         settingsBody.addView(PcUi.divider(ctx));
-        addButtonRow(actionBtn(PcIcons.GEAR, "Кнопки в правый верхний угол", PcUi.ST_NORMAL, new Runnable() {
+        addButtonRow(actionBtn(PcIcons.GEAR, T("nsv_buttons_to_the_top_right_corner", "Кнопки в правый верхний угол"), PcUi.ST_NORMAL, new Runnable() {
             @Override
             public void run() {
                 gearPosX = -1f;
                 gearPosY = -1f;
                 savePreferences();
                 requestLayout();
-                Toast.makeText(getContext(), "Кнопки возвращены в правый верхний угол", Toast.LENGTH_SHORT).show();
+                Toast.makeText(getContext(), T("nsv_buttons_moved_back_to_the_top_right_", "Кнопки возвращены в правый верхний угол"), Toast.LENGTH_SHORT).show();
             }
         }));
-        addButtonRow(actionBtn(PcIcons.RESET, "Сбросить прозрачность и цвета", PcUi.ST_NORMAL, new Runnable() {
+        addButtonRow(actionBtn(PcIcons.RESET, T("nsv_reset_opacity_and_colours", "Сбросить прозрачность и цвета"), PcUi.ST_NORMAL, new Runnable() {
             @Override
             public void run() {
                 resetDefaultOpacities();
                 resetDefaultColors();
-                opacityTpZone = 0;
+                opacityTpZone = DEF_OP_TP_ZONE;
                 updateTouchpadZoneVisibility();
                 savePreferences();
                 renderSplitSettingsContent();
@@ -1518,6 +1735,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private void applyOpacities() {
         if (floatingGearBtn != null) floatingGearBtn.setAlpha(opacityGear / 100f);
         if (floatingArrowBtn != null) floatingArrowBtn.setAlpha(opacityArrow / 100f);
+        // Лупа и плашка масштаба — как шестерёнка (они стоят под ней)
+        if (floatingZoomBtn != null) floatingZoomBtn.setAlpha(opacityGear / 100f);
+        if (zoomPill != null) zoomPill.setAlpha(opacityGear / 100f);
         // Выдвижное меню: общая прозрачность + отдельная у каждой кнопки
         if (floatingMenuStrip != null && floatingMenuStrip.getVisibility() == View.VISIBLE) {
             floatingMenuStrip.animate().cancel();
@@ -1540,6 +1760,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     /** Применяет выбранные пользователем цвета к элементам интерфейса. */
     private void applyUserTints() {
         if (floatingGearBtn != null) floatingGearBtn.setTint(colGear);
+        if (floatingZoomBtn != null) floatingZoomBtn.setTint(colGear);
         if (floatingArrowBtn != null) floatingArrowBtn.setTint(colArrow);
         PcUi.IconBtn[] menu = {floatingSettingsBtn, floatingSoundBtn, floatingMicBtn, floatingFsBtn, floatingKbdBtn, floatingMouseBtn};
         for (PcUi.IconBtn b : menu) if (b != null) b.setTint(colMenu);
@@ -1586,7 +1807,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private void buildScreenSettingsSection(Context ctx) {
         final int[] mIds = {1, 2, 0};
-        addSeg("Экран", new String[]{"Экран 1", "Экран 2", "Все экраны"}, indexOf(mIds, targetMonitor), new PcUi.SegListener() {
+        addSeg(T("nsv_screen", "Экран"), new String[]{T("nsv_screen_1", "Экран 1"), T("nsv_screen_2", "Экран 2"), T("nsv_all_screens", "Все экраны")}, indexOf(mIds, targetMonitor), new PcUi.SegListener() {
             @Override
             public void onSelect(int i) {
                 applyVideoSettings(mIds[i], targetHeight, targetFps, targetBitrate);
@@ -1596,14 +1817,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private void buildQualitySettingsSection(Context ctx) {
         final int[] rVals = {480, 720, 1080, 0};
-        addSeg("Разрешение", new String[]{"480p", "720p", "1080p", "Исходное"}, indexOf(rVals, targetHeight), new PcUi.SegListener() {
+        addSeg(T("nsv_resolution", "Разрешение"), new String[]{"480p", "720p", "1080p", T("nsv_source", "Исходное")}, indexOf(rVals, targetHeight), new PcUi.SegListener() {
             @Override
             public void onSelect(int i) {
                 applyVideoSettings(targetMonitor, rVals[i], targetFps, targetBitrate);
             }
         });
         final int[] bVals = {0, 5, 15, 30, 50};
-        addSeg("Битрейт", new String[]{"Авто", "5M", "15M", "30M", "50M"}, indexOf(bVals, targetBitrate), new PcUi.SegListener() {
+        addSeg(T("nsv_bitrate", "Битрейт"), new String[]{T("nsv_auto", "Авто"), "5M", "15M", "30M", "50M"}, indexOf(bVals, targetBitrate), new PcUi.SegListener() {
             @Override
             public void onSelect(int i) {
                 applyVideoSettings(targetMonitor, targetHeight, targetFps, bVals[i]);
@@ -1613,7 +1834,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private void buildFpsSettingsSection(Context ctx) {
         final int[] fVals = {30, 60, 90};
-        addSeg("Частота", new String[]{"30", "60", "90"}, indexOf(fVals, targetFps), new PcUi.SegListener() {
+        addSeg(T("nsv_frame_rate", "Частота"), new String[]{"30", "60", "90"}, indexOf(fVals, targetFps), new PcUi.SegListener() {
             @Override
             public void onSelect(int i) {
                 applyVideoSettings(targetMonitor, targetHeight, fVals[i], targetBitrate);
@@ -1920,6 +2141,16 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             return true;
         }
 
+        // Лупа: пальцы двигают/масштабируют картинку, на ПК ничего не уходит
+        if (isZoomMode && operatingMode == MODE_PC_CONTROL && !isTouchpadEditing) {
+            touchGestureOwned = false;
+            return handleZoomTouch(event);
+        }
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+            lastTouchUptime = SystemClock.uptimeMillis();
+            if (action == MotionEvent.ACTION_DOWN) ensureCursorPoller();
+        }
+
         if (!isMouseActive() || isTouchpadEditing || w <= 0 || h <= 0) {
             touchGestureOwned = false;
             if (operatingMode == MODE_VIEW) {
@@ -1935,16 +2166,17 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             float y = event.getY();
             boolean inside;
             if (isMouseAbsolute) {
-                // Прямое касание: рабочая область = видимая картинка ПК
-                inside = videoViewportRect.width() > 0 && videoViewportRect.contains((int) x, (int) y);
-                touchpadEngine.setViewport(videoViewportRect.left, videoViewportRect.top,
-                        videoViewportRect.width(), videoViewportRect.height());
+                // Прямое касание: рабочая область = видимая картинка ПК (с учётом масштаба лупы)
+                float zl = zoom.left(), zt = zoom.top(), zw = zoom.width(), zh = zoom.height();
+                inside = videoViewportRect.width() > 0 && x >= zl && x <= zl + zw && y >= zt && y <= zt + zh;
+                touchpadEngine.setViewport(zl, zt, zw, zh);
             } else {
                 inside = x >= tpNormX * w && x <= (tpNormX + tpNormW) * w
                         && y >= tpNormY * h && y <= (tpNormY + tpNormH) * h;
             }
             touchGestureOwned = inside;
             if (inside) ensureInputClient();
+            else if (operatingMode == MODE_PC_CONTROL && !isMouseAbsolute) hintTouchpadZone(false);
         }
 
         if (!touchGestureOwned) {
@@ -1971,6 +2203,420 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     }
 
     // -----------------------------------------------------------------------
+    // ЛУПА (масштаб картинки ПК в «Управлении ПК»)
+    // -----------------------------------------------------------------------
+    // Как в RD Client / Chrome Remote Desktop: увеличенная картинка, тачпад двигает курсор,
+    // а область просмотра сама сдвигается за курсором у края экрана. Чтобы щипок не путался
+    // с прокруткой двумя пальцами тачпада, масштабирование — в отдельном режиме (кнопка-лупа):
+    //   режим включён  — ввод на ПК на паузе; щипок = масштаб (1×–5×, вокруг пальцев),
+    //                    один палец = сдвиг, двойной тап = 1× ⇄ 2.5× в точке касания;
+    //   режим выключен — масштаб сохраняется, тачпад работает, картинка следует за курсором.
+    // Рендер — матрица самого SurfaceView (setScaleX/Y + translation, pivot 0,0): без копий кадров
+    // и без пересоздания декодера; так же уже масштабируется контейнер при открытых настройках.
+    private final PcZoomMath zoom = new PcZoomMath();
+    private boolean isZoomMode = false;
+    private PcUi.IconBtn floatingZoomBtn;
+    private TextView zoomPill;
+    private ValueAnimator zoomAnim;
+    private volatile long lastTouchUptime = 0;
+
+    // Состояние жеста лупы
+    private int zoomPointers = 0;
+    private float zoomPrevCx, zoomPrevCy, zoomPrevSpan;
+    private float zoomDownX, zoomDownY;
+    private long zoomDownTime;
+    private boolean zoomMoved;
+    private long zoomLastTapTime;
+    private float zoomLastTapX, zoomLastTapY;
+
+    private long lastZoneHintAt;
+    private volatile long lastFrameUptime;
+    private boolean linkLostShown;
+
+    /** QA P2-4: badge as soon as frames stop (> 2.5 s) or the input liveness check failed. */
+    private final Runnable linkWatch = new Runnable() {
+        @Override
+        public void run() {
+            if (!isStreaming.get()) {
+                setLinkLost(false);
+                return;
+            }
+            long now = SystemClock.uptimeMillis();
+            boolean framesStopped = lastFrameUptime > 0 && now - lastFrameUptime > 2500;
+            boolean inputDead = operatingMode == MODE_PC_CONTROL && inputClient.getState() == PcInputClient.STATE_ERROR;
+            setLinkLost(framesStopped || inputDead);
+            mainHandler.postDelayed(this, 500);
+        }
+    };
+
+    private void setLinkLost(boolean lost) {
+        if (lost == linkLostShown) return;
+        linkLostShown = lost;
+        MainActivity a = MainActivity.getInstance();
+        if (a != null) a.setStreamLinkLost(lost);
+    }
+    private boolean inputLinkLost;
+
+    /** QA P-5: say when the mouse / keyboard link to the PC is lost and when it is back. */
+    private void announceInputLink(int state) {
+        if (operatingMode != MODE_PC_CONTROL || !isStreaming.get()) {
+            inputLinkLost = false;
+            return;
+        }
+        if (state == PcInputClient.STATE_ERROR && !inputLinkLost) {
+            inputLinkLost = true;
+            Toast.makeText(getContext(), tr("input_link_lost", "Связь мыши и клавиатуры с ПК потеряна — переподключение…"),
+                    Toast.LENGTH_SHORT).show();
+        } else if (state == PcInputClient.STATE_CONNECTED && inputLinkLost) {
+            inputLinkLost = false;
+            Toast.makeText(getContext(), tr("input_link_back", "Мышь и клавиатура снова подключены"), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * QA U-25: the touchpad is a zone on the right; taps outside it are ignored. Explain it once on the
+     * first «Управление ПК» (firstRun) and when a tap lands outside the zone (at most every 20 s).
+     */
+    private void hintTouchpadZone(boolean firstRun) {
+        long now = SystemClock.elapsedRealtime();
+        if (!firstRun && now - lastZoneHintAt < 20000) return;
+        lastZoneHintAt = now;
+        String hint = tr(firstRun ? "tp_zone_first_hint" : "tp_zone_outside_hint",
+                firstRun ? "Тачпад — подсвеченная зона справа. Размер, место и прозрачность — в ⚙ → «Тачпад и мышь»."
+                        : "Касание вне зоны тачпада. Зона подсвечена справа; её можно изменить в ⚙.");
+        // QA P2-3: a system Toast is cut to 2 lines on Android 12+ — SideToast wraps (up to 4 lines)
+        MainActivity a = MainActivity.getInstance();
+        if (a != null) a.sideToast(hint, false);
+        else Toast.makeText(getContext(), hint, Toast.LENGTH_LONG).show();
+    }
+
+    /** QA U-29 / T-2: static form of tr() — also usable from static / nested code (PcUi.TINT_NAMES). */
+    static String T(String key, String fallback) {
+        MainActivity a = MainActivity.getInstance();
+        if (a == null) return fallback;
+        try {
+            String s = a.t(key);
+            return (s == null || s.isEmpty() || s.equals(key)) ? fallback : s;
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    /** Строка интерфейса (ru/uk/en из PcStrings) с запасным текстом. */
+    private String tr(String key, String fallback) {
+        MainActivity a = MainActivity.getInstance();
+        if (a == null) return fallback;
+        try {
+            String s = a.t(key);
+            return (s == null || s.isEmpty() || s.equals(key)) ? fallback : s;
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private void setZoomMode(boolean on, boolean announce) {
+        if (on && operatingMode != MODE_PC_CONTROL) on = false;
+        if (isZoomMode == on) return;
+        isZoomMode = on;
+        zoomPointers = 0;
+        if (on) {
+            // Тачпад на паузе: отпускаем всё, что держали пальцы (кнопка мыши, перетаскивание)
+            if (touchpadEngine != null) touchpadEngine.cancel();
+            touchGestureOwned = false;
+        }
+        if (floatingZoomBtn != null) floatingZoomBtn.setState(on ? PcUi.ST_ACTIVE : PcUi.ST_FLOATING);
+        updateTouchpadZoneVisibility();
+        updateZoomPill();
+        if (announce) {
+            MainActivity a = MainActivity.getInstance();
+            String msg = on ? tr("zoom_on_hint", "Лупа: щипок — масштаб, палец — сдвиг, двойной тап — 1×/2.5×. Тачпад на паузе")
+                    : tr("zoom_off_hint", "Лупа выключена: тачпад снова работает");
+            if (a != null) a.sideToast(msg, false);
+        }
+        ensureCursorPoller();
+    }
+
+    /** Масштаб 1× (плавно). */
+    private void resetZoom(boolean animate) {
+        PcZoomMath target = zoom.copy();
+        target.reset();
+        if (animate) animateZoomTo(target, 220);
+        else {
+            cancelZoomAnim();
+            zoom.reset();
+            applyZoomTransform();
+        }
+    }
+
+    private void cancelZoomAnim() {
+        if (zoomAnim != null) {
+            zoomAnim.cancel();
+            zoomAnim = null;
+        }
+    }
+
+    /** Плавный переход к состоянию target (масштаб и сдвиг интерполируются вместе). */
+    private void animateZoomTo(PcZoomMath target, long durationMs) {
+        cancelZoomAnim();
+        final float z0 = zoom.zoom(), x0 = zoom.left(), y0 = zoom.top();
+        final float z1 = target.zoom(), x1 = target.left(), y1 = target.top();
+        if (Math.abs(z1 - z0) < 0.001f && Math.abs(x1 - x0) < 0.5f && Math.abs(y1 - y0) < 0.5f) {
+            zoom.set(z1, x1, y1);
+            applyZoomTransform();
+            return;
+        }
+        final ValueAnimator va = ValueAnimator.ofFloat(0f, 1f);
+        va.setDuration(durationMs);
+        va.setInterpolator(new DecelerateInterpolator(1.5f));
+        va.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator a) {
+                float t = (Float) a.getAnimatedValue();
+                zoom.set(z0 + (z1 - z0) * t, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+                applyZoomTransform();
+            }
+        });
+        va.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                if (zoomAnim == va) zoomAnim = null;
+                ensureCursorPoller();
+            }
+        });
+        zoomAnim = va;
+        va.start();
+    }
+
+    /** Переносит состояние лупы на SurfaceView (одна матрица, без перерасчёта разметки). */
+    private void applyZoomTransform() {
+        if (surfaceView == null) return;
+        float z = zoom.zoom();
+        surfaceView.setPivotX(0f);
+        surfaceView.setPivotY(0f);
+        surfaceView.setScaleX(z);
+        surfaceView.setScaleY(z);
+        surfaceView.setTranslationX(zoom.left() - surfaceView.getLeft());
+        surfaceView.setTranslationY(zoom.top() - surfaceView.getTop());
+        updateZoomPill();
+    }
+
+    private void updateZoomPill() {
+        if (zoomPill == null) return;
+        boolean show = operatingMode == MODE_PC_CONTROL && (zoom.isZoomed() || isZoomMode);
+        if (show) {
+            float z = zoom.zoom();
+            zoomPill.setText(String.format(java.util.Locale.US, z < 9.95f ? "%.1f×" : "%.0f×", z));
+        }
+        int vis = show ? View.VISIBLE : View.GONE;
+        if (zoomPill.getVisibility() != vis) zoomPill.setVisibility(vis);
+    }
+
+    private boolean handleZoomTouch(MotionEvent ev) {
+        int action = ev.getActionMasked();
+        int n = ev.getPointerCount();
+        switch (action) {
+            case MotionEvent.ACTION_DOWN:
+                cancelZoomAnim();
+                zoomDownX = ev.getX();
+                zoomDownY = ev.getY();
+                zoomDownTime = ev.getEventTime();
+                zoomMoved = false;
+                startZoomGesture(ev, -1);
+                return true;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                zoomMoved = true; // второй палец — это уже не тап
+                startZoomGesture(ev, -1);
+                return true;
+            case MotionEvent.ACTION_POINTER_UP:
+                startZoomGesture(ev, ev.getActionIndex());
+                return true;
+            case MotionEvent.ACTION_MOVE: {
+                float cx = 0, cy = 0;
+                int used = 0;
+                for (int i = 0; i < n && used < 2; i++, used++) {
+                    cx += ev.getX(i);
+                    cy += ev.getY(i);
+                }
+                if (used == 0) return true;
+                cx /= used;
+                cy /= used;
+                if (!zoomMoved && Math.hypot(ev.getX() - zoomDownX, ev.getY() - zoomDownY) > dpToPx(8)) {
+                    zoomMoved = true;
+                }
+                if (used >= 2) {
+                    float span = (float) Math.hypot(ev.getX(0) - ev.getX(1), ev.getY(0) - ev.getY(1));
+                    float factor = (zoomPrevSpan > dpToPx(10) && span > dpToPx(10)) ? span / zoomPrevSpan : 1f;
+                    zoom.pinch(zoomPrevCx, zoomPrevCy, cx, cy, factor);
+                    zoomPrevSpan = span;
+                } else if (zoomMoved) {
+                    zoom.panBy(cx - zoomPrevCx, cy - zoomPrevCy);
+                }
+                if (used >= 2 || zoomMoved) {
+                    zoomPrevCx = cx;
+                    zoomPrevCy = cy;
+                }
+                applyZoomTransform();
+                return true;
+            }
+            case MotionEvent.ACTION_UP: {
+                long now = ev.getEventTime();
+                if (!zoomMoved && now - zoomDownTime < 300) {
+                    float x = ev.getX(), y = ev.getY();
+                    boolean near = Math.hypot(x - zoomLastTapX, y - zoomLastTapY) < dpToPx(40);
+                    if (now - zoomLastTapTime < 320 && near) {
+                        // Двойной тап: 1× ⇄ 2.5× в точке касания
+                        PcZoomMath target = zoom.copy();
+                        target.toggleAt(x, y);
+                        animateZoomTo(target, 240);
+                        zoomLastTapTime = 0;
+                    } else {
+                        zoomLastTapTime = now;
+                        zoomLastTapX = x;
+                        zoomLastTapY = y;
+                    }
+                }
+                zoomPointers = 0;
+                return true;
+            }
+            case MotionEvent.ACTION_CANCEL:
+                zoomPointers = 0;
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    /** Новый набор пальцев: запоминаем центр и расстояние (без скачка картинки). */
+    private void startZoomGesture(MotionEvent ev, int skipIndex) {
+        float cx = 0, cy = 0;
+        float[] xs = new float[2], ys = new float[2];
+        int used = 0;
+        for (int i = 0; i < ev.getPointerCount() && used < 2; i++) {
+            if (i == skipIndex) continue;
+            xs[used] = ev.getX(i);
+            ys[used] = ev.getY(i);
+            cx += xs[used];
+            cy += ys[used];
+            used++;
+        }
+        zoomPointers = used;
+        if (used == 0) return;
+        zoomPrevCx = cx / used;
+        zoomPrevCy = cy / used;
+        zoomPrevSpan = used >= 2 ? (float) Math.hypot(xs[0] - xs[1], ys[0] - ys[1]) : 0f;
+    }
+
+    // ---- курсор ПК: картинка следует за ним, когда лупа выключена, а масштаб > 1× ----
+    private volatile boolean cursorApiMissing = false;
+    private Thread cursorPoller;
+
+    /** Нужно ли следить за курсором (только относительный тачпад; в «Прямом касании» курсор под пальцем). */
+    private boolean wantsCursorFollow() {
+        return operatingMode == MODE_PC_CONTROL && isStreaming.get() && !isZoomMode && zoom.isZoomed()
+                && isMouseActive() && !isMouseAbsolute && !cursorApiMissing && !serverUrl.isEmpty();
+    }
+
+    private void ensureCursorPoller() {
+        if (!wantsCursorFollow()) return;
+        Thread t = cursorPoller;
+        if (t != null && t.isAlive()) return;
+        final String url = serverUrl + "/api/input/cursor?monitor=" + targetMonitor;
+        final String token = authToken;
+        t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                runCursorPoller(url, token);
+            }
+        }, "pc-cursor-follow");
+        t.setDaemon(true);
+        cursorPoller = t;
+        t.start();
+    }
+
+    /** Опрос позиции курсора: часто, пока пальцы на тачпаде, редко в покое; сам завершается. */
+    private void runCursorPoller(String url, String token) {
+        volatileWanted = true;
+        int failures = 0;
+        while (volatileWanted && isStreaming.get()) {
+            long sinceTouch = SystemClock.uptimeMillis() - lastTouchUptime;
+            HttpURLConnection c = null;
+            try {
+                c = (HttpURLConnection) new URL(url).openConnection();
+                c.setConnectTimeout(1500);
+                c.setReadTimeout(1500);
+                c.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(token));
+                int code = c.getResponseCode();
+                if (code == 404) {
+                    cursorApiMissing = true; // старый сервер: без слежения за курсором
+                    break;
+                }
+                if (code == 200) {
+                    InputStream in = c.getInputStream();
+                    byte[] buf = new byte[256];
+                    int len = 0, r;
+                    while (len < buf.length && (r = in.read(buf, len, buf.length - len)) > 0) len += r;
+                    String body = new String(buf, 0, len, StandardCharsets.UTF_8);
+                    final float nx = jsonFloat(body, "\"x\"");
+                    final float ny = jsonFloat(body, "\"y\"");
+                    if (body.contains("\"ok\": true") || body.contains("\"ok\":true")) {
+                        if (!Float.isNaN(nx) && !Float.isNaN(ny)) {
+                            mainHandler.post(new Runnable() {
+                                @Override public void run() { onCursorPosition(nx, ny); }
+                            });
+                        }
+                    }
+                    failures = 0;
+                } else {
+                    failures++;
+                }
+            } catch (Exception e) {
+                failures++;
+            } finally {
+                if (c != null) {
+                    try { c.getInputStream().close(); } catch (Exception ignored) {}
+                }
+            }
+            long sleep = sinceTouch < 900 ? 70 : 700;
+            if (failures > 0) sleep = Math.min(4000, 500L * failures);
+            try {
+                Thread.sleep(sleep);
+            } catch (InterruptedException e) {
+                break;
+            }
+            // Условия проверяем на главном потоке (поля UI); здесь — через флаг, который он обновляет
+            mainHandler.post(new Runnable() {
+                @Override public void run() { volatileWanted = wantsCursorFollow(); }
+            });
+        }
+        cursorPoller = null;
+    }
+
+    private volatile boolean volatileWanted = false;
+
+    private static float jsonFloat(String body, String key) {
+        int i = body.indexOf(key);
+        if (i < 0) return Float.NaN;
+        i = body.indexOf(':', i + key.length());
+        if (i < 0) return Float.NaN;
+        int j = i + 1;
+        while (j < body.length() && body.charAt(j) == ' ') j++;
+        int k = j;
+        while (k < body.length() && "-+.0123456789eE".indexOf(body.charAt(k)) >= 0) k++;
+        try {
+            return Float.parseFloat(body.substring(j, k));
+        } catch (Exception e) {
+            return Float.NaN;
+        }
+    }
+
+    private void onCursorPosition(float nx, float ny) {
+        if (!wantsCursorFollow() || zoomAnim != null && zoomAnim.isRunning() && zoomAnim.getDuration() > 150) return;
+        PcZoomMath target = zoom.copy();
+        float margin = Math.max(dpToPx(48), Math.min(getWidth(), getHeight()) * 0.12f);
+        if (target.follow(nx, ny, margin)) animateZoomTo(target, 120);
+    }
+
+    // -----------------------------------------------------------------------
     // МИКРОФОН ТЕЛЕФОНА -> WINDOWS PC (MicSenderThread)
     // -----------------------------------------------------------------------
     private void toggleMicStreaming() {
@@ -1988,13 +2634,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     private void startMicStreaming() {
         if (!isStreaming.get() || operatingMode != MODE_PC_CONTROL) {
-            Toast.makeText(getContext(), "Микрофон работает только во время «Управления ПК»", Toast.LENGTH_SHORT).show();
+            Toast.makeText(getContext(), T("nsv_the_microphone_works_only_during_pc_", "Микрофон работает только во время «Управления ПК»"), Toast.LENGTH_SHORT).show();
             return;
         }
         MainActivity act = MainActivity.getInstance();
         if (act != null && !act.checkOrRequestRecordAudioPermission()) {
             pendingMicStart = true;
-            Toast.makeText(getContext(), "Разрешите доступ к микрофону — передача начнётся автоматически", Toast.LENGTH_LONG).show();
+            Toast.makeText(getContext(), T("nsv_allow_microphone_access_streaming_st", "Разрешите доступ к микрофону — передача начнётся автоматически"), Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -2006,7 +2652,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             micSenderThread.start();
         }
         updateQuickActionStates();
-        Toast.makeText(getContext(), "Подключение микрофона к ПК…", Toast.LENGTH_SHORT).show();
+        Toast.makeText(getContext(), T("nsv_connecting_the_microphone_to_the_pc", "Подключение микрофона к ПК…"), Toast.LENGTH_SHORT).show();
     }
 
     /** Ответ на системный запрос разрешения RECORD_AUDIO (вызывается из MainActivity). */
@@ -2016,7 +2662,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         if (granted) {
             startMicStreaming();
         } else {
-            Toast.makeText(getContext(), "Без разрешения на запись звука микрофон телефона не работает", Toast.LENGTH_LONG).show();
+            Toast.makeText(getContext(), T("nsv_the_phone_microphone_does_not_work_w", "Без разрешения на запись звука микрофон телефона не работает"), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -2068,11 +2714,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 c = (HttpURLConnection) new URL(serverUrl + "/api/mic/status").openConnection();
                 c.setConnectTimeout(4000);
                 c.setReadTimeout(6000);
-                if (!authToken.isEmpty()) c.setRequestProperty("X-Auth-Token", authToken);
+                if (!authToken.isEmpty()) c.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(authToken));
                 int code = c.getResponseCode();
-                if (code == 401) return "Микрофон: неверный пароль сервера";
-                if (code == 404) return "Сервер PC Control на ПК устарел — обновите его, чтобы передавать микрофон";
-                if (code != 200) return "Микрофон: сервер ответил ошибкой " + code;
+                if (code == 401) return T("nsv_microphone_wrong_server_password", "Микрофон: неверный пароль сервера");
+                if (code == 404) return T("nsv_the_pc_control_server_on_the_pc_is_o", "Сервер PC Control на ПК устарел — обновите его, чтобы передавать микрофон");
+                if (code != 200) return T("nsv_microphone_the_server_answered_with_", "Микрофон: сервер ответил ошибкой ") + code;
                 StringBuilder sb = new StringBuilder();
                 try (InputStream in = c.getInputStream()) {
                     byte[] b = new byte[2048];
@@ -2081,12 +2727,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 }
                 org.json.JSONObject st = new org.json.JSONObject(sb.toString());
                 if (!st.optBoolean("virtual_cable_detected", false) && !st.optBoolean("active", false)) {
-                    return "На ПК не найден виртуальный аудиокабель (VB-CABLE). Установите его — "
-                            + "тогда голос с телефона появится в Windows как микрофон «CABLE Output».";
+                    return T("nsv_no_virtual_audio_cable_vb_cable_foun_2", "На ПК не найден виртуальный аудиокабель (VB-CABLE). Установите его — ")
+                            + T("nsv_then_the_phone_s_voice_appears_in_wi", "тогда голос с телефона появится в Windows как микрофон «CABLE Output».");
                 }
                 return null;
             } catch (Exception e) {
-                return "Микрофон: нет связи с ПК";
+                return T("nsv_microphone_no_connection_to_the_pc", "Микрофон: нет связи с ПК");
             } finally {
                 if (c != null) try { c.disconnect(); } catch (Exception ignored) {}
             }
@@ -2138,12 +2784,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     recorder = openRecorder(sampleRate);
                 }
                 if (recorder == null) {
-                    failMic(this, "Микрофон телефона занят другим приложением или недоступен");
+                    failMic(this, T("nsv_the_phone_microphone_is_used_by_anot_2", "Микрофон телефона занят другим приложением или недоступен"));
                     return;
                 }
                 recorder.startRecording();
                 if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
-                    failMic(this, "Микрофон телефона занят другим приложением");
+                    failMic(this, T("nsv_the_phone_microphone_is_used_by_anot", "Микрофон телефона занят другим приложением"));
                     return;
                 }
 
@@ -2156,7 +2802,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 conn.setReadTimeout(8000);
                 conn.setChunkedStreamingMode(chunk);
                 conn.setRequestProperty("Content-Type", "application/octet-stream");
-                if (!authToken.isEmpty()) conn.setRequestProperty("X-Auth-Token", authToken);
+                if (!authToken.isEmpty()) conn.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(authToken));
 
                 boolean announced = false;
                 try (OutputStream os = conn.getOutputStream()) {
@@ -2170,7 +2816,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                                 announced = true;
                                 post(new Runnable() {
                                     @Override public void run() {
-                                        if (isMicStreaming) Toast.makeText(getContext(), "Микрофон телефона передаётся на ПК", Toast.LENGTH_SHORT).show();
+                                        if (isMicStreaming) Toast.makeText(getContext(), T("nsv_the_phone_microphone_is_streaming_to", "Микрофон телефона передаётся на ПК"), Toast.LENGTH_SHORT).show();
                                     }
                                 });
                             }
@@ -2182,18 +2828,18 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 userStopped = !active.get();
                 int code = conn.getResponseCode();
                 if (code == 400) {
-                    failMic(this, "На ПК не найден виртуальный аудиокабель (VB-CABLE)");
+                    failMic(this, T("nsv_no_virtual_audio_cable_vb_cable_foun", "На ПК не найден виртуальный аудиокабель (VB-CABLE)"));
                 } else if (code == 401) {
-                    failMic(this, "Микрофон: неверный пароль сервера");
+                    failMic(this, T("nsv_microphone_wrong_server_password", "Микрофон: неверный пароль сервера"));
                 } else if (code != 200 && !userStopped) {
-                    failMic(this, "Микрофон: сервер ответил ошибкой " + code);
+                    failMic(this, T("nsv_microphone_the_server_answered_with_", "Микрофон: сервер ответил ошибкой ") + code);
                 }
             } catch (Exception e) {
                 if (active.get() && isStreaming.get()) {
                     // Сервер мог ответить ошибкой до конца передачи — пробуем прочитать код
-                    String msg = "Передача микрофона прервалась (нет связи с ПК)";
+                    String msg = T("nsv_microphone_streaming_stopped_no_conn", "Передача микрофона прервалась (нет связи с ПК)");
                     try {
-                        if (conn != null && conn.getResponseCode() == 400) msg = "На ПК не найден виртуальный аудиокабель (VB-CABLE)";
+                        if (conn != null && conn.getResponseCode() == 400) msg = T("nsv_no_virtual_audio_cable_vb_cable_foun", "На ПК не найден виртуальный аудиокабель (VB-CABLE)");
                     } catch (Exception ignored) {}
                     failMic(this, msg);
                 }
@@ -2234,11 +2880,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 // Переподключение при обрыве сети: раньше звук ПК пропадал до конца сеанса
                 while (running.get() && isStreaming.get()) {
                     if (attempt > 0) {
-                        updateAudioStatusOnMain("Переподключение...", Color.parseColor("#38BDF8"));
+                        updateAudioStatusOnMain(T("nsv_reconnecting", "Переподключение..."), Color.parseColor("#38BDF8"));
                         try { Thread.sleep(Math.min(3000, 600L * attempt)); } catch (InterruptedException e) { break; }
                         if (!running.get() || !isStreaming.get()) break;
                     } else {
-                        updateAudioStatusOnMain("Подключение...", Color.parseColor("#38BDF8"));
+                        updateAudioStatusOnMain(T("nsv_connecting", "Подключение..."), Color.parseColor("#38BDF8"));
                     }
                     attempt++;
                     refreshStreamVolume();
@@ -2251,11 +2897,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         c.setRequestProperty("Accept", "audio/wav");
                         int code = c.getResponseCode();
                         if (code == 401) {
-                            updateAudioStatusOnMain("Ошибка пароля", PcUi.DANGER);
+                            updateAudioStatusOnMain(T("nsv_password_error", "Ошибка пароля"), PcUi.DANGER);
                             break;
                         }
                         if (code != 200) {
-                            updateAudioStatusOnMain("Ошибка (" + code + ")", PcUi.DANGER);
+                            updateAudioStatusOnMain(T("nsv_error", "Ошибка (") + code + ")", PcUi.DANGER);
                             continue;
                         }
                         try (InputStream raw = c.getInputStream();
@@ -2298,7 +2944,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                                 trackChannels = channels;
                             }
                             frameBytes = 2 * channels;
-                            updateAudioStatusOnMain("Подключен (" + (rate / 1000) + " kHz)", Color.parseColor("#22C55E"));
+                            updateAudioStatusOnMain(T("nsv_connected", "Подключен (") + (rate / 1000) + " kHz)", Color.parseColor("#22C55E"));
 
                             byte[] chunk = new byte[1920 + frameBytes];
                             int carry = 0;
@@ -2339,9 +2985,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         if (c != null) try { c.disconnect(); } catch (Exception ignored) {}
                     }
                 }
-                updateAudioStatusOnMain("Отключен", PcUi.SUBTEXT);
+                updateAudioStatusOnMain(T("nsv_disconnected", "Отключен"), PcUi.SUBTEXT);
             } catch (Exception e) {
-                updateAudioStatusOnMain("Отключен", PcUi.SUBTEXT);
+                updateAudioStatusOnMain(T("nsv_disconnected", "Отключен"), PcUi.SUBTEXT);
             } finally {
                 if (audioTrack != null) {
                     try {
@@ -2372,7 +3018,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             c = (HttpURLConnection) new URL(serverUrl + "/screen/volume").openConnection();
             c.setConnectTimeout(3000);
             c.setReadTimeout(3000);
-            if (!authToken.isEmpty()) c.setRequestProperty("X-Auth-Token", authToken);
+            if (!authToken.isEmpty()) c.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(authToken));
             if (c.getResponseCode() != 200) return;
             StringBuilder sb = new StringBuilder();
             try (InputStream in = c.getInputStream()) {
@@ -2383,16 +3029,29 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             org.json.JSONObject o = new org.json.JSONObject(sb.toString());
             streamVolumePercent = Math.max(0, Math.min(PcAudioGain.MAX_PERCENT, o.optInt("percent", streamVolumePercent)));
             streamVolumeMuted = o.optBoolean("muted", false);
+            post(new Runnable() {
+                @Override
+                public void run() {
+                    syncStreamVolumeRow();
+                }
+            });
         } catch (Exception ignored) {
         } finally {
             if (c != null) try { c.disconnect(); } catch (Exception ignored) {}
         }
     }
 
-    /** Громкость из интерфейса приложения (мост WebView), применяется сразу. */
+    /** Громкость с главного экрана приложения, применяется сразу (и в открытом меню настроек). */
     public void setStreamVolume(int percent, boolean muted) {
         streamVolumePercent = Math.max(0, Math.min(PcAudioGain.MAX_PERCENT, percent));
         streamVolumeMuted = muted;
+        if (Looper.myLooper() == Looper.getMainLooper()) syncStreamVolumeRow();
+        else post(new Runnable() {
+            @Override
+            public void run() {
+                syncStreamVolumeRow();
+            }
+        });
     }
 
     private void updateAudioStatusOnMain(final String status, final int color) {
@@ -2407,7 +3066,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             startAudioStream();
         } else {
             stopAudioStream();
-            updateAudioStatusOnMain("Выключен", PcUi.SUBTEXT);
+            updateAudioStatusOnMain(T("nsv_off_2", "Выключен"), PcUi.SUBTEXT);
         }
     }
 
@@ -2467,7 +3126,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
             scrollSpeed = sp.getFloat("scroll_speed", 1.0f);
             invertScroll = sp.getBoolean("scroll_invert", false);
-            opacityTpZone = sp.getInt("op_tp_zone", 0);
+            opacityTpZone = sp.getInt("op_tp_zone", DEF_OP_TP_ZONE);
             colTpZone = sp.getInt("col_tp_zone", DEF_COL_TP_ZONE);
             colGear = sp.getInt("col_gear", PcUi.TEXT);
             colArrow = sp.getInt("col_arrow", PcUi.TEXT);
@@ -2500,6 +3159,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 gearPosX = -1f;
                 gearPosY = -1f;
                 sp.edit().putInt("ui_rev", 4).putInt("op_tp_zone", 0).remove("gear_x").remove("gear_y").apply();
+            }
+            if (sp.getInt("ui_rev", 0) < 5) {
+                // v2.4.4 (QA U-25): the invisible zone confused users — tint it lightly unless the user
+                // has already chosen a visibility of their own.
+                if (opacityTpZone == 0) opacityTpZone = DEF_OP_TP_ZONE;
+                sp.edit().putInt("ui_rev", 5).putInt("op_tp_zone", opacityTpZone).apply();
             }
         } catch (Exception ignored) {}
     }
@@ -2581,10 +3246,33 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         inputClient.configure(this.serverUrl, this.authToken);
     }
 
+    /**
+     * The route to the PC changed mid-session (USB cable plugged in / pulled out, Wi-Fi lost):
+     * same PC and password, new address. The video worker re-reads serverUrl on every reconnect,
+     * so dropping the current connection is enough; input, PC sound and the mic reconnect too.
+     */
+    public void switchServer(String url) {
+        String u = (url != null) ? url.trim() : "";
+        while (u.endsWith("/")) u = u.substring(0, u.length() - 1);
+        if (u.isEmpty() || u.equals(serverUrl)) return;
+        serverUrl = u;
+        inputClient.configure(serverUrl, authToken);
+        if (!isStreaming.get()) return;
+        HttpURLConnection conn = activeConn;
+        if (conn != null) {
+            try { conn.disconnect(); } catch (Exception ignored) {}
+        }
+        if (isAudioEnabled) startAudioStream();
+        if (isMicStreaming) {
+            stopMicStreaming();
+            startMicStreaming();
+        }
+    }
+
     private void updateSubtitle() {
         if (subtitleView == null) return;
-        String resStr = (targetHeight > 0) ? (targetHeight + "p") : "Native";
-        subtitleView.setText(resStr + " · " + targetFps + " FPS · " + (scaleMode == SCALE_MODE_FIT ? "Fit" : "Fill"));
+        String resStr = (targetHeight > 0) ? (targetHeight + "p") : T("nsv_res_native", "Исходное");
+        subtitleView.setText(resStr + " · " + targetFps + " FPS · " + ((scaleMode == SCALE_MODE_FIT ? T("nsv_scale_fit", "Вписать") : T("nsv_scale_fill", "Заполнить"))));
     }
 
     public void startStream() {
@@ -2606,13 +3294,25 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         }
         applyTouchpadConfig();
         updateTouchpadZoneVisibility();
+        if (operatingMode == MODE_PC_CONTROL) {
+            try {
+                SharedPreferences sp = getContext().getSharedPreferences("pc_control_settings", Context.MODE_PRIVATE);
+                if (!sp.getBoolean("tp_hint_shown", false)) {
+                    sp.edit().putBoolean("tp_hint_shown", true).apply();
+                    hintTouchpadZone(true);
+                }
+            } catch (Exception ignored) {}
+        }
 
         if (isAudioEnabled) {
             startAudioStream();
         } else {
-            updateAudioStatusOnMain("Выключен", PcUi.SUBTEXT);
+            updateAudioStatusOnMain(T("nsv_off_2", "Выключен"), PcUi.SUBTEXT);
         }
 
+        lastFrameUptime = 0;
+        mainHandler.removeCallbacks(linkWatch);
+        mainHandler.postDelayed(linkWatch, 1000);
         workerThread = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -2624,6 +3324,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
     public void stopStream() {
         isStreaming.set(false);
+        mainHandler.removeCallbacks(linkWatch);
+        setLinkLost(false);
         mainHandler.removeCallbacks(hideControlsRunnable);
         mainHandler.removeCallbacks(diagUpdateRunnable);
 
@@ -2673,6 +3375,9 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             public void run() {
                 setDiagnosticsVisible(false);
                 if (isSplitSettingsOpen) closeSplitSettingsWithAnimation();
+                // Масштаб не сохраняется между сеансами
+                setZoomMode(false, false);
+                resetZoom(false);
                 hidePlaybackError();
                 setVisibility(View.GONE);
             }
@@ -2747,7 +3452,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     public void toggleScaleMode() {
         scaleMode = (scaleMode == SCALE_MODE_FIT) ? SCALE_MODE_FILL : SCALE_MODE_FIT;
         if (scaleModeBtn != null) {
-            scaleModeBtn.setText(scaleMode == SCALE_MODE_FIT ? "Fit" : "Fill");
+            scaleModeBtn.setText((scaleMode == SCALE_MODE_FIT ? T("nsv_scale_fit", "Вписать") : T("nsv_scale_fill", "Заполнить")));
         }
         updateSubtitle();
         savePreferences();
@@ -2761,7 +3466,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         }
         if (floatingFsBtn != null) {
             floatingFsBtn.setIcon(isFullscreen ? PcIcons.FULLSCREEN_EXIT : PcIcons.FULLSCREEN);
-            floatingFsBtn.setContentDescription(isFullscreen ? "Выйти из полноэкранного режима" : "Полноэкранный режим");
+            floatingFsBtn.setContentDescription(isFullscreen ? T("nsv_exit_full_screen", "Выйти из полноэкранного режима") : T("nsv_full_screen", "Полноэкранный режим"));
         }
         updateQuickActionStates();
         // Системные панели и вырез камеры меняются после перехода — пересчитываем раскладку,
@@ -2832,7 +3537,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     c.setRequestMethod("POST");
                     c.setDoOutput(true);
                     c.setRequestProperty("Content-Type", "application/json");
-                    if (!authToken.isEmpty()) c.setRequestProperty("X-Auth-Token", authToken);
+                    if (!authToken.isEmpty()) c.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(authToken));
                     String body = "{\"monitor\":" + newMon + ",\"height\":" + newH + ",\"fps\":" + newFps + ",\"bitrate\":" + newBr + "}";
                     c.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
                     c.getResponseCode();
@@ -2885,11 +3590,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 conn.setRequestProperty("Accept", "video/x-h264");
                 conn.setRequestProperty("Cache-Control", "no-cache");
                 conn.setRequestProperty("Connection", "keep-alive");
-                if (!authToken.isEmpty()) conn.setRequestProperty("X-Auth-Token", authToken);
+                if (!authToken.isEmpty()) conn.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(authToken));
 
                 activeConn = conn;
                 int respCode = conn.getResponseCode();
                 if (respCode != 200) throw new Exception("HTTP " + respCode);
+                PcLog.i("video stream connected " + PcConn.hostOnly(serverUrl));
 
                 in = new BufferedInputStream(conn.getInputStream(), 128 * 1024);
                 initDecoder();
@@ -2923,11 +3629,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     readFully(in, frameBuf, 0, payloadLen);
                     totalBytesReceived += (payloadLen + 17);
                     receivedFpsTracker.recordEvent();
+                    lastFrameUptime = SystemClock.uptimeMillis();
 
                     if (!surfaceReady || decoder == null) throw new Exception("Surface lost");
                     feedDecoder(frameBuf, payloadLen, flags, ptsUs);
                 }
             } catch (Exception e) {
+                if (isStreaming.get()) PcLog.w("video stream dropped: " + e.getClass().getSimpleName());
                 if (isStreaming.get()) {
                     try { Thread.sleep(600); } catch (InterruptedException ignored) { break; }
                 }
@@ -3147,7 +3855,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         tbParams.topMargin = dpToPx(16);
         topToolbar.setLayoutParams(tbParams);
 
-        PcUi.IconBtn backBtn = new PcUi.IconBtn(context, PcIcons.ARROW_BACK, 40, 20, false, "Назад");
+        PcUi.IconBtn backBtn = new PcUi.IconBtn(context, PcIcons.ARROW_BACK, 40, 20, false, T("nsv_back", "Назад"));
         backBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { closeStreamAndExit(); }
         });
@@ -3158,7 +3866,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         titleBox.setPadding(dpToPx(12), 0, dpToPx(12), 0);
         titleBox.setGravity(Gravity.CENTER_VERTICAL);
 
-        titleView = PcUi.text(context, "Демонстрация экрана", 15f, PcUi.TEXT, Typeface.DEFAULT_BOLD);
+        titleView = PcUi.text(context, T("nsv_screen_sharing", "Демонстрация экрана"), 15f, PcUi.TEXT, Typeface.DEFAULT_BOLD);
         titleBox.addView(titleView);
 
         subtitleView = PcUi.text(context, "1080p · 60 FPS", 11f, PcUi.SUBTEXT, null);
@@ -3171,13 +3879,13 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         subtitleView.setEllipsize(TextUtils.TruncateAt.END);
         topToolbar.addView(titleBox, new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, 1f));
 
-        scaleModeBtn = PcUi.text(context, scaleMode == SCALE_MODE_FIT ? "Fit" : "Fill", 13f, PcUi.TEXT, PcUi.medium());
+        scaleModeBtn = PcUi.text(context, (scaleMode == SCALE_MODE_FIT ? T("nsv_scale_fit", "Вписать") : T("nsv_scale_fill", "Заполнить")), 13f, PcUi.TEXT, PcUi.medium());
         scaleModeBtn.setGravity(Gravity.CENTER);
         scaleModeBtn.setMinWidth(dpToPx(48));
         scaleModeBtn.setMinHeight(dpToPx(40));
         scaleModeBtn.setPadding(dpToPx(10), 0, dpToPx(10), 0);
         scaleModeBtn.setBackground(PcUi.shape(PcUi.SURFACE2, dpToPx(12), PcUi.BORDER, dpToPx(1)));
-        scaleModeBtn.setContentDescription("Масштаб: вписать / заполнить");
+        scaleModeBtn.setContentDescription(T("nsv_scale_fit_fill", "Масштаб: вписать / заполнить"));
         PcUi.pressable(scaleModeBtn);
         scaleModeBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { toggleScaleMode(); }
@@ -3188,7 +3896,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         // управление ПК — отдельный режим «Управление ПК».
         addToolbarSpacer(context, topToolbar, 6);
 
-        fullscreenBtn = new PcUi.IconBtn(context, PcIcons.FULLSCREEN, 40, 20, false, "Полноэкранный режим");
+        fullscreenBtn = new PcUi.IconBtn(context, PcIcons.FULLSCREEN, 40, 20, false, T("nsv_full_screen", "Полноэкранный режим"));
         fullscreenBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { toggleFullscreen(); }
         });
@@ -3196,7 +3904,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         addToolbarSpacer(context, topToolbar, 6);
 
-        settingsBtn = new PcUi.IconBtn(context, PcIcons.GEAR, 40, 20, false, "Настройки");
+        settingsBtn = new PcUi.IconBtn(context, PcIcons.GEAR, 40, 20, false, T("nsv_settings", "Настройки"));
         settingsBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { toggleSplitSettings(); }
         });
@@ -3204,7 +3912,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
 
         addToolbarSpacer(context, topToolbar, 6);
 
-        closeBtn = new PcUi.IconBtn(context, PcIcons.CLOSE, 40, 18, false, "Закрыть трансляцию");
+        closeBtn = new PcUi.IconBtn(context, PcIcons.CLOSE, 40, 18, false, T("nsv_close_the_stream", "Закрыть трансляцию"));
         closeBtn.setState(PcUi.ST_DANGER);
         closeBtn.setOnClickListener(new OnClickListener() {
             @Override public void onClick(View v) { closeStreamAndExit(); }
@@ -3245,11 +3953,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         tile.setScaleType(android.widget.ImageView.ScaleType.CENTER);
         tile.setBackground(PcUi.shape(PcUi.RED_SOFT, dpToPx(8), 0, 0));
         head.addView(tile, new LinearLayout.LayoutParams(dpToPx(28), dpToPx(28)));
-        TextView title = PcUi.text(context, "Диагностика потока", 16f, PcUi.TEXT, Typeface.DEFAULT_BOLD);
+        TextView title = PcUi.text(context, T("nsv_stream_diagnostics", "Диагностика потока"), 16f, PcUi.TEXT, Typeface.DEFAULT_BOLD);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f);
         tlp.leftMargin = dpToPx(10);
         head.addView(title, tlp);
-        PcUi.IconBtn closeX = new PcUi.IconBtn(context, PcIcons.CLOSE, 30, 16, true, "Закрыть");
+        PcUi.IconBtn closeX = new PcUi.IconBtn(context, PcIcons.CLOSE, 30, 16, true, T("nsv_close", "Закрыть"));
         closeX.setBackground(PcUi.oval(0x14FFFFFF, 0, 0));
         closeX.icon.setColor(0x99FFFFFF);
         closeX.setOnClickListener(new OnClickListener() {
@@ -3262,11 +3970,12 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         rows.setOrientation(LinearLayout.VERTICAL);
         rows.setPadding(0, dpToPx(10), 0, 0);
         diagCard.addView(rows);
-        diagFpsRendVal = addDiagRow(context, rows, "FPS отрисовки");
-        diagFpsRecvVal = addDiagRow(context, rows, "FPS приёма");
-        diagBitrateVal = addDiagRow(context, rows, "Битрейт");
-        diagResVal = addDiagRow(context, rows, "Разрешение");
-        diagLatencyVal = addDiagRow(context, rows, "Ввод (мышь/клавиатура)");
+        diagFpsRendVal = addDiagRow(context, rows, T("nsv_render_fps", "FPS отрисовки"));
+        diagFpsRecvVal = addDiagRow(context, rows, T("nsv_receive_fps", "FPS приёма"));
+        diagBitrateVal = addDiagRow(context, rows, T("nsv_bitrate", "Битрейт"));
+        diagResVal = addDiagRow(context, rows, T("nsv_resolution", "Разрешение"));
+        diagLatencyVal = addDiagRow(context, rows, T("nsv_input_mouse_keyboard", "Ввод (мышь/клавиатура)"));
+        diagRttVal = addDiagRow(context, rows, "RTT");
 
         diagOverlay.addView(diagCard);
         addView(diagOverlay, new FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
@@ -3299,21 +4008,35 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         long bytes = totalBytesReceived;
         if (diagBitrateVal != null && diagLastTime > 0 && now > diagLastTime) {
             float mbps = (bytes - diagLastBytes) * 8f / ((now - diagLastTime) * 1000f);
-            diagBitrateVal.setText(String.format(java.util.Locale.US, "%.1f Мбит/с", Math.max(0f, mbps)));
+            diagBitrateVal.setText(String.format(java.util.Locale.US, T("nsv_1f_mbit_s", "%.1f Мбит/с"), Math.max(0f, mbps)));
         }
         diagLastBytes = bytes;
         diagLastTime = now;
         if (diagLatencyVal != null) {
             String st;
             switch (inputClient.getState()) {
-                case PcInputClient.STATE_CONNECTED: st = "поток · " + inputClient.framesSent + " событий"; break;
-                case PcInputClient.STATE_CONNECTING: st = "подключение…"; break;
-                case PcInputClient.STATE_LEGACY: st = "медленный режим (старый сервер)"; break;
-                case PcInputClient.STATE_AUTH_ERROR: st = "ошибка пароля"; break;
-                case PcInputClient.STATE_ERROR: st = "нет связи"; break;
-                default: st = "выключен"; break;
+                case PcInputClient.STATE_CONNECTED: st = T("nsv_stream", "поток · ") + inputClient.framesSent + T("nsv_events", " событий"); break;
+                case PcInputClient.STATE_CONNECTING: st = T("nsv_connecting_2", "подключение…"); break;
+                case PcInputClient.STATE_LEGACY: st = T("nsv_slow_mode_old_server", "медленный режим (старый сервер)"); break;
+                case PcInputClient.STATE_AUTH_ERROR: st = T("nsv_password_error_2", "ошибка пароля"); break;
+                case PcInputClient.STATE_ERROR: st = T("nsv_no_connection", "нет связи"); break;
+                default: st = T("nsv_off_3", "выключен"); break;
             }
             diagLatencyVal.setText(st);
+        }
+        // Measurements (QA): round trip of a small request to the PC over the current route
+        if (diagRttVal != null) {
+            diagRttVal.setText(rttMs >= 0 ? rttMs + " ms" : "—");
+            if (now - rttAt > 2000) {
+                rttAt = now;
+                final String base = serverUrl;
+                new Thread(new Runnable() {
+                    @Override public void run() {
+                        PcHttp.Resp r = PcHttp.request(base, "GET", "/status", null, null, 2000, 2000, null);
+                        rttMs = r.ok() ? r.millis : -1;
+                    }
+                }, "pc-rtt").start();
+            }
         }
     }
 
@@ -3392,13 +4115,19 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                     MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.AT_MOST));
         }
 
+        if (menuScroll != null) {
+            // room left for the drawer next to the arrow + gear (and the screen edges)
+            menuScroll.maxW = Math.max(dpToPx(48), widthSize - dpToPx(150));
+        }
         if (floatingControlsGroup != null && floatingControlsGroup.getVisibility() != View.GONE) {
             floatingControlsGroup.measure(MeasureSpec.makeMeasureSpec(widthSize, MeasureSpec.AT_MOST),
                     MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.AT_MOST));
         }
 
         if (splitSettingsContainer != null && splitSettingsContainer.getVisibility() != View.GONE) {
-            int panelW = isSplitSettingsOpen ? (int) (widthSize * 0.48f) : widthSize;
+            // QA U-26 / P-3: in portrait 48 % of the width cut the settings off — use the full width there
+            boolean portrait = heightSize > widthSize;
+            int panelW = (isSplitSettingsOpen && !portrait) ? (int) (widthSize * 0.48f) : widthSize;
             splitSettingsContainer.measure(MeasureSpec.makeMeasureSpec(panelW, MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(heightSize, MeasureSpec.EXACTLY));
         }
@@ -3440,6 +4169,11 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             int sTop = (parentH - sH) / 2;
             surfaceView.layout(sLeft, sTop, sLeft + sW, sTop + sH);
             videoViewportRect.set(sLeft, sTop, sLeft + sW, sTop + sH);
+            // Лупа: новая геометрия (поворот, Fit/Fill, полный экран) — центр просмотра сохраняется
+            if (zoomAnim == null) {
+                zoom.setGeometry(parentW, parentH, sLeft, sTop, sW, sH);
+                applyZoomTransform();
+            }
         }
 
         if (touchpadVisualEditor != null && touchpadVisualEditor.getVisibility() != View.GONE) {

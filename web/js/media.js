@@ -96,15 +96,28 @@ async function commitPlayerVolume(val){
 }
 
 async function togglePlayerMute(){
-  mediaState.playerMuted = !mediaState.playerMuted;
-  document.getElementById('playerVolIcon').innerHTML = mediaState.playerMuted ? VOL_MUTE_SVG : VOL_ON_SVG;
+  // Раньше ответ игнорировался: если ПК не выключил звук (плеер не выводит звук, расширение
+  // отключилось), значок всё равно показывал «без звука» и причина не сообщалась
+  const icon = document.getElementById('playerVolIcon');
+  const wanted = !mediaState.playerMuted;
+  mediaState.playerMuted = wanted;
+  icon.innerHTML = wanted ? VOL_MUTE_SVG : VOL_ON_SVG;
+  let ok = false;
   try {
     const res = await apiFetch('/media/volume', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({mute: mediaState.playerMuted})
+      body: JSON.stringify({mute: wanted})
     });
-    await res.json();
+    const data = await res.json().catch(() => ({}));
+    ok = res.ok;
+    if (ok && typeof data.muted === 'boolean') mediaState.playerMuted = data.muted;
+    if (!ok && data.message){
+      const statusEl = document.getElementById('statusMsg');
+      if (statusEl) statusEl.innerText = data.message;
+    }
   } catch (e) {}
+  if (!ok) mediaState.playerMuted = !wanted;
+  icon.innerHTML = mediaState.playerMuted ? VOL_MUTE_SVG : VOL_ON_SVG;
 }
 
 function renderModeUI(mode){
@@ -147,7 +160,10 @@ async function setPlaybackMode(mode){
       body: JSON.stringify({mode})
     });
     const data = await res.json();
+    // Сервер включает режим в самом плеере (или эмулирует) и возвращает фактический режим
+    if (res.ok && data.mode) renderModeUI(data.mode);
     if (data.message) document.getElementById('statusMsg').innerText = data.message;
+    setTimeout(pollMedia, 600);
   } catch (e) {}
 }
 
@@ -470,7 +486,7 @@ async function removeQueueTrack(tr){
   try {
     const res = await apiFetch('/media/queue/remove', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({index: tr.index, title: tr.title || ''})
+      body: JSON.stringify({index: tr.index, title: tr.title || '', video_id: tr.video_id || ''})
     });
     const data = await res.json();
     if (res.ok && data.tracks){
@@ -490,7 +506,7 @@ async function playQueueTrackNext(tr){
   try {
     const res = await apiFetch('/media/queue/play_next', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({index: tr.index, title: tr.title || ''})
+      body: JSON.stringify({index: tr.index, title: tr.title || '', video_id: tr.video_id || ''})
     });
     const data = await res.json();
     if (res.ok && data.tracks){
@@ -706,7 +722,9 @@ async function pollMedia(){
         setSliderFill(pSlider, '#ffffff');
       }
       const valEl = document.getElementById('playerVolVal');
-      if (valEl) valEl.innerText = data.volume + '%';
+      // volume_ok=false: громкость этого плеера пока неизвестна (он ещё не выводит звук) —
+      // не показываем выдуманные «100%»
+      if (valEl) valEl.innerText = (data.volume_ok === false) ? '—' : (data.volume + '%');
       mediaState.playerMuted = !!data.muted;
       const volIcon = document.getElementById('playerVolIcon');
       if (volIcon) volIcon.innerHTML = mediaState.playerMuted ? VOL_MUTE_SVG : VOL_ON_SVG;
@@ -766,6 +784,9 @@ async function mediaControl(action){
       pollMedia();
       loadQueue();
     }, 200);
+    // Плееры Windows сообщают новый трек/статус с задержкой до ~1 с — второй опрос, иначе
+    // до следующего планового (2,5–5 с) пульт показывал прежний трек
+    setTimeout(pollMedia, 1100);
   } catch (e) {
   } finally {
     _mediaCommandPending = false;

@@ -7,8 +7,10 @@ import atexit
 import ctypes
 from ctypes import wintypes
 import json
+import logging
 import os
 import platform
+import re
 import socket
 import struct
 import sys
@@ -19,6 +21,7 @@ from flask import Blueprint, Response, jsonify, request
 from werkzeug.wsgi import get_input_stream
 
 from core.auth import check_token
+from core.config import is_safe_test_mode
 from core.logger import log_action, log_error
 from modules.system import _attach_input_desktop
 from modules.input_engine import (
@@ -140,6 +143,10 @@ def _send_inputs(inputs: list) -> int:
     """Выполняет вызов Windows user32.SendInput с привязкой к активному десктопу."""
     if not IS_WINDOWS or not inputs:
         return 0
+    if is_safe_test_mode():
+        # Тестовый режим: настоящий ввод не отправляется (раньше тесты двигали мышь пользователя,
+        # нажимали Win, Alt+Tab, Ctrl+Shift+Esc и печатали текст в активное окно)
+        return len(inputs)
     try:
         _attach_input_desktop()
         user32 = ctypes.windll.user32
@@ -441,6 +448,20 @@ MAPVK_VK_TO_VSC_EX = 4
 
 INPUT_STREAM_IDLE_TIMEOUT = 12.0  # клиент шлёт PING каждую секунду; тишина 12 с = мёртвое соединение
 
+# Measurements (QA): PC_CONTROL_INPUT_DEBUG=1 → logs/input_debug.log gets a timestamp per SendInput call
+_input_debug = logging.getLogger("pcc.input")
+_input_debug.propagate = False
+if os.environ.get("PC_CONTROL_INPUT_DEBUG") == "1":
+    try:
+        from logging.handlers import RotatingFileHandler
+        from core.config import LOGS_DIR as _LOGS_DIR
+        _h = RotatingFileHandler(_LOGS_DIR / "input_debug.log", maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8")
+        _h.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d %(message)s", "%H:%M:%S"))
+        _input_debug.addHandler(_h)
+        _input_debug.setLevel(logging.DEBUG)
+    except Exception:
+        pass
+
 
 class SendInputBackend(InputBackend):
     """Реальный ввод Windows через SendInput.
@@ -457,6 +478,8 @@ class SendInputBackend(InputBackend):
     def _send(self, inputs: list):
         with _input_lock:
             _send_inputs(inputs)
+        if _input_debug.isEnabledFor(logging.DEBUG):  # measurements: one cheap check when off
+            _input_debug.debug("SendInput %d events at %.3f ms", len(inputs), time.perf_counter() * 1000)
 
     def move_rel(self, dx, dy):
         self._send([self._mouse(MOUSEEVENTF_MOVE, dx, dy)])
@@ -524,6 +547,9 @@ class SendInputBackend(InputBackend):
 _input_backend_factory = None
 _active_input_sessions: set = set()
 _active_input_sessions_lock = threading.Lock()
+_input_sessions_by_id: dict = {}  # X-Input-Session -> InputSession (liveness for /api/input/info)
+_input_sessions_by_client: dict = {}  # X-Input-Client -> newest InputSession of that phone
+_SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8,64}$")
 
 
 def set_input_backend_factory(factory) -> None:
@@ -535,7 +561,7 @@ def set_input_backend_factory(factory) -> None:
 def _make_input_backend() -> InputBackend:
     if _input_backend_factory is not None:
         return _input_backend_factory()
-    if IS_WINDOWS:
+    if IS_WINDOWS and not is_safe_test_mode():
         return SendInputBackend()
     return RecordingBackend()
 
@@ -575,11 +601,24 @@ def api_input_info():
     """Возможности потока ввода. Клиент вызывает перед открытием /api/input/stream."""
     if not check_token():
         return jsonify({"message": "Unauthorized"}), 401
+    # Liveness of the caller's stream (bug P-5): the client asks over a separate connection (every
+    # 2.5 s) whether its frames still arrive. After a network change the old TCP socket can look alive
+    # on the phone forever (writes never block, nothing is read back) while the server dropped it.
+    # Answered cheaply, without the monitor / keyboard queries below.
+    sid = str(request.args.get("session") or "")
+    if sid:
+        with _active_input_sessions_lock:
+            tracked = _input_sessions_by_id.get(sid)
+        if tracked is None or tracked.closed:
+            return jsonify({"session": {"alive": False}})
+        return jsonify({"session": {"alive": True, "frames": tracked.frames,
+                                    "idle_ms": int(max(0.0, tracked.clock() - tracked.last_seen) * 1000)}})
     delay, period = _keyboard_repeat_timing()
     mons = _get_mss_monitors() or []
     with _active_input_sessions_lock:
         n = len(_active_input_sessions)
     return jsonify({
+        "session": None,
         "protocol": PROTOCOL_VERSION,
         "stream": "/api/input/stream",
         "repeat_delay_ms": int(delay * 1000),
@@ -589,6 +628,30 @@ def api_input_info():
         "monitors": [{"index": i, "left": m["left"], "top": m["top"], "width": m["width"], "height": m["height"]} for i, m in enumerate(mons)],
         "active_sessions": n,
     })
+
+
+@input_bp.route("/api/input/cursor", methods=["GET"])
+def api_input_cursor():
+    """Позиция курсора ПК в долях монитора трансляции (0..1). Нужна телефону, чтобы увеличенная
+    картинка («лупа» в «Управлении ПК») следовала за курсором. Дёшево: один GetCursorPos."""
+    if not check_token():
+        return jsonify({"message": "Unauthorized"}), 401
+    try:
+        monitor = int(request.args.get("monitor", 1))
+    except (TypeError, ValueError):
+        monitor = 1
+    if not IS_WINDOWS:
+        return jsonify({"ok": False, "x": 0.5, "y": 0.5, "inside": False})
+    # Мониторы запрашиваются первыми (mss включает DPI-awareness) — GetCursorPos в тех же пикселях
+    m_left, m_top, m_w, m_h = _get_monitor_bounds(monitor)
+    pt = wintypes.POINT()
+    if not ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+        return jsonify({"ok": False, "x": 0.5, "y": 0.5, "inside": False})
+    nx = (pt.x - m_left) / float(max(1, m_w - 1))
+    ny = (pt.y - m_top) / float(max(1, m_h - 1))
+    inside = 0.0 <= nx <= 1.0 and 0.0 <= ny <= 1.0
+    return jsonify({"ok": True, "x": round(max(0.0, min(1.0, nx)), 5),
+                    "y": round(max(0.0, min(1.0, ny)), 5), "inside": inside})
 
 
 @input_bp.route("/api/input/stream", methods=["POST"])
@@ -632,8 +695,29 @@ def api_input_stream():
     delay, period = _keyboard_repeat_timing()
     session = InputSession(_make_input_backend(), repeat_delay=delay, repeat_period=period)
     ticker = SessionTicker(session)
+    sid = str(request.headers.get("X-Input-Session") or "")
+    if not _SESSION_ID_RE.match(sid):
+        sid = ""
+    # QA P-5 leftover: the phone opened a new stream because the old one went silent. The old session
+    # used to be released only by its 12-s idle timeout — AFTER the new stream had re-pressed held keys,
+    # so the late release let go of keys the new session still holds. Close the previous session of the
+    # same client now, before the new one handles any frame.
+    cid = str(request.headers.get("X-Input-Client") or "")
+    if not _SESSION_ID_RE.match(cid):
+        cid = ""
+    previous = None
     with _active_input_sessions_lock:
         _active_input_sessions.add(session)
+        if sid:
+            _input_sessions_by_id[sid] = session
+        if cid:
+            previous = _input_sessions_by_client.get(cid)
+            _input_sessions_by_client[cid] = session
+    if previous is not None and previous is not session:
+        try:
+            previous.close()
+        except Exception:
+            pass
     ticker.start()
     started = time.monotonic()
     reason = "error"
@@ -650,6 +734,10 @@ def api_input_stream():
         ticker.stop()
         with _active_input_sessions_lock:
             _active_input_sessions.discard(session)
+            if sid and _input_sessions_by_id.get(sid) is session:
+                del _input_sessions_by_id[sid]
+            if cid and _input_sessions_by_client.get(cid) is session:
+                del _input_sessions_by_client[cid]
         log_action("input_stream_closed", {
             "reason": reason,
             "frames": session.frames,
@@ -708,6 +796,14 @@ def _ensure_mic_playback_open(sample_rate: int = 16000, channels: int = 1):
     with _mic_playback_lock:
         if _mic_playback_stream is not None:
             return _mic_playback_stream
+        # QA A-5: hold a lease on the shared PortAudio from the device lookup until the stream is
+        # closed — another request's refresh can no longer terminate() it in between.
+        from modules.streaming import _pyaudio_lease, _audio_stream_exit
+        try:
+            _pyaudio_lease()
+        except Exception as e:
+            log_error("mic_playback_open_err", e)
+            return None
         try:
             p, dev_idx, dev_name, is_virt = _get_target_mic_playback_device()
             _mic_virtual_detected = is_virt
@@ -715,6 +811,7 @@ def _ensure_mic_playback_open(sample_rate: int = 16000, channels: int = 1):
 
             if not is_virt or dev_idx < 0 or p is None:
                 log_action("mic_playback_no_virtual_cable", {"device": dev_name})
+                _audio_stream_exit()
                 return None
 
             _mic_playback_pa = None  # общий экземпляр не принадлежит микрофону — не завершаем его
@@ -733,14 +830,14 @@ def _ensure_mic_playback_open(sample_rate: int = 16000, channels: int = 1):
                 "frames_per_buffer": 1024,
             }
 
-            from modules.streaming import _audio_stream_enter
-            _mic_playback_stream = p.open(**kwargs)
-            _audio_stream_enter()  # пока поток открыт, общий PortAudio не пересоздаётся
+            _mic_playback_stream = p.open(**kwargs)  # the lease is kept while the stream is open
             _mic_active = True
             log_action("mic_playback_started", {"device": dev_name, "rate": sample_rate})
             return _mic_playback_stream
         except Exception as e:
             log_error("mic_playback_open_err", e)
+            if _mic_playback_stream is None:
+                _audio_stream_exit()
             return None
 
 
@@ -782,13 +879,19 @@ def api_mouse():
     # Поддержка пакета событий {"events": [...]} для минимальной задержки
     events = data.get("events")
     if isinstance(events, list):
-        success = True
         for ev in events:
             if isinstance(ev, dict):
-                _handle_single_mouse_event(ev)
+                try:
+                    _handle_single_mouse_event(ev)
+                except (ValueError, TypeError, OverflowError):
+                    continue  # одно некорректное событие пакета не обрывает остальные
         return jsonify({"ok": True, "processed": len(events)})
 
-    ok = _handle_single_mouse_event(data)
+    try:
+        ok = _handle_single_mouse_event(data)
+    except (ValueError, TypeError, OverflowError):
+        # Раньше нечисловые dx/x/monitor ("abc", null, NaN) давали 500 и трассировку в журнале ошибок
+        return jsonify({"ok": False, "message": "Invalid mouse event parameters"}), 400
     return jsonify({"ok": ok})
 
 
@@ -847,6 +950,14 @@ def api_keyboard():
     if not isinstance(data, dict):
         return jsonify({"message": "Invalid JSON"}), 400
 
+    try:
+        return _handle_keyboard_request(data)
+    except (ValueError, TypeError, OverflowError):
+        # Нечисловой vk ("abc", null) раньше давал 500 вместо 400
+        return jsonify({"ok": False, "message": "Invalid keyboard event parameters"}), 400
+
+
+def _handle_keyboard_request(data: dict):
     action = data.get("action", "")
 
     if action == "key_down":

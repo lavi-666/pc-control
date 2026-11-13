@@ -95,3 +95,12 @@ PC-Control.apk
 /scripts/2_setup_autologon.cmd
 /scripts/1_install_dependencies.bat
 /scripts/3_start_server.bat
+
+media_helper_rs/target/
+
+# --- Release hygiene (QA package 5) ---
+/android_app/keystore.properties
+/скриншот/
+/android_app/test/
+/media_helper_rs/
+/android_app/classes.dex

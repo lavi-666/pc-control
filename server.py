@@ -51,13 +51,16 @@ from core.auth import (
     detect_language,
     create_pairing_ticket,
     redeem_pairing_ticket,
+    is_valid_pairing_ticket,
 )
 from core.logger import get_history, log_action, log_error
 from modules.system import system_bp, _attach_input_desktop
 from modules.volume import volume_bp
 from modules.power import power_bp
 from modules.streaming import streaming_bp
-from modules.media import media_bp
+# Медиаплеер: новый движок (tools/media_helper.exe + расширение Chrome) или прежний modules/media.py
+from modules.player import select_media_blueprint
+media_bp = select_media_blueprint()
 from modules.presets import presets_bp
 from modules.input_controller import input_bp
 
@@ -91,7 +94,9 @@ app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
 class _RedactSecretsFilter(logging.Filter):
     """Маскирует пароль в журнале запросов: видео/звук передают ?token=… в URL, и werkzeug
     записывал пароль открытым текстом в logs/server_stderr.log."""
-    _re = re.compile(r"((?:token|ticket)=)[^&\s\"']+", re.IGNORECASE)
+    # Также внутри вложенной ссылки (/api/qr?url=…%3Ftoken%3D<пароль>%26…): раньше там пароль
+    # оставался в журнале открытым текстом.
+    _re = re.compile(r"((?:token|ticket|password)(?:=|%3D|%253D))(.+?)(?=&|%26|%2526|\s|\"|'|$)", re.IGNORECASE)
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -106,6 +111,39 @@ class _RedactSecretsFilter(logging.Filter):
 
 
 logging.getLogger("werkzeug").addFilter(_RedactSecretsFilter())
+
+# Measurements (QA): every request with its duration in ms → logs/requests.log (rotated 3 × 2 MB).
+# Passwords / tickets in URLs are masked by _RedactSecretsFilter; headers are not logged.
+_req_log = logging.getLogger("pcc.requests")
+_req_log.propagate = False
+_req_log.setLevel(logging.INFO)
+_req_log.addFilter(_RedactSecretsFilter())
+try:
+    from logging.handlers import RotatingFileHandler
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    _rh = RotatingFileHandler(LOGS_DIR / "requests.log", maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    _rh.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d %(message)s", "%Y-%m-%d %H:%M:%S"))
+    _req_log.addHandler(_rh)
+except Exception:
+    pass
+
+
+@app.before_request
+def _request_timer_start():
+    g.pcc_t0 = time.perf_counter()
+
+
+def _log_request(resp):
+    try:
+        t0 = getattr(g, "pcc_t0", None)
+        ms = (time.perf_counter() - t0) * 1000 if t0 is not None else -1
+        rid = request.headers.get("X-Request-Id") or "-"
+        qs = request.query_string.decode("utf-8", "replace") if request.query_string else ""
+        _req_log.info("%s %s %s%s %s %.1fms rid=%s%s", request.remote_addr, request.method, request.path,
+                      ("?" + qs) if qs else "", resp.status_code, ms, rid[:64],
+                      " streamed" if resp.is_streamed else "")
+    except Exception:
+        pass
 
 # Регистрация функциональных модулей через Blueprints
 app.register_blueprint(volume_bp)
@@ -168,27 +206,36 @@ def _is_origin_allowed(origin: str, remote_addr: str) -> bool:
     return False
 
 
+# X-Request-Id: веб-пульт (app.js) добавляет его к каждому POST для защиты от повторов.
+# Без него в списке браузер/WebView отменял ВСЕ POST с другого origin (APK, Tailscale):
+# preflight OPTIONS проходил, а сама команда (плеер, громкость, /action) не отправлялась.
+_CORS_ALLOW_HEADERS = "Content-Type, X-Auth-Token, Authorization, X-Request-Id"
+
+
 def _apply_cors_and_security_headers(resp):
     origin = request.headers.get("Origin")
     if origin:
         if _is_origin_allowed(origin, request.remote_addr):
             resp.headers["Access-Control-Allow-Origin"] = origin
-            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Auth-Token, Authorization"
+            resp.headers["Access-Control-Allow-Headers"] = _CORS_ALLOW_HEADERS
             resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
             resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Max-Age"] = "600"
+            resp.vary.add("Origin")
     else:
-        if is_safe_test_mode() or request.remote_addr in ("127.0.0.1", "::1"):
+        if request.remote_addr in ("127.0.0.1", "::1"):  # QA A-9: not for every client in test mode
             resp.headers["Access-Control-Allow-Origin"] = "*"
         else:
             resp.headers["Access-Control-Allow-Origin"] = request.host_url.rstrip("/")
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Auth-Token, Authorization"
+        resp.headers["Access-Control-Allow-Headers"] = _CORS_ALLOW_HEADERS
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
 
     # Защитные заголовки
     resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Content-Security-Policy"] = (
-        "frame-ancestors 'self' http://127.0.0.1:* http://localhost:* http://192.168.* http://172.* http://100.* http://10.*;"
-    )
+    # Встраивать страницу может только сам сервер и панель управления на этом ПК (127.0.0.1/localhost).
+    # Шаблоны «http://192.168.*» и т. п. недопустимы в CSP (браузер их игнорировал и писал 4 ошибки
+    # в консоль на каждой загрузке страницы) — убраны, поведение не меняется.
+    resp.headers["Content-Security-Policy"] = "frame-ancestors 'self' http://127.0.0.1:* http://localhost:*;"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return resp
 
@@ -236,8 +283,31 @@ def _ensure_interactive_desktop():
         return _apply_cors_and_security_headers(resp)
 
 
+def _translate_json_reply(resp):
+    """QA T-1: user-facing message fields of JSON replies in the client's language (core/server_i18n.py)."""
+    try:
+        if resp.is_streamed or resp.mimetype != "application/json" or resp.content_length is None \
+                or resp.content_length > 256 * 1024:
+            return
+        lang = detect_language()
+        if lang == "ru":
+            return
+        data = resp.get_json(silent=True)
+        if not isinstance(data, dict):
+            return
+        from core.server_i18n import translate_reply
+        before = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        translate_reply(data, lang)
+        if json.dumps(data, ensure_ascii=False, sort_keys=True) != before:
+            resp.set_data(json.dumps(data, ensure_ascii=False))
+    except Exception:
+        pass
+
+
 @app.after_request
 def _add_cors_headers(resp):
+    _translate_json_reply(resp)
+    _log_request(resp)
     primary_key = getattr(g, "idempotency_cache_key", None)
     if primary_key:
         content_type = resp.headers.get("Content-Type", "application/json")
@@ -321,6 +391,13 @@ def index():
     resp.headers["Expires"] = "0"
     # Никакой автоматической установки cookie с паролем без авторизации!
     return resp
+
+
+def _local_test_mode() -> bool:
+    """Тестовый режим ослабляет проверку пароля только для запросов с этого же ПК.
+    Раньше при включённом тестовом режиме (его включает POST /api/safe_mode) любое устройство
+    сети без пароля скачивало APK (в нём пароль), QR-код и сетевые данные ПК."""
+    return is_safe_test_mode() and request.remote_addr in ("127.0.0.1", "::1")
 
 
 def get_local_ip() -> str:
@@ -407,8 +484,9 @@ def api_auth_rotate():
     data = request.get_json(silent=True) or {}
     custom_token = str(data.get("new_token") or "").strip()
     if custom_token:
-        if len(custom_token) < 4:
-            return jsonify({"ok": False, "message": "Токен должен содержать минимум 4 символа"}), 400
+        from core.auth import MIN_PASSWORD_LEN
+        if len(custom_token) < MIN_PASSWORD_LEN:  # QA A-8: was 4
+            return jsonify({"ok": False, "message": f"Токен должен содержать минимум {MIN_PASSWORD_LEN} символов"}), 400
         new_token = custom_token
     else:
         new_token = secrets.token_hex(8)
@@ -441,7 +519,9 @@ def api_pair_ticket():
     # Только для авторизованных клиентов. Раньше билет выдавался ЛЮБОМУ адресу из локальной
     # сети/Tailscale без пароля, а /api/pair/exchange меняет билет на сам пароль — любое
     # устройство в той же Wi-Fi сети получало полный доступ к ПК двумя запросами.
-    if not is_safe_test_mode() and not check_token():
+    # Без исключения для тестового режима: билет меняется на НАСТОЯЩИЙ пароль (/api/pair/exchange),
+    # а тестовый режим включается запросом POST /api/safe_mode.
+    if not check_token():
         return jsonify({"ok": False, "message": get_msg("auth_required")}), 401
 
     ticket = create_pairing_ticket(ttl=300)
@@ -482,9 +562,18 @@ def api_pair_exchange():
         token,
         max_age=31536000,
         path="/",
-        httponly=False,
+        httponly=True,  # QA A-10: page scripts never read it; HttpOnly keeps it from injected JS
         samesite="Lax",
     )
+    return resp
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_auth_logout():
+    """Clears the login cookies (they are HttpOnly, page scripts cannot remove them)."""
+    resp = jsonify({"ok": True})
+    resp.delete_cookie("pc_token", path="/")
+    resp.delete_cookie("token", path="/")
     return resp
 
 
@@ -548,7 +637,7 @@ def check_idempotency_request(req_id: str):
         return None
 
     if has_request_context():
-        is_safe = is_safe_test_mode()
+        is_safe = _local_test_mode()
         # Мутирующие операции требуют обязательной проверки авторизации до доступа к кэшу!
         if not is_safe and not check_token():
             return None
@@ -670,7 +759,7 @@ def store_idempotency_result(req_id: str, result_data):
 @app.route("/api/network/diagnose")
 def api_network_diagnose():
     """Безопасная диагностика сетевых интерфейсов и доступности LAN без раскрытия секретов."""
-    if not is_safe_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
+    if not _local_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
         return jsonify({"message": get_msg("auth_required")}), 401
     try:
         from scripts.network_setup import get_network_diagnostics
@@ -684,7 +773,7 @@ def api_network_diagnose():
 
 @app.route("/api/lan_info")
 def api_lan_info():
-    if not is_safe_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
+    if not _local_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
         return jsonify({"message": get_msg("auth_required")}), 401
     cfg = load_app_config() or {}
     lan_ip = cfg.get("lan_ip") or get_local_ip()
@@ -716,7 +805,7 @@ def api_lan_info():
 @app.route("/api/qr")
 @app.route("/qr/apk")
 def get_qr_image():
-    if not is_safe_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
+    if not _local_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
         return jsonify({"message": get_msg("auth_required")}), 401
     import io
     target_url = request.args.get("url")
@@ -741,8 +830,12 @@ def get_qr_image():
 
 @app.route("/download/apk")
 def download_apk():
-    # Защита от несанкционированного скачивания из внешних публичных сетей
-    if not is_safe_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
+    # Только с паролем (cookie / заголовок) или действующим одноразовым билетом из QR-кода.
+    # Раньше любое устройство локальной сети скачивало APK без пароля, а персональный APK
+    # (его собирает мастер настройки) содержит пароль доступа — гость той же Wi-Fi сети
+    # мог достать его из APK и получить полное управление ПК.
+    if not _local_test_mode() and not is_valid_pairing_ticket(str(request.args.get("ticket") or "")) \
+            and not check_token(allow_stream_query=True):
         return jsonify({"message": get_msg("apk_auth_required")}), 401
     apk_path = BASE_DIR / "PC_Control.apk"
     if not apk_path.exists():
@@ -755,10 +848,22 @@ def download_apk():
     )
 
 
+@app.route("/api/apk/info")
+def api_apk_info():
+    """Версия PC_Control.apk на этом ПК — для пункта «Обновление приложения» в настройках APK.
+    Версия читается из самого APK (двоичный манифест), sha256 — для проверки скачанного файла."""
+    if not check_token():
+        return jsonify({"ok": False, "message": get_msg("auth_required")}), 401
+    from core.apk_info import get_apk_info
+    resp = jsonify(get_apk_info(BASE_DIR / "PC_Control.apk"))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.route("/download/wol_relay.py")
 def download_wol_relay():
     # Защита от несанкционированного скачивания из внешних публичных сетей
-    if not is_safe_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
+    if not _local_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
         return jsonify({"message": get_msg("auth_required")}), 401
     relay_path = BASE_DIR / "scripts" / "wol_relay.py"
     if not relay_path.exists():
@@ -819,11 +924,20 @@ def api_safe_mode():
         return jsonify({"message": get_msg("invalid_token")}), 401
 
     if request.method == "POST":
+        # QA A-9: test mode weakens password checks — it may only be switched from this PC, and an
+        # API-enabled test mode switches itself off after 10 minutes.
+        if request.remote_addr not in ("127.0.0.1", "::1"):
+            return jsonify({"message": get_msg("auth_required")}), 403
         data = request.get_json(force=True, silent=True)
         if not isinstance(data, dict):
             data = {}
         val = bool(data.get("enabled", True))
+        was_on = is_safe_test_mode()
         set_safe_test_mode(val)
+        if val and not was_on:
+            t = threading.Timer(600, lambda: set_safe_test_mode(False))
+            t.daemon = True
+            t.start()
         status_str = get_msg("safe_mode_on" if val else "safe_mode_off")
         return jsonify({"safe_mode": val, "message": get_msg("safe_mode_msg", status=status_str)})
     return jsonify({"safe_mode": is_safe_test_mode()})
@@ -831,12 +945,45 @@ def api_safe_mode():
 
 @app.route("/status")
 def status():
+    from core import route_auth
     data = {"status": "online"}
+    instance = route_auth.instance_id()
     if request.remote_addr in ("127.0.0.1", "::1") or is_private_ip(request.remote_addr):
-        data["instance"] = hashlib.sha256(str(BASE_DIR.resolve()).lower().rstrip("\\/").encode("utf-8")).hexdigest()
+        data["instance"] = instance
+    # ?nonce=… — the app checks that this is ITS server before sending the password
+    # (automatic USB / tethering / LAN / Tailscale route choice, see core/route_auth.py).
+    nonce = str(request.args.get("nonce") or "")
+    if route_auth.valid_nonce(nonce):
+        proof = route_auth.proof(nonce, instance)
+        if proof:
+            data["instance"] = instance
+            data["proof"] = proof
     if is_private_ip(request.remote_addr) or check_token() or is_safe_test_mode():
         data["hostname"] = platform.node()
-    return jsonify(data)
+    resp = jsonify(data)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/api/route/key")
+def api_route_key():
+    """Key for verifying this server on automatic routes (only to a client that knows the password)."""
+    if not check_token():
+        return jsonify({"ok": False, "message": get_msg("auth_required")}), 401
+    from core import route_auth
+    resp = jsonify({"ok": True, "route_key": route_auth.route_key(), "instance": route_auth.instance_id()})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/api/usb/status")
+def api_usb_status():
+    """Phones connected by cable (adb reverse) — for diagnostics in the app / web UI."""
+    if not _local_test_mode() and not check_token():
+        return jsonify({"ok": False, "message": get_msg("auth_required")}), 401
+    from core import usb_link
+    svc = usb_link.get_service()
+    return jsonify({"ok": True, **(svc.snapshot() if svc else {"adb": "disabled", "devices": []})})
 
 
 @app.route("/history")
@@ -891,6 +1038,13 @@ def api_server_stop():
 
     def _shutdown_worker():
         time.sleep(0.3)
+        try:  # os._exit skips atexit: remove our adb reverse rules first
+            from core import usb_link
+            svc = usb_link.get_service()
+            if svc is not None:
+                svc.stop()
+        except Exception:
+            pass
         os._exit(0)
 
     threading.Thread(target=_shutdown_worker, daemon=True).start()
@@ -940,6 +1094,17 @@ if __name__ == "__main__":
     print("                    PC CONTROL SERVER                    ")
     print("=" * 65)
     print(f"  Local URL:        http://{get_local_ip()}:{_port}")
-    print(f"  Port:             {_port} (accessible on all interfaces)")
+    # Тестовый сервер (PC_CONTROL_TEST_MODE=1, tests/conftest.py) слушает только этот ПК: в тестовом
+    # режиме часть проверок пароля ослаблена для 127.0.0.1, сеть к нему доступа не получает.
+    _host = os.environ.get("PC_CONTROL_BIND_HOST") or ("127.0.0.1" if is_safe_test_mode() else "0.0.0.0")
+    print(f"  Port:             {_port} ({'accessible on all interfaces' if _host == '0.0.0.0' else 'bound to ' + _host})")
     print("=" * 65)
-    app.run(host="0.0.0.0", port=_port, threaded=True)
+    # USB cable: adb reverse for the phone + discovery beacon for USB tethering (core/usb_link.py).
+    # The test server (PC_CONTROL_TEST_MODE=1) starts it only on request (PC_CONTROL_USB_LINK=1).
+    if os.environ.get("PC_CONTROL_USB_LINK", "0" if is_safe_test_mode() else "1") == "1":
+        try:
+            from core import usb_link, route_auth
+            usb_link.start_service(_port, route_auth.instance_id(), _cfg)
+        except Exception as _e:
+            log_error("usb_link_start", _e)
+    app.run(host=_host, port=_port, threaded=True)

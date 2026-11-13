@@ -23,6 +23,21 @@ streaming_bp = Blueprint("streaming", __name__)
 _RUST_STREAMER_PROC = None
 _RUST_STREAMER_LOCK = threading.Lock()
 _RUST_STREAMER_URL = "http://127.0.0.1:5051"
+STREAM_NO_FRAME_TIMEOUT = 10.0  # s without a captured frame → end the screen stream (QA A-3)
+
+# Measurements (QA): sampled capture times → logs/stream.log (rotated)
+import logging as _logging
+_stream_log = _logging.getLogger("pcc.stream")
+_stream_log.propagate = False
+_stream_log.setLevel(_logging.INFO)
+try:
+    from logging.handlers import RotatingFileHandler as _RFH
+    from core.config import LOGS_DIR as _SLOGS
+    _sh = _RFH(_SLOGS / "stream.log", maxBytes=1024 * 1024, backupCount=2, encoding="utf-8")
+    _sh.setFormatter(_logging.Formatter("%(asctime)s.%(msecs)03d %(message)s", "%Y-%m-%d %H:%M:%S"))
+    _stream_log.addHandler(_sh)
+except Exception:
+    pass
 
 
 def _ensure_rust_streamer() -> bool:
@@ -296,8 +311,7 @@ def _create_audio_track(source: str = "loopback"):
         def __init__(self):
             super().__init__()
             # Общий экземпляр PortAudio сервера (см. _shared_pyaudio); не завершается в stop()
-            self._pa = _shared_pyaudio(refresh=True)
-            _audio_stream_enter()
+            self._pa = _pyaudio_lease(refresh=True)  # QA A-5: instance + lease atomically
             self._pa_entered = True
             try:
                 if source == "mic":
@@ -912,7 +926,7 @@ async def _close_all_webrtc(source: str | None = None):
 
 
 _PA_SHARED = None
-_PA_LOCK = threading.Lock()
+_PA_LOCK = threading.RLock()
 _PA_ACTIVE_STREAMS = 0
 _PA_CREATED_AT = 0.0
 
@@ -937,6 +951,18 @@ def _shared_pyaudio(refresh: bool = False):
             _PA_SHARED = pyaudio.PyAudio()
             _PA_CREATED_AT = time.monotonic()
         return _PA_SHARED
+
+
+def _pyaudio_lease(refresh: bool = False):
+    """QA A-5: shared PortAudio instance AND a lease on it in one atomic step. Before, a request got
+    the instance, and only later (when the response started streaming) counted itself as active — a
+    second request in between could terminate() the instance under it (crash with «Звук ПК» + mic).
+    Every lease must be returned with _audio_stream_exit()."""
+    global _PA_ACTIVE_STREAMS
+    with _PA_LOCK:
+        pa = _shared_pyaudio(refresh=refresh)  # _PA_LOCK is re-entrant (RLock)
+        _PA_ACTIVE_STREAMS += 1
+        return pa
 
 
 def _audio_stream_enter():
@@ -992,16 +1018,52 @@ def audio():
 
     if system == "Windows" and not MIC_DEVICE:
         use_mic = bool(request.args.get("mic") == "1")
+        import queue as _queue
+        q = _queue.Queue(maxsize=100)
         try:
             import struct
             import pyaudiowpatch as pyaudio
-            pa = _shared_pyaudio(refresh=True)
+            pa = _pyaudio_lease(refresh=True)
+        except Exception as e:
+            return jsonify({"message": f"Не удалось открыть аудиоустройство: {e}"}), 500
+
+        released = [False]
+
+        def _release_lease():
+            if not released[0]:
+                released[0] = True
+                _audio_stream_exit()
+
+        def _on_audio(in_data, frame_count, time_info, status):
+            try:
+                q.put_nowait(in_data)
+            except _queue.Full:
+                pass  # клиент не успевает читать — старые данные не копим
+            return (None, pyaudio.paContinue)
+
+        # QA P-4: the device is opened BEFORE answering. Before, opening failed inside the generator
+        # (OSError -9999 for the PC microphone) after a 200 had been sent: the phone got an empty body,
+        # treated it as a network drop and reconnected forever («Проверка…»).
+        try:
             dev = _find_default_mic_device(pa) if use_mic else pa.get_default_wasapi_loopback()
             rate = int(dev.get("defaultSampleRate", 48000))
             channels = max(1, min(2, int(dev.get("maxInputChannels", 2))))
             dev_idx = dev["index"]
+            stream = pa.open(
+                format=pyaudio.paInt16,
+                channels=channels,
+                rate=rate,
+                frames_per_buffer=960,
+                input=True,
+                input_device_index=dev_idx,
+                stream_callback=_on_audio,
+            )
+            stream.start_stream()
         except Exception as e:
-            return jsonify({"message": f"Не удалось открыть аудиоустройство: {e}"}), 500
+            _release_lease()
+            log_error("wasapi_open", e)
+            what = "Микрофон ПК недоступен" if use_mic else "Звук ПК недоступен"
+            return jsonify({"message": f"{what}: {e}", "error": "audio_device"}), 503
 
         def _build_wav_header(sample_rate: int, num_channels: int) -> bytes:
             byte_rate = sample_rate * num_channels * 2
@@ -1030,29 +1092,7 @@ def audio():
             # запросы копились и блокировали открытие новых потоков — звук ПК не возвращался.
             # Поэтому захват через callback (без блокирующего чтения), а в паузах сервер сам
             # отдаёт тишину в реальном времени: соединение живо, обрыв клиента виден сразу.
-            import queue as _queue
-            q = _queue.Queue(maxsize=100)
-
-            def _on_audio(in_data, frame_count, time_info, status):
-                try:
-                    q.put_nowait(in_data)
-                except _queue.Full:
-                    pass  # клиент не успевает читать — старые данные не копим
-                return (None, pyaudio.paContinue)
-
-            stream = None
-            _audio_stream_enter()
             try:
-                stream = _shared_pyaudio().open(
-                    format=pyaudio.paInt16,
-                    channels=channels,
-                    rate=rate,
-                    frames_per_buffer=960,
-                    input=True,
-                    input_device_index=dev_idx,
-                    stream_callback=_on_audio,
-                )
-                stream.start_stream()
                 yield _build_wav_header(rate, channels)
                 bytes_per_sec = rate * channels * 2
                 frame_align = channels * 2
@@ -1074,19 +1114,30 @@ def audio():
             except Exception as e:
                 log_error("wasapi_wav_stream", e)
             finally:
-                if stream is not None:
-                    try:
-                        stream.stop_stream()
-                        stream.close()
-                    except Exception:
-                        pass
-                _audio_stream_exit()
+                _close_stream()
 
-        return Response(
+        closed = [False]
+
+        def _close_stream():
+            # Idempotent: runs from the generator's finally AND from Response.call_on_close (a client
+            # that disconnects before the first byte never starts the generator).
+            if closed[0]:
+                return
+            closed[0] = True
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
+            _release_lease()
+
+        resp = Response(
             generate_wasapi_wav(),
             mimetype="audio/wav",
             headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
         )
+        resp.call_on_close(_close_stream)
+        return resp
 
     if not MIC_DEVICE:
         return jsonify({"message": "Микрофон не настроен (MIC_DEVICE_NAME)"}), 400
@@ -1308,6 +1359,22 @@ class _CursorPainter:
             return False
 
 
+def copy_bgra_into_plane(plane, src, width: int, height: int) -> None:
+    """Copies a tightly packed BGRA image (width*4 bytes per row) into a PyAV plane.
+
+    QA A-2: PyAV pads every row to its own line_size (1366 px → 5472 bytes per row, not 5464), so
+    plane.update() rejected the frame ("got 4196352 bytes; need 4202496") on screens whose width*4 is
+    not a multiple of 32 — the phone got a black screen and endless reconnects."""
+    row = width * 4
+    if plane.line_size == row:
+        plane.update(src)
+        return
+    import numpy as np
+    dst = np.frombuffer(plane, dtype=np.uint8).reshape(-1, plane.line_size)
+    srcv = np.frombuffer(src, dtype=np.uint8, count=row * height).reshape(height, row)
+    dst[:height, :row] = srcv
+
+
 class _FastDIBSection:
     """Высокопроизводительный прямой захват экрана Windows через DIB-секцию без промежуточных аллокаций памяти."""
     def __init__(self, left: int, top: int, width: int, height: int):
@@ -1376,7 +1443,7 @@ class _FastDIBSection:
             # draw it into the frame, like Sunshine does, otherwise the phone sees no cursor.
             self._cursor.draw(self.memdc, self.left, self.top)
         self.gdi32.GdiFlush()
-        vf.planes[0].update(self.buf)
+        copy_bgra_into_plane(vf.planes[0], self.buf, self.width, self.height)
         return True
 
     def close(self):
@@ -1515,21 +1582,28 @@ def screen_h264_stream():
 
             # Двойная буферизация кадров: исключает аллокации в цикле захвата
             mon_w, mon_h = mon["width"], mon["height"]
-            vf_bufs = [
-                av.VideoFrame(mon_w, mon_h, "bgra"),
-                av.VideoFrame(mon_w, mon_h, "bgra")
-            ]
+            # QA A-4: pool of 3 buffers + queue of free ones. With 2 alternating buffers the capture thread
+            # could overwrite the frame the encoder was still converting (torn frames). A buffer goes back
+            # to the free queue only after the encoder has converted it (or when it is dropped as stale).
+            free_bufs = queue.Queue()
+            for _ in range(3):
+                free_bufs.put(av.VideoFrame(mon_w, mon_h, "bgra"))
             frame_queue = queue.Queue(maxsize=1)
+
+            cap_stats = [0.0, 0]
 
             def capture_worker():
                 _attach_input_desktop()
-                buf_idx = 0
                 cap_interval = 1.0 / target_fps
                 next_cap = time.perf_counter()
 
                 while not stop_capture.is_set():
-                    cur_vf = vf_bufs[buf_idx]
+                    try:
+                        cur_vf = free_bufs.get(timeout=cap_interval)
+                    except queue.Empty:
+                        continue  # encoder holds all buffers: skip this tick
                     grab_ok = False
+                    t_grab = time.perf_counter()
                     if dib_capturer is not None:
                         try:
                             grab_ok = dib_capturer.grab_into(cur_vf)
@@ -1539,24 +1613,34 @@ def screen_h264_stream():
                     if not grab_ok and sct is not None:
                         try:
                             raw = sct.grab(mon)
-                            cur_vf.planes[0].update(raw.raw)
+                            copy_bgra_into_plane(cur_vf.planes[0], raw.raw, mon_w, mon_h)
                             grab_ok = True
                         except Exception:
                             _attach_input_desktop()
                             grab_ok = False
 
                     if grab_ok:
-                        buf_idx = (buf_idx + 1) % 2
+                        # Measurements (QA): capture time, averaged over 120 frames (cheap sampling)
+                        cap_stats[0] += time.perf_counter() - t_grab
+                        cap_stats[1] += 1
+                        if cap_stats[1] >= 120:
+                            avg_ms = cap_stats[0] * 1000 / cap_stats[1]
+                            with _telemetry_lock:
+                                _screen_telemetry["capture_ms"] = round(avg_ms, 2)
+                            _stream_log.info("capture avg %.2f ms over %d frames (%s)", avg_ms, cap_stats[1],
+                                             "dib" if dib_capturer is not None else "mss")
+                            cap_stats[0], cap_stats[1] = 0.0, 0
                         # Защита от задержки: если предыдущий кадр ещё в очереди, сбрасываем его
-                        if frame_queue.full():
-                            try:
-                                frame_queue.get_nowait()
-                            except queue.Empty:
-                                pass
+                        try:
+                            free_bufs.put(frame_queue.get_nowait())
+                        except queue.Empty:
+                            pass
                         try:
                             frame_queue.put_nowait(cur_vf)
-                        except Exception:
-                            pass
+                        except queue.Full:
+                            free_bufs.put(cur_vf)
+                    else:
+                        free_bufs.put(cur_vf)
 
                     next_cap += cap_interval
                     sleep_time = next_cap - time.perf_counter()
@@ -1569,25 +1653,33 @@ def screen_h264_stream():
             cap_thread.start()
 
             frame_idx = 0
+            last_frame_at = time.monotonic()
 
             while True:
                 try:
                     vf = frame_queue.get(timeout=1.0)
+                    last_frame_at = time.monotonic()
                 except queue.Empty:
-                    if stop_capture.is_set():
+                    # QA A-3: with no frames nothing is written, so Werkzeug never notices a client that
+                    # went away: the generator, encoder, DC/DIB and timeBeginPeriod lived forever. End the
+                    # stream after STREAM_NO_FRAME_TIMEOUT s without frames (the app reconnects by itself).
+                    if stop_capture.is_set() or time.monotonic() - last_frame_at > STREAM_NO_FRAME_TIMEOUT:
                         break
                     continue
 
                 try:
                     # Быстрое SIMD масштабирование и конвертация цвета
-                    yuv = vf.reformat(
-                        width=target_w,
-                        height=target_h_even,
-                        format="yuv420p",
-                        dst_colorspace=Colorspace.ITU709,
-                        dst_color_range=ColorRange.MPEG,
-                        interpolation=Interpolation.FAST_BILINEAR
-                    )
+                    try:
+                        yuv = vf.reformat(
+                            width=target_w,
+                            height=target_h_even,
+                            format="yuv420p",
+                            dst_colorspace=Colorspace.ITU709,
+                            dst_color_range=ColorRange.MPEG,
+                            interpolation=Interpolation.FAST_BILINEAR
+                        )
+                    finally:
+                        free_bufs.put(vf)  # converted into a new frame: the capture buffer is free again
                     yuv.pts = frame_idx
 
                     # Гарантируем ключевой кадр IDR с SPS/PPS в начале и раз в секунду
@@ -1722,9 +1814,13 @@ def screen_stream():
         enc_h = 0
         pts = 0
 
+        last_yield = time.monotonic()
         with mss.MSS() as sct:
             while True:
                 t0 = time.perf_counter()
+                # QA A-3: frames keep failing → nothing is written and a gone client is never noticed
+                if time.monotonic() - last_yield > STREAM_NO_FRAME_TIMEOUT:
+                    break
                 with _screen_cfg_lock:
                     mon_idx = int(_screen_cfg.get("monitor", 1))
                     target_h = int(_screen_cfg.get("height", 1080))
@@ -1769,6 +1865,7 @@ def screen_stream():
                     packets = enc.encode(vf)
                     if packets:
                         jpg_bytes = b"".join(bytes(p) for p in packets)
+                        last_yield = time.monotonic()
                         yield (
                             b"--frame\r\n"
                             b"Content-Type: image/jpeg\r\n"
@@ -1823,9 +1920,14 @@ def webrtc_offer():
         ans = fut.result(timeout=10)
         log_action("listen_mic" if source == "mic" else ("screen_webrtc" if source == "screen" else "listen_pc_webrtc"))
         return jsonify(ans)
-    except ValueError as e:
-        return jsonify({"message": f"Некорректный SDP offer: {e}"}), 400
+    except (ValueError, AssertionError) as e:
+        # Разборщик SDP aiortc проверяет строки через assert: искажённый offer давал 500 и трассировку
+        return jsonify({"message": f"Некорректный SDP offer: {e or 'parse error'}"}), 400
     except Exception as e:
+        if type(e).__name__ == "InvalidStateError":
+            # Телефон прислал /webrtc/close одновременно с новым offer (переподключение) и
+            # закрыл ещё не согласованное соединение. Это не сбой сервера: клиент повторит запрос.
+            return jsonify({"message": "Соединение закрыто во время подключения, повторите", "retry": True}), 409
         log_error("webrtc_offer", e)
         return jsonify({"message": f"Ошибка запуска WebRTC ({source}): {e}"}), 500
 

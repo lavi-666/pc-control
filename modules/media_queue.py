@@ -810,6 +810,24 @@ async def _read_media_info():
 
                 p_vol, p_muted = _get_player_audio_volume(app_id)
 
+                # Режим, реально включённый в самом плеере (если плеер его сообщает)
+                native_mode = None
+                try:
+                    ctr = playback.controls
+                    if ctr is not None and (ctr.is_shuffle_enabled or ctr.is_repeat_enabled):
+                        shuf = playback.is_shuffle_active
+                        rep = playback.auto_repeat_mode
+                        if shuf:
+                            native_mode = "shuffle"
+                        elif rep is not None and int(rep) == 1:  # MediaPlaybackAutoRepeatMode.TRACK
+                            native_mode = "repeat"
+                        else:
+                            native_mode = "normal"
+                except Exception:
+                    native_mode = None
+                if is_chrome_ytm and dom_pb.get("repeat_state"):
+                    native_mode = "repeat" if dom_pb["repeat_state"] == "one" else "normal"
+
                 if title_str and not dom_found:
                     try:
                         _sync_queue_with_playing(title_str, artist_str, album_str, duration, thumbnail_data_url)
@@ -835,6 +853,8 @@ async def _read_media_info():
                     "volume": p_vol,
                     "muted": p_muted,
                     "mode": _media_mode["mode"],
+                    "native_mode": native_mode,
+                    "ytm_dom": bool(is_chrome_ytm),
                     "queue_version": _compute_queue_version(),
                     "queue_current_index": _queue_current_idx,
                     "queue_total": len(_queue_items),
@@ -870,6 +890,8 @@ async def _read_media_info():
             "volume": p_vol,
             "muted": p_muted,
             "mode": _media_mode["mode"],
+            "native_mode": ("repeat" if dom_pb.get("repeat_state") == "one" else "normal") if dom_pb.get("repeat_state") else None,
+            "ytm_dom": True,
             "queue_version": _compute_queue_version(),
             "queue_current_index": _queue_current_idx,
             "queue_total": len(_queue_items),

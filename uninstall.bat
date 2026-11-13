@@ -49,12 +49,10 @@ echo   - Процессы остановлены.
 
 echo.
 echo [2/4] Очистка профилей и кэша браузеров (%%LOCALAPPDATA%%\PCControl)...
-if exist "%LOCALAPPDATA%\PCControl" (
-    rmdir /s /q "%LOCALAPPDATA%\PCControl" >nul 2>&1
-    echo   - Папка %%LOCALAPPDATA%%\PCControl успешно удалена.
-) else (
-    echo   - Папка %%LOCALAPPDATA%%\PCControl не найдена.
-)
+rem QA L-6: only the browser profiles / cache of THIS installation - %%LOCALAPPDATA%%\PCControl also holds
+rem the shared system-state journal of other PC Control installations.
+"runtime\python.exe" -E -s scripts\manage_server.py clean-profiles
+echo   - Профили и кэш браузеров очищены.
 
 :clean_firewall
 echo.
@@ -62,14 +60,14 @@ echo [3/4] Удаление правила брандмауэра Windows...
 net session >nul 2>&1
 if errorlevel 1 (
     if not defined PC_CONTROL_NO_PAUSE (
-        "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "Start-Process -FilePath 'cmd.exe' -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '/c netsh advfirewall firewall delete rule name=\"PC Control Server\" >nul 2>&1 & netsh advfirewall firewall delete rule name=\"PC Control WOL Relay\" >nul 2>&1 & netsh advfirewall firewall delete rule name=\"PC Control Server (TCP 5000)\" >nul 2>&1'" >nul 2>&1
+        rem QA L-6: firewall_rules.ps1 -Remove deletes only this installation's rules (its ports / programs)
+        "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%~dp0scripts\firewall_rules.ps1','-Remove'" >nul 2>&1
     ) else (
         echo   [!] Run uninstall.bat as Administrator to remove firewall rules.
     )
 ) else (
-    netsh advfirewall firewall delete rule name="PC Control Server" >nul 2>&1
-    netsh advfirewall firewall delete rule name="PC Control WOL Relay" >nul 2>&1
-    netsh advfirewall firewall delete rule name="PC Control Server (TCP 5000)" >nul 2>&1
+    set "BASE_DIR=%~dp0."
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0scripts\firewall_rules.ps1" -Remove >nul 2>&1
 )
 if "%choice%"=="3" (
     echo   - Правило брандмауэра удалено.
@@ -77,7 +75,8 @@ if "%choice%"=="3" (
 )
 
 echo.
-del /f /q "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\PC_Control_Server.lnk" >nul 2>&1
+rem QA L-5/L-6: the Startup shortcut is removed only if it starts THIS installation
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$l = Join-Path ([Environment]::GetFolderPath('Startup')) 'PC_Control_Server.lnk'; if (Test-Path -LiteralPath $l) { $s = (New-Object -ComObject WScript.Shell).CreateShortcut($l); $d = (Resolve-Path -LiteralPath '%~dp0.').Path.TrimEnd('\') + '\'; if (($s.TargetPath + ' ' + $s.Arguments).IndexOf($d, [StringComparison]::OrdinalIgnoreCase) -ge 0) { Remove-Item -LiteralPath $l -Force } }" >nul 2>&1
 echo [4/4] Удаление временных логов и кэша Python...
 if exist "logs" (
     del /f /q "logs\*.flag" >nul 2>&1
@@ -90,12 +89,8 @@ goto :done
 :clean_profiles
 echo.
 echo Очистка профилей браузеров...
-if exist "%LOCALAPPDATA%\PCControl" (
-    rmdir /s /q "%LOCALAPPDATA%\PCControl" >nul 2>&1
-    echo - Кэш и профили браузеров в %%LOCALAPPDATA%%\PCControl очищены!
-) else (
-    echo - Папка %%LOCALAPPDATA%%\PCControl не существует или уже очищена.
-)
+"runtime\python.exe" -E -s scripts\manage_server.py clean-profiles
+echo - Кэш и профили браузеров этой установки очищены.
 goto :done
 
 :cancel

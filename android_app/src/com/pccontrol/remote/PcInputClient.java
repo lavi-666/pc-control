@@ -52,6 +52,21 @@ public final class PcInputClient {
     static final long WRITE_STALL_MS = 2500;
     static final int CONNECT_TIMEOUT_MS = 3000;
     static final int MAX_QUEUE = 2048;
+    static final long LIVENESS_CHECK_MS = 2500;
+    /** Same id for every stream of this app process: the server closes the previous one (QA P-5). */
+    static final String CLIENT_ID = PcRoute.newNonce();
+    /** The server saw no frame (we ping every second) for this long = our stream is dead. */
+    static final long LIVENESS_IDLE_MS = 3500;
+    static final int LIVE_OK = 0, LIVE_DEAD = 1, LIVE_UNKNOWN = 2;
+
+    /** Verdict from /api/input/info?session=… (pure, unit-tested). */
+    static int livenessVerdict(PcJson.O info) {
+        if (info == null || !info.has("session")) return LIVE_UNKNOWN; // older server
+        PcJson.O s = info.obj("session");
+        if (!s.has("alive")) return LIVE_UNKNOWN;
+        if (!s.bool("alive", false)) return LIVE_DEAD;
+        return s.lng("idle_ms", 0) > LIVENESS_IDLE_MS ? LIVE_DEAD : LIVE_OK;
+    }
 
     private final Object configLock = new Object();
     private String serverUrl = "";
@@ -184,6 +199,7 @@ public final class PcInputClient {
     }
 
     private void setState(int s, String detail) {
+        if (s != state) PcLog.i("input state " + state + " -> " + s + " " + PcLog.path(detail == null ? "" : detail));
         state = s;
         stateDetail = detail == null ? "" : detail;
         Listener l = listener;
@@ -221,6 +237,7 @@ public final class PcInputClient {
         private volatile boolean graceful = false;
         private volatile boolean connectionDead = false;
         private volatile long writeStartedNanos = 0;
+        private volatile String sessionId = "";
         private Socket socket;
 
         Runner(String url, String authToken) {
@@ -301,10 +318,14 @@ public final class PcInputClient {
                     return;
                 }
                 if (pre == 401 || pre == 403) {
+                    // QA A-6: retrying a rejected password every 3 s locked the phone's IP out on the
+                    // server (lockout loop). Stop; a new configure()/start() (new password, new stream) retries.
                     setState(STATE_AUTH_ERROR, "HTTP " + pre);
                     dropQueue();
-                    backoff = 3000;
-                    continue;
+                    synchronized (configLock) {
+                        if (current == this) current = null;
+                    }
+                    return;
                 }
                 if (pre != 200) {
                     setState(STATE_ERROR, pre < 0 ? "no connection" : "HTTP " + pre);
@@ -433,7 +454,7 @@ public final class PcInputClient {
                 s.setSoTimeout(CONNECT_TIMEOUT_MS);
                 String req = "GET " + basePath(u) + "/api/input/info HTTP/1.1\r\n"
                         + "Host: " + hostHeader(u) + "\r\n"
-                        + "X-Auth-Token: " + authToken + "\r\n"
+                        + "X-Auth-Token: " + PcConn.encodeURIComponent(authToken) + "\r\n"
                         + "Connection: close\r\n\r\n";
                 OutputStream o = s.getOutputStream();
                 o.write(req.getBytes(StandardCharsets.UTF_8));
@@ -460,9 +481,12 @@ public final class PcInputClient {
                 socket = s;
                 connectionDead = false;
             }
+            sessionId = PcRoute.newNonce();
             String req = "POST " + basePath(u) + "/api/input/stream HTTP/1.1\r\n"
                     + "Host: " + hostHeader(u) + "\r\n"
-                    + "X-Auth-Token: " + authToken + "\r\n"
+                    + "X-Auth-Token: " + PcConn.encodeURIComponent(authToken) + "\r\n"
+                    + "X-Input-Session: " + sessionId + "\r\n"
+                    + "X-Input-Client: " + CLIENT_ID + "\r\n"
                     + "Content-Type: application/octet-stream\r\n"
                     + "Transfer-Encoding: chunked\r\n\r\n";
             OutputStream o = s.getOutputStream();
@@ -484,6 +508,9 @@ public final class PcInputClient {
         /** Any bytes from the server mean it answered = our session is over (error or close). */
         private void readerLoop(Socket s) {
             byte[] buf = new byte[512];
+            final String sid = sessionId;
+            long lastCheck = System.nanoTime();
+            int deadVotes = 0;
             try {
                 InputStream in = s.getInputStream();
                 while (true) {
@@ -496,6 +523,21 @@ public final class PcInputClient {
                             break; // writes are stuck (Wi-Fi gone): force reconnect
                         }
                         if (s.isClosed()) return;
+                        // Bug P-5: after a short network drop the socket can look alive forever
+                        // (writes never block, the server never answers on this stream) while the
+                        // server has already dropped the session. Ask over a separate connection
+                        // whether our frames (pings every second) still arrive.
+                        if ((System.nanoTime() - lastCheck) / 1_000_000L >= LIVENESS_CHECK_MS) {
+                            lastCheck = System.nanoTime();
+                            int v = liveness(sid);
+                            if (v == LIVE_DEAD) deadVotes++;
+                            else if (v == LIVE_OK) deadVotes = 0;
+                            if (deadVotes >= 2) {
+                                PcLog.w("input liveness: stream dead, reconnecting");
+                                break;
+                            }
+                            if (s.isClosed()) return;
+                        }
                     }
                 }
             } catch (IOException ignored) {
@@ -509,6 +551,29 @@ public final class PcInputClient {
             try {
                 s.close();
             } catch (IOException ignored) {}
+        }
+
+        /** LIVE_OK / LIVE_DEAD / LIVE_UNKNOWN (no answer, or a server without session tracking). */
+        private int liveness(String sid) {
+            if (sid == null || sid.isEmpty()) return LIVE_UNKNOWN;
+            HttpURLConnection c = null;
+            try {
+                c = (HttpURLConnection) new URL(url + "/api/input/info?session=" + sid).openConnection();
+                c.setConnectTimeout(1500);
+                c.setReadTimeout(1500);
+                c.setUseCaches(false);
+                c.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(authToken));
+                if (c.getResponseCode() != 200) return LIVE_UNKNOWN;
+                byte[] body;
+                try (InputStream is = c.getInputStream()) {
+                    body = PcHttp.readAll(is, 65536);
+                }
+                return livenessVerdict(PcJson.parseObj(new String(body, StandardCharsets.UTF_8)));
+            } catch (Exception e) {
+                return LIVE_UNKNOWN;
+            } finally {
+                if (c != null) c.disconnect();
+            }
         }
 
         private void closeSocket() {
@@ -638,7 +703,7 @@ public final class PcInputClient {
                 c.setReadTimeout(1500);
                 c.setDoOutput(true);
                 c.setRequestProperty("Content-Type", "application/json");
-                c.setRequestProperty("X-Auth-Token", authToken);
+                c.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(authToken));
                 byte[] body = json.getBytes(StandardCharsets.UTF_8);
                 c.setFixedLengthStreamingMode(body.length);
                 OutputStream o = c.getOutputStream();
