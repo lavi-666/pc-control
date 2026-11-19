@@ -23,7 +23,6 @@ streaming_bp = Blueprint("streaming", __name__)
 
 _RUST_STREAMER_PROC = None
 _RUST_STREAMER_LOCK = threading.Lock()
-_RUST_STREAMER_URL = "http://127.0.0.1:5051"
 STREAM_NO_FRAME_TIMEOUT = 10.0  # s without a captured frame → end the screen stream (QA A-3)
 
 # Measurements (QA): sampled capture times → logs/stream.log (rotated)
@@ -41,54 +40,141 @@ except Exception:
     pass
 
 
-def _ensure_rust_streamer() -> bool:
-    global _RUST_STREAMER_PROC
+RUST_STREAMER_DEFAULT_PORT = 5051
+_RUST_STREAMER_PORT = RUST_STREAMER_DEFAULT_PORT
+_RUST_STREAMER_ADOPTED_PID = None
+_RUST_STREAMER_SERVICE = "pc_control_rust_streamer"  # "service" field of streamer.exe /health
+
+
+def _pid_alive(pid) -> bool:
     try:
-        req = urllib.request.Request(f"{_RUST_STREAMER_URL}/health", headers={"User-Agent": "PCControl/1.0"})
-        with urllib.request.urlopen(req, timeout=0.3) as resp:
-            if resp.status == 200:
-                return True
+        import psutil
+        return psutil.pid_exists(int(pid))
+    except Exception:
+        return False
+
+
+def _rust_streamer_url() -> str:
+    return f"http://127.0.0.1:{_RUST_STREAMER_PORT}"
+
+
+def _streamer_exe():
+    return BASE_DIR / "tools" / "streamer.exe"
+
+
+def _streamer_health(port: int, timeout: float) -> bool:
+    """/health answers as streamer.exe does (status 200 + service name), not just any HTTP 200."""
+    try:
+        import json as _json
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/health", headers={"User-Agent": "PCControl/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return False
+            data = _json.loads(resp.read(4096).decode("utf-8", "replace") or "{}")
+            return isinstance(data, dict) and data.get("service") == _RUST_STREAMER_SERVICE
+    except Exception:
+        return False
+
+
+def _port_listener_pid(port: int):
+    """PID of the process listening on 127.0.0.1/0.0.0.0:<port> (None: nobody / unknown)."""
+    try:
+        import psutil
+        for c in psutil.net_connections(kind="tcp"):
+            if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port \
+                    and c.laddr.ip in ("127.0.0.1", "0.0.0.0", "::", "::1"):
+                return c.pid or None
     except Exception:
         pass
+    return None
 
-    streamer_exe = BASE_DIR / "tools" / "streamer.exe"
+
+def _port_in_use(port: int) -> bool:
+    import socket as _socket
+    try:
+        with _socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+def _is_our_streamer_pid(pid) -> bool:
+    """QA П-12: the process is THIS installation's tools/streamer.exe (same file), not another copy of
+    PC Control (other version) or a foreign program that happens to use the port.
+    streamer.exe has no instance token, so ownership is checked through the executable path."""
+    if not pid:
+        return False
+    proc = _RUST_STREAMER_PROC
+    if proc is not None and proc.poll() is None and proc.pid == pid:
+        return True
+    try:
+        import psutil
+        exe = psutil.Process(pid).exe()
+        return os.path.normcase(os.path.realpath(exe)) == os.path.normcase(os.path.realpath(str(_streamer_exe())))
+    except Exception:
+        return False
+
+
+def _free_local_port(avoid=()) -> int:
+    import socket as _socket
+    for _ in range(20):
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        if port not in avoid:
+            return port
+    return 0
+
+
+def _ensure_rust_streamer() -> bool:
+    """Starts (or reuses) tools/streamer.exe. QA П-12: a process on the streamer port counts as
+    "ours" only when it is this installation's streamer.exe; a port taken by anything else makes us
+    start our own streamer on a free port instead of talking to the foreign process."""
+    global _RUST_STREAMER_PROC, _RUST_STREAMER_PORT, _RUST_STREAMER_ADOPTED_PID
+    proc = _RUST_STREAMER_PROC
+    if proc is not None and proc.poll() is None and _streamer_health(_RUST_STREAMER_PORT, 0.3):
+        return True  # our own child process
+    adopted = _RUST_STREAMER_ADOPTED_PID
+    if adopted and _pid_alive(adopted) and _streamer_health(_RUST_STREAMER_PORT, 0.3):
+        return True  # this installation's streamer left by a previous server process (checked once)
+
+    streamer_exe = _streamer_exe()
     if not streamer_exe.exists():
         return False
 
     with _RUST_STREAMER_LOCK:
-        try:
-            req = urllib.request.Request(f"{_RUST_STREAMER_URL}/health", headers={"User-Agent": "PCControl/1.0"})
-            with urllib.request.urlopen(req, timeout=0.2) as resp:
-                if resp.status == 200:
-                    return True
-        except Exception:
-            pass
-
-        # Стример жив, но отвечает медленно (занят): порт уже слушается — второй экземпляр
-        # не запускаем (раньше запускался новый процесс, а дескриптор прежнего терялся).
-        if _RUST_STREAMER_PROC is not None and _RUST_STREAMER_PROC.poll() is None:
+        proc = _RUST_STREAMER_PROC
+        if proc is not None and proc.poll() is None:
+            # Стример жив, но отвечает медленно (занят): второй экземпляр не запускаем
+            # (раньше запускался новый процесс, а дескриптор прежнего терялся).
             return True
-        try:
-            import socket as _socket
-            with _socket.create_connection(("127.0.0.1", 5051), timeout=0.2):
+
+        port = RUST_STREAMER_DEFAULT_PORT
+        if _port_in_use(port):
+            pid = _port_listener_pid(port)
+            if _is_our_streamer_pid(pid) and _streamer_health(port, 0.3):
+                _RUST_STREAMER_PORT = port  # left over by a previous server process of this installation
+                _RUST_STREAMER_ADOPTED_PID = pid
                 return True
-        except OSError:
-            pass
+            log_action("rust_streamer_port_foreign", {"port": port, "pid": pid})
+            port = _free_local_port(avoid=(RUST_STREAMER_DEFAULT_PORT,))
+            if not port:
+                return False
 
         try:
             _RUST_STREAMER_PROC = subprocess.Popen(
-                [str(streamer_exe), "--port", "5051"],
+                [str(streamer_exe), "--port", str(port)],
                 creationflags=NO_WINDOW,
                 cwd=str(BASE_DIR),
             )
+            _RUST_STREAMER_PORT = port
+            _RUST_STREAMER_ADOPTED_PID = None
             for _ in range(12):
                 time.sleep(0.1)
-                try:
-                    with urllib.request.urlopen(f"{_RUST_STREAMER_URL}/health", timeout=0.2) as resp:
-                        if resp.status == 200:
-                            return True
-                except Exception:
-                    pass
+                if _RUST_STREAMER_PROC.poll() is not None:
+                    return False  # could not bind (the port was taken meanwhile)
+                if _streamer_health(port, 0.2):
+                    return True
         except Exception as e:
             log_error("rust_streamer_spawn", e)
             return False
@@ -995,7 +1081,7 @@ def audio():
     if os.environ.get("PC_CONTROL_RUST_AUDIO") == "1" and _ensure_rust_streamer():
         use_mic = bool(request.args.get("mic") == "1")
         target_path = "/audio/mic" if use_mic else "/audio/loopback"
-        rust_url = f"{_RUST_STREAMER_URL}{target_path}"
+        rust_url = f"{_rust_streamer_url()}{target_path}"
 
         def proxy_rust_audio():
             try:
@@ -1783,7 +1869,7 @@ def screen_stream():
             target_h = int(_screen_cfg.get("height", 1080))
             fps = int(_screen_cfg.get("fps", 60))
 
-        rust_url = f"{_RUST_STREAMER_URL}/screen/mjpeg?monitor={mon_idx}&height={target_h}&fps={fps}"
+        rust_url = f"{_rust_streamer_url()}/screen/mjpeg?monitor={mon_idx}&height={target_h}&fps={fps}"
 
         def proxy_rust_mjpeg():
             try:
