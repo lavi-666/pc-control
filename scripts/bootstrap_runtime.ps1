@@ -92,8 +92,14 @@ try {
 
     # Stage in system TEMP outside OneDrive / synced folders, and use relative ASCII paths
     # so native tools (tar.exe, pip) never fail on non-ACP Unicode or bracket paths.
+    # QA P-3: short staging name; with a long TEMP path the deepest wheel files exceeded the path
+    # limit and native modules failed to load ("DLL load failed ... too long").
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-    $stage = Join-Path $tempRoot ('pccontrol-setup-' + [guid]::NewGuid().ToString('N'))
+    if ($tempRoot.Length -gt 60) {
+        $tempRoot = Join-Path ([IO.Path]::GetPathRoot($env:SystemRoot)) 'pcc-tmp'
+        New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+    }
+    $stage = Join-Path $tempRoot ('pcc-s-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     [IO.File]::Copy($lockPath, (Join-Path $stage 'requirements-runtime.lock'), $true)
 
@@ -127,7 +133,7 @@ try {
     Remove-Item Env:PYTHONHOME, Env:PYTHONPATH, Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
     $env:PYTHONNOUSERSITE = '1'
     Write-SetupLog 'Installing application libraries into the private runtime...'
-    Invoke-Runtime @('-I', '-X', 'utf8', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-warn-script-location', '--no-cache-dir', '--only-binary=:all:', '--retries', '5', '--timeout', '60', '-r', 'requirements-runtime.lock')
+    Invoke-Runtime @('-I', '-X', 'utf8', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-warn-script-location', '--no-cache-dir', '--only-binary=:all:', '--require-hashes', '--retries', '5', '--timeout', '60', '-r', 'requirements-runtime.lock')
     Invoke-Runtime @('-I', '-X', 'utf8', '-m', 'pip', 'check')
     Invoke-Runtime @('-I', '-X', 'utf8', '-c', 'import flask, cheroot.wsgi, PIL, pycaw, comtypes, winsdk, aiortc, pyaudiowpatch, mss, qrcode, psutil, numpy; from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager')
 
