@@ -1373,7 +1373,29 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def _reply_language(self) -> str:
+        """QA П-11: the panel's UI language (config.json "language", set by the panel's language
+        switch), else the browser's Accept-Language; replies are written in Russian (the source)."""
+        try:
+            lang = str(load_config_data().get("language") or "").lower()
+            if lang in ("ru", "uk", "en"):
+                return lang
+        except Exception:
+            pass
+        for part in (self.headers.get("Accept-Language") or "").lower().split(","):
+            tag = part.split(";")[0].strip()[:2]
+            if tag in ("ru", "uk", "en"):
+                return tag
+        return "en"
+
     def send_json(self, data, status=200):
+        if isinstance(data, dict) and any(isinstance(data.get(k), str) and not data[k].isascii()
+                                          for k in ("message", "error_title", "details", "error", "title")):
+            try:
+                from core.server_i18n import translate_reply
+                translate_reply(data, self._reply_language())
+            except Exception:
+                pass
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
