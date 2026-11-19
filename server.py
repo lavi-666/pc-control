@@ -1107,4 +1107,17 @@ if __name__ == "__main__":
             usb_link.start_service(_port, route_auth.instance_id(), _cfg)
         except Exception as _e:
             log_error("usb_link_start", _e)
-    app.run(host=_host, port=_port, threaded=True)
+    # Production WSGI server with connection / thread limits (QA A-13, core/wsgi_server.py);
+    # falls back to the Werkzeug server if the private runtime has no cheroot yet.
+    from core import wsgi_server
+
+    def _log_backend(name, limits):
+        print(f"  HTTP server:      {name}" + (f" {limits}" if limits else " (fallback, no connection limits)"), flush=True)
+        log_action("http_server", {"backend": name, **limits})
+
+    try:
+        wsgi_server.serve(app, _host, _port, _cfg, log=_log_backend)
+    except OSError as _e:
+        print(f"Cannot listen on {_host}:{_port}: {_e}", file=sys.stderr, flush=True)
+        log_error("http_server_bind", _e)
+        sys.exit(1)

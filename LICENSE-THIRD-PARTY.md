@@ -94,3 +94,14 @@ PC Control is MIT. Only publicly known design ideas and behaviour were re-implem
 * **Use in PC Control:** "USB cable" connection (`core/usb_link.py`). The server talks to the adb server over its
   documented host protocol and runs the bundled `adb.exe` only to start an adb server when none is running; it creates
   `adb reverse tcp:<server port> tcp:<server port>` for authorized phones so the app reaches the PC through the cable.
+
+---
+
+## Cheroot HTTP server, bundled in `runtime/` (Python package)
+
+* **Packages:** `cheroot` 11.1.2 with its dependencies `jaraco.functools` 4.6.0 and `more-itertools` 11.2.1
+  (unmodified wheels from PyPI, pinned in `requirements-runtime.lock`).
+* **Source:** [https://github.com/cherrypy/cheroot](https://github.com/cherrypy/cheroot)
+* **License:** BSD 3-Clause (cheroot); MIT (jaraco.functools, more-itertools)
+* **Copyright:** Copyright (C) 2004-2026 CherryPy Team
+* **Use in PC Control:** production WSGI server for `server.py` with connection / thread limits (`core/wsgi_server.py`).

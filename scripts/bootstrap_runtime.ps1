@@ -129,7 +129,7 @@ try {
     Write-SetupLog 'Installing application libraries into the private runtime...'
     Invoke-Runtime @('-I', '-X', 'utf8', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-warn-script-location', '--no-cache-dir', '--only-binary=:all:', '--retries', '5', '--timeout', '60', '-r', 'requirements-runtime.lock')
     Invoke-Runtime @('-I', '-X', 'utf8', '-m', 'pip', 'check')
-    Invoke-Runtime @('-I', '-X', 'utf8', '-c', 'import flask, PIL, pycaw, comtypes, winsdk, aiortc, pyaudiowpatch, mss, qrcode, psutil, numpy; from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager')
+    Invoke-Runtime @('-I', '-X', 'utf8', '-c', 'import flask, cheroot.wsgi, PIL, pycaw, comtypes, winsdk, aiortc, pyaudiowpatch, mss, qrcode, psutil, numpy; from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager')
 
     Pop-Location
     $pushedLocation = $false

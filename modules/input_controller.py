@@ -670,7 +670,7 @@ def api_input_stream():
         if remaining is None:
             return jsonify({"message": "Chunked transfer encoding or Content-Length required"}), 411
 
-    sock = env.get("werkzeug.socket")
+    sock = env.get("werkzeug.socket") or env.get("pcc.socket")  # Werkzeug / cheroot (core/wsgi_server.py)
     if sock is not None:
         try:
             sock.settimeout(INPUT_STREAM_IDLE_TIMEOUT)
