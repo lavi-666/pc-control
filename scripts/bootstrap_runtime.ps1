@@ -177,6 +177,14 @@ try {
     if ($stage -and (Test-Path -LiteralPath $stage)) {
         try { Remove-TreeWithRetry $stage } catch {}
     }
+    # QA N-1: the short %SystemDrive%\pcc-tmp fallback must not stay behind once it is empty.
+    if ($stage) {
+        $stageParent = Split-Path -Parent $stage
+        if ((Split-Path -Leaf $stageParent) -eq 'pcc-tmp' -and (Test-Path -LiteralPath $stageParent) -and
+            -not (Get-ChildItem -LiteralPath $stageParent -Force | Select-Object -First 1)) {
+            try { Remove-Item -LiteralPath $stageParent -Force -ErrorAction Stop } catch {}
+        }
+    }
     if ($ownsMutex) { $setupMutex.ReleaseMutex() }
     $setupMutex.Dispose()
 }
