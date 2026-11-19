@@ -3,7 +3,9 @@ PC Control — Модуль управления питанием ПК, тайм
 """
 
 import binascii
+import json
 import math
+import os
 import platform
 import socket
 import subprocess
@@ -11,7 +13,7 @@ import threading
 import time
 from flask import Blueprint, jsonify, request
 from core.auth import check_token
-from core.config import NO_WINDOW, is_safe_test_mode, load_app_config
+from core.config import LOGS_DIR, NO_WINDOW, is_safe_test_mode, load_app_config
 from core.logger import log_action, log_error
 from core.winpaths import sys_exe  # QA R-14: full System32 paths
 
@@ -22,6 +24,94 @@ _shutdown_cancel = threading.Event()
 _shutdown_deadline = None  # unix timestamp срабатывания таймера
 _shutdown_gen = 0
 POWER_DELAY_SEC = 5  # shutdown / reboot grace period (QA P-1 / U-20)
+
+# QA R-12: the shutdown timer survives a server restart (watchdog, update, resource guard).
+# The deadline is kept in this file and restore_shutdown_timer() re-arms it at server start.
+# Chosen over Windows "shutdown /s /t N": Windows cannot report the remaining time (the app shows it),
+# shows its own "Windows will shut down" notice (the timer promises no warnings), refuses a second
+# pending shutdown (error 1190), is cancelled by any "shutdown /a" without us knowing, and could not
+# be simulated in test mode. The file keeps one state for every case and test mode stays safe.
+SHUTDOWN_TIMER_FILE = LOGS_DIR / "shutdown_timer.json"
+TIMER_LATE_GRACE_SEC = 60  # restart during the last minute: still shut down (right after the start)
+_BOOT_TOLERANCE_SEC = 120  # a different Windows boot -> the timer is stale (the PC was restarted)
+
+
+def _boot_time() -> float | None:
+    try:
+        import psutil
+        return float(psutil.boot_time())
+    except Exception:
+        return None
+
+
+def _save_timer_file(deadline: float, safe: bool, minutes: int) -> None:
+    try:
+        SHUTDOWN_TIMER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SHUTDOWN_TIMER_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"deadline": deadline, "safe": bool(safe), "minutes": minutes,
+                                   "boot_time": _boot_time(), "created": time.time()}), encoding="utf-8")
+        os.replace(tmp, SHUTDOWN_TIMER_FILE)
+    except Exception as e:
+        log_error("shutdown_timer_save", e)
+
+
+def _clear_timer_file() -> None:
+    try:
+        SHUTDOWN_TIMER_FILE.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log_error("shutdown_timer_clear", e)
+
+
+def _arm_timer(deadline: float, safe: bool, minutes: int | None = None) -> None:
+    """Starts the waiting thread for an absolute deadline (replaces a running timer).
+    minutes given -> a new timer: also saved to SHUTDOWN_TIMER_FILE."""
+    global _shutdown_deadline, _shutdown_cancel, _shutdown_gen
+    with _shutdown_lock:
+        _shutdown_cancel.set()
+        _shutdown_gen += 1
+        my_gen = _shutdown_gen
+        cancel_ev = threading.Event()
+        _shutdown_cancel = cancel_ev
+        _shutdown_deadline = deadline
+        if minutes is not None:
+            _save_timer_file(deadline, safe, minutes)
+    threading.Thread(
+        target=_delayed_shutdown,
+        args=(max(0.0, deadline - time.time()), my_gen, cancel_ev, safe),
+        name="shutdown-timer",
+        daemon=True,
+    ).start()
+
+
+def restore_shutdown_timer() -> float | None:
+    """Re-arms a timer saved before a server restart (called once at server start).
+    A deadline more than TIMER_LATE_GRACE_SEC in the past, or one from another Windows boot, is
+    discarded: the PC must never shut down unexpectedly long after the moment the user chose.
+    Returns the restored deadline or None."""
+    try:
+        data = json.loads(SHUTDOWN_TIMER_FILE.read_text(encoding="utf-8"))
+        deadline = float(data["deadline"])
+        safe = bool(data.get("safe", False))
+    except FileNotFoundError:
+        return None
+    except Exception:
+        _clear_timer_file()  # damaged file
+        return None
+    now = time.time()
+    saved_boot = data.get("boot_time")
+    cur_boot = _boot_time()
+    other_boot = (isinstance(saved_boot, (int, float)) and cur_boot is not None
+                  and abs(cur_boot - float(saved_boot)) > _BOOT_TOLERANCE_SEC)
+    if other_boot or deadline < now - TIMER_LATE_GRACE_SEC or math.isnan(deadline) or deadline > now + 31536000:
+        _clear_timer_file()
+        log_action("shutdown_timer_discarded", {"late_sec": int(now - deadline) if deadline == deadline else None,
+                                                "other_boot": bool(other_boot)})
+        return None
+    _arm_timer(max(deadline, now + 1), safe)  # overdue within the grace period: fire right away
+    log_action("shutdown_timer_restored", {"remaining_sec": max(0, int(deadline - now)), "safe": safe})
+    return deadline
 
 
 def do_shutdown_now():
@@ -47,6 +137,7 @@ def _delayed_shutdown(seconds: int, my_gen: int, cancel_ev: threading.Event, saf
         if cancelled or _shutdown_gen != my_gen:
             return
         _shutdown_deadline = None
+        _clear_timer_file()
     if safe_scheduled or is_safe_test_mode():
         log_action("shutdown_after_timer")
         return
@@ -175,7 +266,6 @@ def action():
 
 @power_bp.route("/shutdown_timer", methods=["POST"])
 def shutdown_timer():
-    global _shutdown_deadline, _shutdown_cancel, _shutdown_gen
     if not check_token():
         return jsonify({"message": "Неверный пароль"}), 401
     data = request.get_json(force=True, silent=True)
@@ -197,19 +287,7 @@ def shutdown_timer():
     minutes = min(minutes, 525600)
 
     safe_req = is_safe_test_mode() or request.headers.get("X-Safe-Mode") == "1"
-    with _shutdown_lock:
-        _shutdown_cancel.set()
-        _shutdown_gen += 1
-        my_gen = _shutdown_gen
-        cancel_ev = threading.Event()
-        _shutdown_cancel = cancel_ev
-        _shutdown_deadline = time.time() + minutes * 60
-
-    threading.Thread(
-        target=_delayed_shutdown,
-        args=(minutes * 60, my_gen, cancel_ev, safe_req),
-        daemon=True,
-    ).start()
+    _arm_timer(time.time() + minutes * 60, safe_req, minutes)
 
     log_action("schedule_shutdown", {"minutes": minutes})
     return jsonify({"message": f"ПК выключится через {minutes} мин (без предупреждений)"})
@@ -224,6 +302,7 @@ def cancel_shutdown_timer():
         _shutdown_gen += 1
         _shutdown_cancel.set()
         _shutdown_deadline = None
+        _clear_timer_file()
     log_action("cancel_shutdown")
     return jsonify({"message": "Отложенное выключение отменено"})
 
