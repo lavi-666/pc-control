@@ -7,8 +7,8 @@ import java.util.List;
  * Key model and modifier logic of the PC Control on-screen keyboard (pure Java).
  *
  * Every character key carries the Windows virtual key of its physical position
- * (RU "с" = VK_C, UK "ї" = VK_OEM_6 ...), the same idea KDE Connect implements with
- * VkKeyScanEx, but resolved on the phone so it does not depend on the PC layout:
+ * (RU "с" = VK_C, UK "ї" = VK_OEM_6 ...), resolved on the phone (not with VkKeyScanEx
+ * on the PC) so it does not depend on the PC layout:
  *   - plain typing sends Unicode (independent of the PC input language),
  *   - with Ctrl/Alt/Win active (or in "game keys" mode) the physical VK is sent,
  *     so Ctrl+C / Ctrl+С, Alt+F4, Win+D work on any PC layout.

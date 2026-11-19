@@ -1,85 +1,8 @@
-# Third-Party Licenses and Architectural Attributions
+# Third-Party Components
 
-This project, **PC Control**, incorporates architectural patterns, algorithmic improvements, and code adaptations from several leading open-source remote control and low-latency streaming solutions.
+PC Control itself is licensed under the MIT License (see `LICENSE`). The release package also ships the
+third-party components listed below, unmodified, each under its own license.
 
-In accordance with transparent open-source practices and the requirements of the respective licenses, this document outlines the third-party projects utilized, their license terms, the adapted technical solutions, and links to their original repositories.
-
----
-
-## 1. Sunshine (LizardByte)
-
-* **Repository:** [https://github.com/LizardByte/Sunshine](https://github.com/LizardByte/Sunshine)
-* **License:** GNU General Public License v3.0 (GPLv3)
-* **Copyright:** Copyright (C) 2021-2026 LizardByte & Sunshine contributors
-* **Adapted Solutions & Code in PC Control:**
-  1. **Multi-Vendor Hardware Encoding Architecture:** Probing and automated configuration for NVIDIA NVENC (`h264_nvenc`, `hevc_nvenc`), AMD AMF (`h264_amf`, `hevc_amf`), Intel QuickSync (`h264_qsv`, `hevc_qsv`), and software fallback (`libx264`).
-  2. **Ultra-Low Latency Presets:** Direct application of Sunshine's encoder tuning flags (`preset="p1"`, `tune="ull"`, `rc="cbr_ld_hq"`, `zerolatency="1"`, `delay="0"`), eliminating the multi-frame buffer pipeline delay.
-  3. **Sunshine ITU-T H.273 BT.709 Color Space Engine:** Strict color matrix specification during RGB-to-YUV420p conversion (`dst_colorspace=Colorspace.ITU709`, `dst_color_range=ColorRange.MPEG`, `interpolation=Interpolation.BICUBIC`), completely fixing washed-out blacks, crushed darks, and magenta/red tint distortions.
-  4. **High-Bitrate Calculations:** Formula-driven bitrate computation supporting up to 80 Mbps for 4K / 28 Mbps for 1080p, preventing blocky macroblocking and font blur.
-  5. **Annex-B NAL Stream Serialization:** Continuous Annex-B elementary stream generation with in-band SPS/PPS parameter sets for zero-overhead hardware streaming to Android clients.
-
----
-
-## 2. Moonlight Android (Moonlight Game Streaming Project)
-
-* **Repository:** [https://github.com/moonlight-stream/moonlight-android](https://github.com/moonlight-stream/moonlight-android)
-* **License:** GNU General Public License v3.0 (GPLv3)
-* **Copyright:** Copyright (C) 2013-2026 Cameron Gutman & Moonlight contributors
-* **Adapted Solutions & Code in PC Control:**
-  1. **Native Android Hardware Decoder (`NativeScreenView.java`):** Direct hardware decoding using Android's `android.media.MediaCodec` operating in asynchronous/direct-feed mode.
-  2. **Direct SurfaceView Zero-Copy Rendering:** Video frames are submitted directly to the hardware compositor surface via `MediaCodec.releaseOutputBuffer(index, true)` with VSYNC pacing, reducing mobile display latency from 25–45 ms (WebView canvas) down to under 2 ms.
-  3. **Low-Latency Hardware Decoder Configuration:** Setting `KEY_LOW_LATENCY = 1`, `KEY_COLOR_STANDARD = COLOR_STANDARD_BT709`, and `KEY_COLOR_RANGE = COLOR_RANGE_LIMITED`.
-  4. **Moonlight Touch Controller:** Natural touch-to-mouse translation supporting 1-finger relative mouse cursor motion, single-tap left click, two-finger tap right click, two-finger vertical dragging for smooth mouse wheel scrolling, and long-press right click.
-  5. **Real-Time On-Screen Telemetry HUD:** Transparent overlay tracking live decoded FPS, incoming kbps, codec hardware name, and stream latency.
-
----
-
-## 3. RustDesk
-
-* **Repository:** [https://github.com/rustdesk/rustdesk](https://github.com/rustdesk/rustdesk)
-* **License:** GNU Affero General Public License v3.0 (AGPLv3)
-* **Copyright:** Copyright (C) 2020-2026 RustDesk contributors
-* **Adapted Solutions & Code in PC Control:**
-  1. **Quality of Service (QoS) & Backpressure Management:** Video track queue congestion monitoring measuring frame queue backlog in milliseconds.
-  2. **Late Frame Dropping:** Automatic dropping of stale frames exceeding 150 ms latency threshold to prevent queue buildup and network bufferbloat.
-  3. **Fast Keyframe Recovery:** Automatic generation and insertion of IDR keyframes following detected congestion or packet loss to restore video integrity without waiting for regular GOP intervals.
-  4. **Streamer Scaling Filter:** High-performance 4-tap bilinear interpolation downscaling implemented in `streamer_rs/src/main.rs`, replacing nearest-neighbor aliased sampling.
-
----
-
-## 4. KDE Connect
-
-* **Repository:** [https://github.com/KDE/kdeconnect-kde](https://github.com/KDE/kdeconnect-kde)
-* **License:** GNU General Public License v2.0 or later (GPLv2+)
-* **Copyright:** Copyright (C) KDE Connect contributors
-* **Adapted Solutions & Code in PC Control:**
-  1. **Subsystem Isolation:** Clear separation between network transport, remote input emulation, audio streaming, and screen capture.
-  2. **Reliable Keepalive and LAN Discovery:** Robust socket heartbeat and broadcast mechanisms for local network discovery and device verification.
-
----
-
-## License Notice and Distribution Terms
-
-The adaptations mentioned above respect the open-source spirit and requirements of the GPLv3, AGPLv3, and GPLv2+ licenses. Source code for all modifications made to PC Control is openly maintained in this repository.
-
----
-
-## Input subsystem (mouse / touchpad / keyboard), November 2026
-
-The mouse, touchpad and on-screen keyboard (`modules/input_engine.py`, `modules/input_controller.py`,
-`android_app/src/com/pccontrol/remote/PcInput*.java`, `PcTouchpadEngine.java`, `PcKeyboard*.java`) were written
-from scratch for PC Control. **No source code from the projects below was copied**: all four are GPL/AGPL,
-PC Control is MIT. Only publicly known design ideas and behaviour were re-implemented:
-
-* **Sunshine** (`src/input.cpp`): server-side key state with duplicate press/release suppression, server-side
-  autorepeat of the held key, accumulation of high-resolution scroll into whole `WHEEL_DELTA` ticks, release of all
-  inputs when the client disconnects.
-* **Moonlight Android** (`RelativeTouchContext` / `AbsoluteTouchContext`): tap/drag/scroll thresholds and gesture
-  rules (tap slop, long press drag, two-finger scroll, absolute "direct touch" mode with long-press right click).
-* **RustDesk** (`src/server/input_service.rs`): tracking of held keys and forced release of keys left pressed
-  (stuck-key protection).
-* **KDE Connect** (`plugins/mousepad/windowsremoteinput.cpp`): sending real virtual-key codes for shortcuts so that
-  Ctrl+C etc. work, with Unicode input as the text path; in PC Control the physical VK is resolved on the phone.
 ---
 
 ## Android Debug Bridge (adb), bundled in `tools/adb/`
@@ -105,3 +28,18 @@ PC Control is MIT. Only publicly known design ideas and behaviour were re-implem
 * **License:** BSD 3-Clause (cheroot); MIT (jaraco.functools, more-itertools)
 * **Copyright:** Copyright (C) 2004-2026 CherryPy Team
 * **Use in PC Control:** production WSGI server for `server.py` with connection / thread limits (`core/wsgi_server.py`).
+
+---
+
+## Python runtime and libraries, bundled in `runtime/`
+
+* **CPython** 3.12 (embeddable distribution) - Python Software Foundation License; the license text is
+  `runtime/LICENSE.txt`.
+* **Python packages** pinned in `requirements-runtime.lock` (unmodified wheels from PyPI), each under its own license;
+  the license texts ship inside `runtime/Lib/site-packages/*.dist-info`.
+* **PyAV** (`av` 17.1.0) - BSD 3-Clause (`runtime/Lib/site-packages/av-17.1.0.dist-info/licenses/LICENSE.txt`). The wheel
+  bundles shared FFmpeg 8.1.1 libraries in `runtime/Lib/site-packages/av.libs/` (`avcodec`, `avformat`, `avutil`,
+  `avfilter`, `avdevice`, `swscale`, `swresample`); their built-in license string is "LGPL version 3 or later"
+  (FFmpeg source: [https://ffmpeg.org](https://ffmpeg.org), build scripts: [https://github.com/PyAV-Org/pyav-ffmpeg](https://github.com/PyAV-Org/pyav-ffmpeg)).
+  The same folder also contains the codec libraries FFmpeg was built with (x264, x265, LAME, Opus, libvpx, dav1d,
+  SVT-AV1, libwebp, opencore-amr, libvpl, zlib, MinGW runtime DLLs), each under its own license.

@@ -1,15 +1,14 @@
 """
 PC Control - binary low-latency input stream engine.
 
-Design notes (ideas adapted, no code copied - reference projects are GPL/AGPL):
-  * Sunshine (src/input.cpp): server-side key state with duplicate press/release
-    suppression, server-side autorepeat of the last held key, accumulation of
-    high-resolution scroll into whole WHEEL_DELTA ticks, release of everything
-    when the client goes away.
-  * RustDesk (src/server/input_service.rs): table of held keys and a background
-    timer that force-releases keys that were left pressed (stuck-key protection).
-  * Moonlight / KDE Connect: one persistent ordered connection per client
-    instead of a request per event; compact typed packets.
+Design notes:
+  * server-side key state with duplicate press/release suppression, server-side
+    autorepeat of the last held key, accumulation of high-resolution scroll into
+    whole WHEEL_DELTA ticks, release of everything when the client goes away;
+  * table of held keys and a background timer that force-releases keys that were
+    left pressed (stuck-key protection);
+  * one persistent ordered connection per client instead of a request per event;
+    compact typed packets.
 
 Wire format (little endian), carried in the body of one long-lived chunked
 HTTP POST (/api/input/stream):
@@ -50,7 +49,7 @@ WHEEL_DELTA = 120
 BUTTON_LEFT, BUTTON_RIGHT, BUTTON_MIDDLE, BUTTON_X1, BUTTON_X2 = 1, 2, 3, 4, 5
 VALID_BUTTONS = {BUTTON_LEFT, BUTTON_RIGHT, BUTTON_MIDDLE, BUTTON_X1, BUTTON_X2}
 
-# Modifier and lock keys never autorepeat (same rule as Sunshine/Windows).
+# Modifier and lock keys never autorepeat (same rule as Windows).
 MODIFIER_VKS = {
     0x10, 0x11, 0x12,              # shift, ctrl, alt
     0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5,

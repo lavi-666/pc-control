@@ -366,7 +366,7 @@ function initBackgroundMode(){
   }
 }
 
-// ---------- Демонстрация экрана ПК (выбор экрана, 480p-4K, 24-120 FPS, Sunshine BT.709, MediaCodec) ----------
+// ---------- Демонстрация экрана ПК (выбор экрана, 480p-4K, 24-120 FPS, BT.709, MediaCodec) ----------
 let screenPanelOpen = false;
 let screenStreamOn = false;
 let screenCfg = {monitor: 1, height: 1080, fps: 60, quality: 'high', bitrate: 0, codec: 'auto'};
@@ -712,7 +712,7 @@ async function toggleScreenStream(){
     screenStreamOn = true;
     if (btn) btn.className = 'active-pill';
     if (txt) txt.innerText = t('btn_stop_screen');
-    if (statusEl) statusEl.innerText = t('btn_screen_share') + ' (Moonlight MediaCodec)';
+    if (statusEl) statusEl.innerText = t('btn_screen_share');
     await setScreenOpt('monitor', screenCfg.monitor);
     try {
       const serverBase = getApiBase() || window.location.origin;

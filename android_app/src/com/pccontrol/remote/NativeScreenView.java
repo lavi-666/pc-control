@@ -248,7 +248,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private volatile MediaCodec decoder;
     private Thread decoderOutputThread;
     private final Object decoderLock = new Object();
-    // Wi-Fi без энергосбережения на время трансляции (как в Moonlight): без него пакеты
+    // Wi-Fi без энергосбережения на время трансляции: без него пакеты
     // ввода/видео уходят пачками, курсор и картинка двигаются рывками.
     private android.net.wifi.WifiManager.WifiLock streamWifiLock;
     private Thread workerThread;
@@ -3717,7 +3717,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         }
     }
 
-    /** Формат декодера; lowLatency — режим низкой задержки (как в Moonlight): FEATURE_LowLatency, Qualcomm. */
+    /** Формат декодера; lowLatency — режим низкой задержки: FEATURE_LowLatency, Qualcomm. */
     private MediaFormat buildDecoderFormat(MediaCodec codec, boolean lowLatency) {
         MediaFormat format = MediaFormat.createVideoFormat("video/avc", videoWidth, videoHeight);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

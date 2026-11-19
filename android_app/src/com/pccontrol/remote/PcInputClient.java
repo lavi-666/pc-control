@@ -18,8 +18,7 @@ import javax.net.ssl.SSLSocketFactory;
 /**
  * Low-latency input transport PC Control (phone -> PC).
  *
- * One persistent, ordered TCP connection per player session (idea from Moonlight /
- * KDE Connect): a single chunked HTTP POST /api/input/stream on the existing server
+ * One persistent, ordered TCP connection per player session: a single chunked HTTP POST /api/input/stream on the existing server
  * port, so no extra firewall rule is needed. TCP_NODELAY, all pending frames of one
  * wake-up are written as one chunk (one TCP segment), consecutive relative mouse moves
  * and scroll deltas are merged at the queue tail only (event order is never changed).

@@ -853,7 +853,7 @@ def _create_screen_track():
                     target_h_even = max(2, (target_h // 2) * 2)
 
                     try:
-                        # Sunshine & Moonlight standard: BT.709 ITU-R color matrix with MPEG TV range and Bicubic interpolation
+                        # BT.709 ITU-R color matrix with MPEG TV range and Bicubic interpolation
                         vf = self._grab_bgra_frame(sct, mon).reformat(
                             width=target_w,
                             height=target_h_even,
@@ -900,7 +900,7 @@ def _create_screen_track():
                 if wait > 0:
                     await asyncio.sleep(wait)
                 elif wait < -0.1:
-                    # RustDesk QoS queue flush: if frame delivery falls behind, skip backlog
+                    # QoS queue flush: if frame delivery falls behind, skip backlog
                     self._next_frame_ts = now
                     with _telemetry_lock:
                         _screen_telemetry["dropped_frames"] += 1
@@ -1527,7 +1527,7 @@ class _FastDIBSection:
             return False
         if self.draw_cursor_enabled:
             # BitBlt never contains the mouse pointer (it is a hardware overlay):
-            # draw it into the frame, like Sunshine does, otherwise the phone sees no cursor.
+            # draw it into the frame, otherwise the phone sees no cursor.
             self._cursor.draw(self.memdc, self.left, self.top)
         self.gdi32.GdiFlush()
         copy_bgra_into_plane(vf.planes[0], self.buf, self.width, self.height)
