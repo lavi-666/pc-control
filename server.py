@@ -828,7 +828,9 @@ def store_idempotency_result(req_id: str, result_data):
 @app.route("/api/network/diagnose")
 def api_network_diagnose():
     """Безопасная диагностика сетевых интерфейсов и доступности LAN без раскрытия секретов."""
-    if not _local_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
+    # QA R-1: no free pass for private / loopback addresses any more — over the USB cable (adb reverse)
+    # every app on the phone looks like 127.0.0.1. The web UI calls this after login (token).
+    if not _local_test_mode() and not check_token(allow_stream_query=True):
         return jsonify({"message": get_msg("auth_required")}), 401
     try:
         from scripts.network_setup import get_network_diagnostics
@@ -842,7 +844,9 @@ def api_network_diagnose():
 
 @app.route("/api/lan_info")
 def api_lan_info():
-    if not _local_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
+    # QA R-1: no free pass for private / loopback addresses any more — over the USB cable (adb reverse)
+    # every app on the phone looks like 127.0.0.1. The web UI calls this after login (token).
+    if not _local_test_mode() and not check_token(allow_stream_query=True):
         return jsonify({"message": get_msg("auth_required")}), 401
     cfg = load_app_config() or {}
     lan_ip = cfg.get("lan_ip") or get_local_ip()
@@ -932,7 +936,9 @@ def api_apk_info():
 @app.route("/download/wol_relay.py")
 def download_wol_relay():
     # Защита от несанкционированного скачивания из внешних публичных сетей
-    if not _local_test_mode() and not is_private_ip(request.remote_addr) and not check_token(allow_stream_query=True):
+    # QA R-1: no free pass for private / loopback addresses any more — over the USB cable (adb reverse)
+    # every app on the phone looks like 127.0.0.1. The web UI calls this after login (token).
+    if not _local_test_mode() and not check_token(allow_stream_query=True):
         return jsonify({"message": get_msg("auth_required")}), 401
     relay_path = BASE_DIR / "scripts" / "wol_relay.py"
     if not relay_path.exists():
@@ -1027,7 +1033,9 @@ def status():
         if proof:
             data["instance"] = instance
             data["proof"] = proof
-    if is_private_ip(request.remote_addr) or check_token() or is_safe_test_mode():
+    # QA R-1: the PC name only to a client with the password / a device token (no failure counting:
+    # watchdog and route probes call /status without a token).
+    if _local_test_mode() or check_token(count_failure=False):
         data["hostname"] = platform.node()
     resp = jsonify(data)
     resp.headers["Cache-Control"] = "no-store"
