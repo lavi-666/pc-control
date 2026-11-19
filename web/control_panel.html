@@ -3270,9 +3270,9 @@
     openSetupWizard(true);
   }
 
-  Object.assign(I18N.en, {network_settings: 'Network settings', network_reload: 'Reload saved', network_hint: 'Stop the server before changing its port. Apply the firewall rule again after saving.', btn_auto_setup_wol: 'Auto-Setup (Startup + Wake-on-LAN + Autologon)', toast_port_fw_title: 'Port changed to {port}', toast_port_fw: 'The Windows Firewall rule still allows the old port. Click \u201cApply Rule\u201d in the Windows Defender Firewall step, otherwise the phone will not connect over Wi-Fi.'});
-  Object.assign(I18N.ru, {network_settings: 'Настройки сети', network_reload: 'Вернуть сохранённые', network_hint: 'Перед сменой порта остановите сервер. После сохранения заново примените правило брандмауэра.', btn_auto_setup_wol: 'Автонастройка (Автозапуск + Wake-on-LAN + Автовход)', toast_port_fw_title: 'Порт изменён на {port}', toast_port_fw: 'Правило брандмауэра Windows всё ещё разрешает старый порт. Нажмите «Применить правило» в шаге «Брандмауэр Windows», иначе телефон не подключится по Wi-Fi.'});
-  Object.assign(I18N.uk, {network_settings: 'Налаштування мережі', network_reload: 'Відновити збережені', network_hint: 'Перед зміною порту зупиніть сервер. Після збереження повторно застосуйте правило брандмауера.', btn_auto_setup_wol: 'Автоналаштування (Автозапуск + Wake-on-LAN + Автовхід)', toast_port_fw_title: 'Порт змінено на {port}', toast_port_fw: 'Правило брандмауера Windows досі дозволяє старий порт. Натисніть «Застосувати правило» у кроці «Брандмауер Windows», інакше телефон не підключиться через Wi-Fi.'});
+  Object.assign(I18N.en, {network_settings: 'Network settings', network_reload: 'Reload saved', network_hint: 'Stop the server before changing its port. Apply the firewall rule again after saving.', btn_auto_setup_wol: 'Auto-Setup (Startup + Wake-on-LAN + Autologon)', toast_port_fw_title: 'Port changed to {port}', toast_port_fw: 'The Windows Firewall rule still allows the old port. Click \u201cApply Rule\u201d in the Windows Defender Firewall step, otherwise the phone will not connect over Wi-Fi.', toast_port_qr: 'The phone remembers the old address: scan the QR code again (Connect phone).'});
+  Object.assign(I18N.ru, {network_settings: 'Настройки сети', network_reload: 'Вернуть сохранённые', network_hint: 'Перед сменой порта остановите сервер. После сохранения заново примените правило брандмауэра.', btn_auto_setup_wol: 'Автонастройка (Автозапуск + Wake-on-LAN + Автовход)', toast_port_fw_title: 'Порт изменён на {port}', toast_port_fw: 'Правило брандмауэра Windows всё ещё разрешает старый порт. Нажмите «Применить правило» в шаге «Брандмауэр Windows», иначе телефон не подключится по Wi-Fi.', toast_port_qr: 'Телефон помнит старый адрес: заново отсканируйте QR-код («Подключить телефон»).'});
+  Object.assign(I18N.uk, {network_settings: 'Налаштування мережі', network_reload: 'Відновити збережені', network_hint: 'Перед зміною порту зупиніть сервер. Після збереження повторно застосуйте правило брандмауера.', btn_auto_setup_wol: 'Автоналаштування (Автозапуск + Wake-on-LAN + Автовхід)', toast_port_fw_title: 'Порт змінено на {port}', toast_port_fw: 'Правило брандмауера Windows досі дозволяє старий порт. Натисніть «Застосувати правило» у кроці «Брандмауер Windows», інакше телефон не підключиться через Wi-Fi.', toast_port_qr: 'Телефон пам\'ятає стару адресу: повторно відскануйте QR-код («Підключити телефон»).'});
 
   Object.assign(I18N.en, {
     phone_title:'Connect phone · QR',
@@ -3569,7 +3569,7 @@
         const d = I18N[currentLang] || I18N.en;
         if (data.firewall_update_needed) {
           // QA L-21: the firewall rule is bound to the port - remind to apply it again.
-          showToast((d.toast_port_fw_title || I18N.en.toast_port_fw_title).replace('{port}', String(settings.port)), d.toast_port_fw || I18N.en.toast_port_fw, 'warn', 12000);
+          showToast((d.toast_port_fw_title || I18N.en.toast_port_fw_title).replace('{port}', String(settings.port)), (d.toast_port_fw || I18N.en.toast_port_fw) + (data.port_changed ? ' ' + (d.toast_port_qr || I18N.en.toast_port_qr) : ''), 'warn', 14000);
           fetchStatus();
         } else {
           showToast(d.toast_action_success, '', 'success', 3000);

@@ -52,8 +52,12 @@ LOGS_DIR.mkdir(exist_ok=True)
 CONTROL_PORT = int(os.environ.get("PC_CONTROL_PANEL_PORT", "5055"))
 if not 1 <= CONTROL_PORT <= 65535:
     raise ValueError("Invalid PC_CONTROL_PANEL_PORT")
-# Never a server port: Wake-on-LAN relay default, streamer, control panel (QA L-14).
-RESERVED_PORTS = frozenset({5050, 5051, 5055, CONTROL_PORT})
+# Ports used by PC Control itself (QA L-14): streamer 5051, control panel, media bridge 5017,
+# adb server 5037, USB discovery beacon 5058. Never a server or relay port.
+INTERNAL_PORTS = frozenset({5051, 5055, CONTROL_PORT, 5017, 5037, 5058})
+# The server port additionally must not be 5050 (Wake-on-LAN relay default).
+RESERVED_PORTS = INTERNAL_PORTS | {5050}
+MIN_USER_PORT = 1024  # system ports need administrator rights / belong to Windows services
 # Общая с сервером блокировка config.json (между процессами) — см. core/config.py
 from core.config import CONFIG_LOCK as _settings_lock  # noqa: E402
 
@@ -92,12 +96,21 @@ def validate_network_settings(data):
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
             raise ValueError(f"{key}: expected an integer from 1 to 65535")
         result[key] = value
-    # QA L-14: 5050 is the Wake-on-LAN relay's default port and is reserved like in _find_free_port.
-    if result["port"] in RESERVED_PORTS or result["port"] == result["relay_port"]:
-        raise ValueError(f"Port {result['port']} is reserved (5050 Wake-on-LAN relay, 5051 streamer, "
-                         f"{CONTROL_PORT} control panel) or equals the relay port. Choose another server port. / "
-                         f"Порт {result['port']} зарезервирован (5050 ретранслятор Wake-on-LAN, 5051 стример, "
-                         f"{CONTROL_PORT} панель управления) или совпадает с портом ретранслятора. Выберите другой порт сервера.")
+    # QA L-14: the same reservations as _find_free_port, for both ports.
+    for key, reserved in (("port", RESERVED_PORTS), ("relay_port", INTERNAL_PORTS)):
+        value = result[key]
+        if value < MIN_USER_PORT or value in reserved:
+            what = "Server port" if key == "port" else "Relay port"
+            what_ru = "Порт сервера" if key == "port" else "Порт ретранслятора"
+            raise ValueError(
+                f"{what} {value} is reserved (below {MIN_USER_PORT}, or used by PC Control: 5050 Wake-on-LAN relay, "
+                f"5051 streamer, {CONTROL_PORT} control panel, 5017 media bridge, 5037 adb, 5058 USB beacon). "
+                f"Choose another port. / {what_ru} {value} зарезервирован (меньше {MIN_USER_PORT} или занят "
+                f"PC Control: 5050 ретранслятор Wake-on-LAN, 5051 стример, {CONTROL_PORT} панель управления, "
+                f"5017 медиамост, 5037 adb, 5058 USB-маяк). Выберите другой порт.")
+    if result["port"] == result["relay_port"]:
+        raise ValueError(f"Server port and relay port are both {result['port']}. / "
+                         f"Порт сервера совпадает с портом ретранслятора ({result['port']}).")
     for key in ("lan_ip", "vpn_ip", "wol_relay_ip"):
         value = data.get(key, "")
         if not isinstance(value, str):
@@ -1640,16 +1653,17 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     manual_addresses = any(settings[k] != cfg.get(k, '') for k in ('lan_ip', 'vpn_ip', 'mac_address'))
                     # QA L-21: the firewall rules are bound to the ports - the panel reminds to apply them again.
                     try:
-                        ports_changed = (settings["port"] != int(cfg.get("port", 5000) or 5000)
-                                         or settings["relay_port"] != int(cfg.get("relay_port", 5050) or 5050))
+                        port_changed = settings["port"] != int(cfg.get("port", 5000) or 5000)
+                        ports_changed = port_changed or settings["relay_port"] != int(cfg.get("relay_port", 5050) or 5050)
                     except (TypeError, ValueError):
-                        ports_changed = True
+                        port_changed = ports_changed = True
                     cfg.update(settings)
                     if manual_addresses:
                         cfg["auto_network"] = False
                     save_config_data(cfg)
                 _status.invalidate("network", "firewall")  # порт мог смениться — правило проверяется заново
-                self.send_json({"ok": True, "settings": settings, "firewall_update_needed": ports_changed})
+                self.send_json({"ok": True, "settings": settings, "port_changed": port_changed,
+                                "firewall_update_needed": ports_changed})
                 return
 
             if action == "mark_setup_complete":
