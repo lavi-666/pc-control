@@ -1278,6 +1278,15 @@ def find_git_binary() -> str:
     return "git"
 
 
+def auto_update_check_enabled() -> bool:
+    if os.environ.get("PC_CONTROL_TEST_MODE") == "1" or os.environ.get("PC_CONTROL_NO_UPDATE_CHECK") == "1":
+        return False
+    try:
+        return load_config_data().get("auto_update_check", True) is not False
+    except Exception:
+        return True
+
+
 def check_github_updates() -> dict:
     global LATEST_UPDATE_INFO
     from scripts import full_update
@@ -2567,8 +2576,13 @@ def main():
     # Фоновый расчёт статуса: /api/status отдаёт готовые значения
     _status.start()
 
-    # Фоновая автоматическая проверка обновлений при старте лаунчера
-    threading.Timer(2.0, check_github_updates).start()
+    # Фоновая автоматическая проверка обновлений при старте лаунчера (api.github.com).
+    # QA П-9: not in test mode, and switchable off (config "auto_update_check": false or
+    # PC_CONTROL_NO_UPDATE_CHECK=1). The "Check for updates" button still works.
+    if auto_update_check_enabled():
+        threading.Timer(2.0, check_github_updates).start()
+    else:
+        append_log("[UPDATE] Automatic update check at start is switched off.")
     # Через минуту (процесс-исполнитель обновления к этому времени завершён) убираем его рабочую папку
     threading.Timer(60.0, cleanup_update_workspaces).start()
 
