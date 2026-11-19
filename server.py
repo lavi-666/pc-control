@@ -268,7 +268,7 @@ def _ensure_interactive_desktop():
     req_id = request.headers.get("X-Request-Id")
     if req_id and request.method in ("POST", "PUT", "DELETE", "PATCH"):
         p = request.path
-        if not p.startswith(("/webrtc/", "/screen/", "/audio", "/api/mouse", "/api/keyboard", "/keyboard/", "/api/mic")):
+        if not p.startswith(("/webrtc/", "/screen/", "/audio", "/api/mouse", "/api/keyboard", "/keyboard/", "/api/mic", "/api/input/")):  # QA R-8: get_data() would eat the input stream
             cached = check_idempotency_request(req_id)
             if cached is not None:
                 if cached.get("error"):
@@ -708,7 +708,9 @@ def check_idempotency_request(req_id: str):
     if has_request_context():
         is_safe = _local_test_mode()
         # Мутирующие операции требуют обязательной проверки авторизации до доступа к кэшу!
-        if not is_safe and not check_token():
+        # QA R-8 (A-15): the route checks the token again and counts a failure there - counting it here too
+        # locked a phone with a wrong password out after half the attempts.
+        if not is_safe and not check_token(count_failure=False):
             return None
         method = request.method
         path = request.path
