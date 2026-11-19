@@ -248,7 +248,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
     private volatile MediaCodec decoder;
     private Thread decoderOutputThread;
     private final Object decoderLock = new Object();
-    // Wi-Fi без энергосбережения на время трансляции (как в Moonlight): без него пакеты
+    // Wi-Fi без энергосбережения на время трансляции: без него пакеты
     // ввода/видео уходят пачками, курсор и картинка двигаются рывками.
     private android.net.wifi.WifiManager.WifiLock streamWifiLock;
     private Thread workerThread;
@@ -2936,6 +2936,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         c.setConnectTimeout(4000);
                         c.setReadTimeout(10000);
                         c.setRequestProperty("Accept", "audio/wav");
+                        c.setRequestProperty("X-Stream-Client", PcInputClient.CLIENT_ID + "-screen-audio"); // QA R-4
                         int code = c.getResponseCode();
                         if (code == 401) {
                             updateAudioStatusOnMain(T("nsv_password_error", "Ошибка пароля"), PcUi.DANGER);
@@ -3631,6 +3632,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 conn.setRequestProperty("Accept", "video/x-h264");
                 conn.setRequestProperty("Cache-Control", "no-cache");
                 conn.setRequestProperty("Connection", "keep-alive");
+                // QA R-4: the server stops this app's previous H.264 stream (old route) at once
+                conn.setRequestProperty("X-Stream-Client", PcInputClient.CLIENT_ID + "-video");
                 if (!authToken.isEmpty()) conn.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(authToken));
 
                 activeConn = conn;
@@ -3717,7 +3720,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         }
     }
 
-    /** Формат декодера; lowLatency — режим низкой задержки (как в Moonlight): FEATURE_LowLatency, Qualcomm. */
+    /** Формат декодера; lowLatency — режим низкой задержки: FEATURE_LowLatency, Qualcomm. */
     private MediaFormat buildDecoderFormat(MediaCodec codec, boolean lowLatency) {
         MediaFormat format = MediaFormat.createVideoFormat("video/avc", videoWidth, videoHeight);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

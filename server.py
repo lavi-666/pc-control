@@ -586,7 +586,7 @@ def api_pair_exchange():
         max_age=sessions.IDLE_EXPIRY,
         path="/",
         httponly=True,  # QA A-10: page scripts never read it; HttpOnly keeps it from injected JS
-        samesite="Lax",
+        samesite="Strict",  # QA R-10: only this server's own pages send it
     )
     return resp
 
@@ -1190,6 +1190,11 @@ if __name__ == "__main__":
     # falls back to the Werkzeug server if the private runtime has no cheroot yet.
     from core import wsgi_server
     sessions.start_watcher()  # revocations made in the control panel close open streams
+    try:  # QA R-12: a shutdown timer set before this restart keeps running
+        from modules.power import restore_shutdown_timer
+        restore_shutdown_timer()
+    except Exception as _e:
+        log_error("shutdown_timer_restore", _e)
 
     def _log_backend(name, limits):
         print(f"  HTTP server:      {name}" + (f" {limits}" if limits else " (fallback, no connection limits)"), flush=True)

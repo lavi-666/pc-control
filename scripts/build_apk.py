@@ -505,8 +505,8 @@ public class BackgroundAudioService extends Service {
 ANDROID_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.pccontrol.remote"
-    android:versionCode="19"
-    android:versionName="2.5.0">
+    android:versionCode="20"
+    android:versionName="2.5.1">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
 

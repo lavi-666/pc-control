@@ -1355,7 +1355,7 @@ public class MainActivity extends Activity {
         nativeModeKind = mode;
         setSystemBarColors(0xFF000000);
         status(mode == NativeScreenView.MODE_PC_CONTROL ? t("btn_pc_control") + " (MediaCodec + Touchpad)"
-                : t("btn_screen_share") + " (Moonlight MediaCodec)");
+                : t("btn_screen_share"));
         audio.syncButtons();
         audio.saveScreenCfg(() -> {
             if (!nativeMode || nativeModeKind != mode) return;

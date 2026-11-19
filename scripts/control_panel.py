@@ -1347,11 +1347,55 @@ def get_update_status():
     return status
 
 
+def uninstaller_exe(base: Path | None = None) -> Path | None:
+    """Uninstall.exe (primary since 2.5.1), else the legacy unstaller.exe (same file), else None."""
+    base = base or BASE_DIR
+    for name in ("Uninstall.exe", "unstaller.exe"):
+        if (base / name).is_file():
+            return base / name
+    return None
+
+
+def repair_uninstall_registration():
+    """2.5.1: Apps & features entry of THIS install -> Uninstall.exe (scripts/full_update.py
+    repoint_uninstall_entry: ownership check by InstallLocation, idempotent, silent on failure).
+    Installed copies only; a dev folder or a test-mode panel never touches the registry."""
+    if is_dev_folder() or os.environ.get("PC_CONTROL_TEST_MODE") == "1":
+        return
+    try:
+        from scripts import full_update
+        full_update.repoint_uninstall_entry(BASE_DIR, log=lambda m: append_log("[SETUP] " + m))
+    except Exception as e:
+        append_log(f"[SETUP] Apps & features entry not checked: {e}")
+
+
 class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def _reply_language(self) -> str:
+        """QA П-11: the panel's UI language (config.json "language", set by the panel's language
+        switch), else the browser's Accept-Language; replies are written in Russian (the source)."""
+        try:
+            lang = str(load_config_data().get("language") or "").lower()
+            if lang in ("ru", "uk", "en"):
+                return lang
+        except Exception:
+            pass
+        for part in (self.headers.get("Accept-Language") or "").lower().split(","):
+            tag = part.split(";")[0].strip()[:2]
+            if tag in ("ru", "uk", "en"):
+                return tag
+        return "en"
+
     def send_json(self, data, status=200):
+        if isinstance(data, dict) and any(isinstance(data.get(k), str) and not data[k].isascii()
+                                          for k in ("message", "error_title", "details", "error", "title")):
+            try:
+                from core.server_i18n import translate_reply
+                translate_reply(data, self._reply_language())
+            except Exception:
+                pass
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1464,7 +1508,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "apk_build": _apk.snapshot(),
                 "apk_personalized": is_apk_personalized(cfg),
                 "apk_exists": (BASE_DIR / "PC_Control.apk").is_file() or (BASE_DIR / "PC-Control.apk").is_file(),
-                "uninstaller_available": not is_dev_folder() and ((BASE_DIR / "unstaller.exe").is_file() or (BASE_DIR / "Uninstall.exe").is_file() or (BASE_DIR / "uninstall.bat").is_file()),
+                "uninstaller_available": not is_dev_folder() and (uninstaller_exe() is not None or (BASE_DIR / "uninstall.bat").is_file()),
                 "dev_folder": is_dev_folder(),
                 "windows_hello": get_windows_hello_status(),
                 "token": cfg.get("token", ""),
@@ -2410,7 +2454,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                         "network_interfaces": interfaces,
                         "tailscale": get_tailscale_info(),
                         "apk_exists": (BASE_DIR / "PC_Control.apk").is_file(),
-                        "uninstaller_exists": (BASE_DIR / "unstaller.exe").is_file() or (BASE_DIR / "Uninstall.exe").is_file(),
+                        "uninstaller_exists": uninstaller_exe() is not None,
                         "system_state_journal_status": journal_status,
                         "system_state_journal_entries": list((journal_data.get("entries") or {}).keys())
                         if isinstance(journal_data, dict) else [],
@@ -2444,7 +2488,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                                     "message": "This folder is a development checkout (.git / Rust sources); "
                                                "the uninstaller is disabled here."}, 409)
                     return
-                uninst_exe =BASE_DIR / "unstaller.exe" if (BASE_DIR / "unstaller.exe").is_file() else BASE_DIR / "Uninstall.exe"
+                uninst_exe = uninstaller_exe() or BASE_DIR / "Uninstall.exe"
                 uninst_bat = BASE_DIR / "uninstall.bat"
                 if uninst_exe.is_file():
                     try:
@@ -2585,6 +2629,8 @@ def main():
         append_log("[UPDATE] Automatic update check at start is switched off.")
     # Через минуту (процесс-исполнитель обновления к этому времени завершён) убираем его рабочую папку
     threading.Timer(60.0, cleanup_update_workspaces).start()
+    # Apps & features of an installer-made copy: unstaller.exe -> Uninstall.exe (self-heal, 2.5.1)
+    threading.Timer(3.0, repair_uninstall_registration).start()
 
     if "--no-browser" not in sys.argv:
         threading.Timer(0.4, lambda: launch_browser_gui(gui_url)).start()

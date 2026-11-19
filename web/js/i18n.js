@@ -1829,7 +1829,6 @@ async function rotateTokenFromRemote(btnEl){
       try {
         localStorage.setItem('pc_token', data.token);
         sessionStorage.setItem('pc_token', data.token);
-        document.cookie = 'token=' + encodeURIComponent(data.token) + '; path=/; max-age=31536000; SameSite=Lax';
       } catch(e) {}
       const inp = document.getElementById('connTokenInput');
       if (inp) inp.value = data.token;

@@ -22,6 +22,7 @@ PENDING = '.pccontrol-update.pending'
 REPOSITORY = 'https://github.com/lavi-666/pc-control'
 API = 'https://api.github.com/repos/lavi-666/pc-control/releases/latest'
 DIRECTORIES = {'core', 'modules', 'scripts', 'web', 'tools', 'runtime', 'docs', 'chrome_extension'}
+# unstaller.exe: legacy name, remove from the package in 2.5.2; keep in full_update.ROOT_FILES
 ROOT_FILES = {'Launcher.exe', 'Uninstall.exe', 'unstaller.exe', 'version.json', 'PC_Control.apk', 'pc_control.ico', 'server.py', 'open_app.pyw',
               'requirements.txt', 'requirements-runtime.lock', 'runtime-source.json', 'config.example.json',
               'README.md', 'README.ru.md', 'LICENSE', 'launcher.bat', 'start_server.bat',
@@ -515,6 +516,105 @@ def wait_server_status(base, timeout):
     return False
 
 
+UNINSTALL_SUBKEY = r'Software\Microsoft\Windows\CurrentVersion\Uninstall\PC Control'
+PRIMARY_UNINSTALLER = 'Uninstall.exe'
+LEGACY_UNINSTALLER = 'unstaller.exe'  # legacy name of the same file (2.5.0 and older registered it)
+_UNINSTALL_VALUES = ('UninstallString', 'QuietUninstallString', 'DisplayIcon')
+
+
+class _WinRegUninstallKey:
+    """HKCU ...\\Uninstall\\PC Control. Abstracted so tests never touch the real registry."""
+
+    def read(self):
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_SUBKEY, 0, winreg.KEY_READ) as key:
+                out = {}
+                for name in ('InstallLocation',) + _UNINSTALL_VALUES:
+                    try:
+                        out[name] = winreg.QueryValueEx(key, name)[0]
+                    except OSError:
+                        pass
+                return out
+        except OSError:
+            return None
+
+    def write(self, values):
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_SUBKEY, 0, winreg.KEY_SET_VALUE) as key:
+            for name, value in values.items():
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+
+
+def _norm_dir(path):
+    try:
+        return os.path.normcase(os.path.abspath(str(path).strip().strip('"'))).rstrip('\\/')
+    except (TypeError, ValueError):
+        return ''
+
+
+def _command_exe(value):
+    """'"C:\\x\\unstaller.exe" --silent' / 'C:\\x\\pc_control.ico' -> the file path."""
+    value = str(value or '').strip()
+    if value.startswith('"'):
+        end = value.find('"', 1)
+        return value[1:end] if end > 0 else value[1:]
+    lower = value.lower()
+    for ext in ('.exe', '.ico'):
+        i = lower.find(ext)
+        if i >= 0:
+            return value[:i + len(ext)]
+    return value.split(' ')[0]
+
+
+def repoint_uninstall_entry(base, registry=None, log=lambda message: None):
+    """2.5.1: Apps & features must start Uninstall.exe (unstaller.exe is the legacy name of the same
+    file). Rewrites UninstallString / QuietUninstallString / DisplayIcon of HKCU ...\\Uninstall\\PC Control
+    when they point to this install's unstaller.exe, or to a missing file while Uninstall.exe exists.
+    Only an entry whose InstallLocation is THIS install dir is touched (another copy's entry never is);
+    idempotent; never raises. Returns True when the entry now uses Uninstall.exe (or needed no change),
+    False when there is no entry of this install or it could not be repaired."""
+    try:
+        if os.name != 'nt' and registry is None:
+            return False
+        registry = registry or _WinRegUninstallKey()
+        base = Path(base)
+        data = registry.read()
+        if not data or not data.get('InstallLocation') or _norm_dir(data['InstallLocation']) != _norm_dir(base):
+            return False  # no entry, or it belongs to another copy of PC Control
+        primary = base / PRIMARY_UNINSTALLER
+        if not primary.is_file():
+            return False
+        legacy_norm = _norm_dir(base / LEGACY_UNINSTALLER)
+        updates = {}
+        for name in _UNINSTALL_VALUES:
+            value = data.get(name)
+            if not value:
+                continue
+            exe = _command_exe(value)
+            if _norm_dir(exe) == legacy_norm or not Path(exe).is_file():
+                if name == 'UninstallString':
+                    updates[name] = f'"{primary}"'
+                elif name == 'QuietUninstallString':
+                    updates[name] = f'"{primary}" --silent'
+                else:  # DisplayIcon
+                    ico = base / 'pc_control.ico'
+                    updates[name] = str(ico if ico.is_file() else primary)
+        for name in ('UninstallString', 'QuietUninstallString'):
+            if not data.get(name):  # a damaged entry without them
+                updates[name] = f'"{primary}"' + (' --silent' if name == 'QuietUninstallString' else '')
+        if updates:
+            registry.write(updates)
+            log('Apps & features entry now starts Uninstall.exe: ' + ', '.join(sorted(updates)))
+        return True
+    except Exception as error:  # silent: a failed repair never breaks the panel or an update
+        try:
+            log('Apps & features entry not repointed: ' + str(error))
+        except Exception:
+            pass
+        return False
+
+
 def worker(job, recover=False):
     job = Path(job).resolve()
     plan = json.loads((job / 'plan.json').read_text(encoding='utf-8'))
@@ -557,6 +657,7 @@ def worker(job, recover=False):
                 apply_files(base, job / 'stage', backup, plan)
                 status(base, 'testing', 'Проверка обновлённого приложения...')
                 launch_and_verify(base, plan)
+                repoint_uninstall_entry(base)  # 2.5.1: Apps & features -> Uninstall.exe (this install only)
                 status(base, 'complete', 'Проект полностью обновлён. Запуск проверен; настройки сохранены.')
             except Exception as error:
                 stop_owned(base, os.getpid())

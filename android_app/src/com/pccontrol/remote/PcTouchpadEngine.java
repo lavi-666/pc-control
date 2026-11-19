@@ -3,8 +3,7 @@ package com.pccontrol.remote;
 /**
  * Touchpad gesture recognizer PC Control (pure Java, no android.* imports).
  *
- * Gesture rules adapted (re-implemented, not copied) from Moonlight's
- * RelativeTouchContext/AbsoluteTouchContext and the Windows precision touchpad:
+ * Gesture rules follow the Windows precision touchpad:
  *   relative mode ("touchpad"):
  *     1 finger move ............ cursor move (sensitivity + optional acceleration,
  *                                sub-pixel remainder kept, no jumps when fingers change)
