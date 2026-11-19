@@ -207,6 +207,11 @@ def register_failure(ip: str):
             for k in expired_ips:
                 _failed_attempts.pop(k, None)
                 _locked_until.pop(k, None)
+        # QA R-17: the strike counters were never cleaned (unbounded with many addresses). Addresses
+        # that are not locked any more lose their strike history first.
+        if len(_lockout_strikes) > 1000:
+            for k in [k for k in _lockout_strikes if _locked_until.get(k, 0) <= now]:
+                _lockout_strikes.pop(k, None)
 
         is_priv = is_private_ip(ip)
         max_att = LOCKOUT_LAN_MAX if is_priv else LOCKOUT_MAX_ATTEMPTS
