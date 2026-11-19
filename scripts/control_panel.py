@@ -1337,45 +1337,6 @@ def get_update_status():
     return status
 
 
-def run_command_async(cmd, name=""):
-    global _is_busy, _busy_action
-
-    def _worker():
-        global _is_busy, _busy_action
-        _is_busy = True
-        _busy_action = name
-        append_log(f"Starting task: {name}...")
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(BASE_DIR),
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=NO_WINDOW
-            )
-            for line in proc.stdout:
-                line_str = line.strip()
-                if line_str:
-                    append_log(line_str)
-            proc.wait()
-            if proc.returncode == 0:
-                append_log(f"Task '{name}' completed successfully.")
-            else:
-                append_log(f"Task '{name}' finished with exit code {proc.returncode}.")
-        except Exception as e:
-            append_log(f"Error during '{name}': {e}")
-        finally:
-            _is_busy = False
-            _busy_action = ""
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-
-
 class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
