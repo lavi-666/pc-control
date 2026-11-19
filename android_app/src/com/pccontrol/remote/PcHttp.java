@@ -96,7 +96,10 @@ public final class PcHttp {
             c.setConnectTimeout(connectTimeoutMs);
             c.setReadTimeout(readTimeoutMs);
             c.setUseCaches(false);
-            c.setInstanceFollowRedirects(true);
+            // QA R-17: Android's HttpURLConnection (OkHttp) carries custom headers such as X-Auth-Token
+            // over a redirect to another host. The PC Control server never redirects: an authenticated
+            // request does not follow redirects at all.
+            c.setInstanceFollowRedirects(token == null || token.isEmpty());
             c.setRequestMethod(method);
             c.setRequestProperty("Accept", "application/json, */*");
             c.setRequestProperty("Cache-Control", "no-store");

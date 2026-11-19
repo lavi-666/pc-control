@@ -187,9 +187,21 @@ final class PcAudioStream {
                                     long played = track.getPlaybackHeadPosition() - head0;
                                     long latency = written / frame - played;
                                     if (latency > trackRate / 5) { // > 200 ms behind: drop the backlog
-                                        track.flush();
+                                        // QA A-14: flush() while playing is a no-op - pause first.
+                                        try {
+                                            track.pause();
+                                            track.flush();
+                                            track.play();
+                                        } catch (IllegalStateException ignored) {}
                                         head0 = track.getPlaybackHeadPosition();
                                         written = 0;
+                                        // the backlog also waits in the socket buffer: skip what has
+                                        // already arrived (whole frames, so the sample alignment stays)
+                                        try {
+                                            int backlog = in.available();
+                                            backlog -= backlog % frame;
+                                            if (backlog > 0) in.skip(backlog);
+                                        } catch (Exception ignored) {}
                                     }
                                     int w = track.write(buf, 0, whole);
                                     if (w > 0) written += w;
