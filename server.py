@@ -38,7 +38,8 @@ from core.config import (
     load_app_config,
     update_auth_token,
     get_cors_allowed_origins,
-    update_cors_origins
+    update_cors_origins,
+    cors_pattern_too_broad,
 )
 from core.auth import (
     check_token,
@@ -176,8 +177,9 @@ def _is_origin_allowed(origin: str, remote_addr: str) -> bool:
     if not origin:
         return True
     origin_clean = origin.strip().lower()
-    if origin_clean in ("null", "file://", "capacitor://localhost", "http://pccontrol.local"):
-        return True
+    # QA R-2: "null" / "file://" / "capacitor://localhost" / "http://pccontrol.local" were always
+    # allowed (a WebView legacy; the native app sends no Origin). Any site could read the replies of
+    # private-network endpoints from a sandboxed iframe (Origin: null) — they are refused now.
 
     # 1. Проверяем гибкий список разрешённых origins из config.json
     import fnmatch
@@ -195,6 +197,8 @@ def _is_origin_allowed(origin: str, remote_addr: str) -> bool:
             return True
         for pattern in allowed_patterns:
             pat_clean = pattern.strip().lower()
+            if cors_pattern_too_broad(pat_clean):
+                continue  # QA R-17: "*" would allow every site together with credentials
             pattern_host = urlparse(pat_clean if "://" in pat_clean else "http://" + pat_clean).hostname or ""
             # A numeric wildcard is an IP pattern, never a domain prefix.
             if re.match(r"^\d+\.", pattern_host) and "*" in pattern_host:

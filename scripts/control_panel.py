@@ -1503,7 +1503,6 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 "cors_allowed_origins": cfg.get("cors_allowed_origins", [
                     "http://localhost:*",
                     "http://127.0.0.1:*",
-                    "http://pccontrol.local",
                     "http://192.168.*",
                     "http://172.*",
                     "http://100.*",
@@ -2310,7 +2309,6 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     origins_list = [
                         "http://localhost:*",
                         "http://127.0.0.1:*",
-                        "http://pccontrol.local",
                         "http://192.168.*",
                         "http://172.*",
                         "http://100.*",

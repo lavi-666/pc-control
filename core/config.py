@@ -102,7 +102,6 @@ def auto_detect_network_params() -> dict:
 DEFAULT_CORS_ORIGINS = (
     "http://localhost:*",
     "http://127.0.0.1:*",
-    "http://pccontrol.local",
     "http://192.168.*",
     "http://172.*",
     "http://100.*",
@@ -321,13 +320,24 @@ def get_cors_allowed_origins() -> list[str]:
         return [str(o).strip() for o in origins if str(o).strip()]
     return list(DEFAULT_CORS_ORIGINS)
 
+def cors_pattern_too_broad(pattern: str) -> bool:
+    """A CORS pattern whose host part is only wildcards ("*", "http://*", "*://*:*") matches every
+    site; with Access-Control-Allow-Credentials that hands the API to any web page."""
+    p = str(pattern or "").strip().lower()
+    if "://" in p:
+        p = p.split("://", 1)[1]
+    host = p.split("/", 1)[0].rsplit(":", 1)[0] if not p.startswith("[") else p
+    return not host.replace("*", "").replace(".", "").strip()
+
+
 def update_cors_origins(origins: list[str]) -> bool:
     with _config_lock:
         cfg = _load_for_update()
         if cfg is None:
             return False
         # Только строки: раньше числа/null/объекты сохранялись как "1", "None", "{'a': 1}"
-        cleaned = [o.strip() for o in origins if isinstance(o, str) and o.strip()]
+        cleaned = [o.strip() for o in origins if isinstance(o, str) and o.strip()
+                   and not cors_pattern_too_broad(o)]  # QA R-17: no "*" (= every site)
         cfg["cors_allowed_origins"] = cleaned
         return save_app_config(cfg)
 
