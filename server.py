@@ -52,7 +52,11 @@ from core.auth import (
     create_pairing_ticket,
     redeem_pairing_ticket,
     is_valid_pairing_ticket,
+    current_session_id,
+    legacy_password_allowed,
+    password_matches,
 )
+from core import sessions
 from core.logger import get_history, log_action, log_error
 from modules.system import system_bp, _attach_input_desktop
 from modules.volume import volume_bp
@@ -438,18 +442,25 @@ def api_auth_login():
         # Также проверяем заголовок X-Auth-Token
         pwd = (request.headers.get("X-Auth-Token") or "").strip()
 
-    expected = get_auth_token()
-    if pwd and expected and secrets.compare_digest(pwd.encode("utf-8"), expected.encode("utf-8")):
+    if password_matches(pwd):
         clear_lockout(ip)
+        # Plan 5.2: every login gets its own revocable device token ("session"). "token" still
+        # echoes the password for old clients that store it (they keep sending the password,
+        # accepted while legacy_password_auth is on).
+        session_token, rec = sessions.create(_device_name(data), ip, "password")
+        log_action("session_created", {"id": rec["id"], "name": rec["name"], "kind": "password"})
         resp = jsonify({
             "ok": True,
             "message": get_msg("login_success"),
-            "token": pwd
+            "token": pwd,
+            "session": session_token,
+            "session_id": rec["id"],
+            "expires_in": sessions.IDLE_EXPIRY,
         })
         resp.set_cookie(
             "pc_token",
-            pwd,
-            max_age=31536000,
+            session_token,
+            max_age=sessions.IDLE_EXPIRY,
             path="/",
             httponly=True,
             samesite="Strict"
@@ -495,7 +506,8 @@ def api_auth_rotate():
     if not ok:
         return jsonify({"ok": False, "message": get_msg("internal_error")}), 500
 
-    log_action("token_rotate", {"by": request.remote_addr or "local"})
+    revoked = sessions.revoke(all_sessions=True) if data.get("revoke_sessions") else 0
+    log_action("token_rotate", {"by": request.remote_addr or "local", "sessions_revoked": revoked})
 
     resp = jsonify({
         "ok": True,
@@ -540,19 +552,26 @@ def api_pair_exchange():
     if not ticket:
         ticket = str(request.args.get("ticket") or "").strip()
 
-    token = redeem_pairing_ticket(ticket)
-    if not token:
+    if not redeem_pairing_ticket(ticket):
         return jsonify({"ok": False, "message": "Недействительный или истёкший билет сопряжения (Invalid or expired pairing ticket)"}), 401
 
+    # Plan 5.2: the QR ticket no longer hands out the password. "token" is a device session token:
+    # old APKs / the web app store whatever comes in "token" and send it back, which works because
+    # check_token() accepts session tokens.
+    token, rec = sessions.create(_device_name(data, "QR"), request.remote_addr or "", "pairing")
+    log_action("session_created", {"id": rec["id"], "name": rec["name"], "kind": "pairing"})
     resp = jsonify({
         "ok": True,
         "message": get_msg("login_success"),
         "token": token,
+        "session": token,
+        "session_id": rec["id"],
+        "expires_in": sessions.IDLE_EXPIRY,
     })
     resp.set_cookie(
         "pc_token",
         token,
-        max_age=31536000,
+        max_age=sessions.IDLE_EXPIRY,
         path="/",
         httponly=True,
         samesite="Strict",
@@ -560,7 +579,7 @@ def api_pair_exchange():
     resp.set_cookie(
         "token",
         token,
-        max_age=31536000,
+        max_age=sessions.IDLE_EXPIRY,
         path="/",
         httponly=True,  # QA A-10: page scripts never read it; HttpOnly keeps it from injected JS
         samesite="Lax",
@@ -568,13 +587,59 @@ def api_pair_exchange():
     return resp
 
 
+def _device_name(data: dict, default: str = "") -> str:
+    name = str((data or {}).get("device_name") or "").strip()
+    if not name:
+        ua = request.headers.get("User-Agent") or ""
+        if "Android" in ua and "Mobile" not in ua and "PCControl" not in ua:
+            name = "Android"
+        elif ua.startswith(("Dalvik", "PCControl")) or "okhttp" in ua.lower():
+            name = "Android app"
+        elif ua:
+            name = "Browser"
+    return sessions.clean_name(name or default or "Device")
+
+
 @app.route("/api/auth/logout", methods=["POST"])
 def api_auth_logout():
-    """Clears the login cookies (they are HttpOnly, page scripts cannot remove them)."""
+    """Clears the login cookies (they are HttpOnly, page scripts cannot remove them) and revokes the
+    device session of this request, if it used one."""
+    if check_token(count_failure=False):
+        sid = current_session_id()
+        if sid:
+            sessions.revoke(sid)
     resp = jsonify({"ok": True})
     resp.delete_cookie("pc_token", path="/")
     resp.delete_cookie("token", path="/")
     return resp
+
+
+@app.route("/api/auth/sessions", methods=["GET"])
+def api_auth_sessions():
+    """Device sessions (no tokens / hashes): id, name, created, last_seen, last_ip, state."""
+    if not check_token():
+        return jsonify({"ok": False, "message": get_msg("auth_required")}), 401
+    include_dead = request.args.get("all") in ("1", "true")
+    return jsonify({"ok": True, "current": current_session_id(), "idle_expiry_days": sessions.IDLE_EXPIRY_DAYS,
+                    "legacy_password_auth": legacy_password_allowed(),
+                    "sessions": sessions.list_sessions(include_dead=include_dead)})
+
+
+@app.route("/api/auth/sessions/revoke", methods=["POST"])
+def api_auth_sessions_revoke():
+    """{"id": "..."} revokes one device, {"all": true} every device (open streams are closed)."""
+    if not check_token():
+        return jsonify({"ok": False, "message": get_msg("auth_required")}), 401
+    data = request.get_json(silent=True) or {}
+    if data.get("all") is True:
+        n = sessions.revoke(all_sessions=True)
+    else:
+        sid = str(data.get("id") or "").strip()
+        if not sid or len(sid) > 64:
+            return jsonify({"ok": False, "message": get_msg("bad_request")}), 400
+        n = sessions.revoke(sid)
+    log_action("session_revoked", {"count": n, "by": request.remote_addr or "local"})
+    return jsonify({"ok": True, "revoked": n})
 
 
 @app.route("/api/cors", methods=["GET", "POST"])
@@ -1110,6 +1175,7 @@ if __name__ == "__main__":
     # Production WSGI server with connection / thread limits (QA A-13, core/wsgi_server.py);
     # falls back to the Werkzeug server if the private runtime has no cheroot yet.
     from core import wsgi_server
+    sessions.start_watcher()  # revocations made in the control panel close open streams
 
     def _log_backend(name, limits):
         print(f"  HTTP server:      {name}" + (f" {limits}" if limits else " (fallback, no connection limits)"), flush=True)

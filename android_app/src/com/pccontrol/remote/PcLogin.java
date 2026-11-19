@@ -202,13 +202,17 @@ final class PcLogin {
         submit.setText("...");
         submit.setAlpha(0.7f);
         a.bg(() -> {
-            final PcHttp.Resp r = PcHttp.request(base, "POST", "/api/auth/login", null, PcJson.map("password", pwd), 4000, 8000, null);
+            final PcHttp.Resp r = PcHttp.request(base, "POST", "/api/auth/login", null,
+                    PcJson.map("password", pwd, "device_name", deviceName()), 4000, 8000, null);
             a.ui(() -> {
                 busy = false;
                 submit.setText(prev);
                 submit.setAlpha(1f);
                 if (r.ok() && r.json().bool("ok", false)) {
-                    a.onLoggedIn(base, pwd, keep);
+                    // Plan 5.2: a server with device sessions returns a revocable "session" token;
+                    // keep it instead of the password (older servers: the password, as before).
+                    String sess = r.json().str("session");
+                    a.onLoggedIn(base, sess != null && sess.startsWith("pcs1_") ? sess : pwd, keep);
                     close();
                     return;
                 }
@@ -222,5 +226,16 @@ final class PcLogin {
                 }
             });
         });
+    }
+
+    /** Name shown in the PC's device list ("Devices" in the control panel). */
+    static String deviceName() {
+        String m = android.os.Build.MODEL;
+        String b = android.os.Build.MANUFACTURER;
+        String name = (m == null ? "" : m.trim());
+        if (b != null && !b.trim().isEmpty() && !name.toLowerCase().startsWith(b.trim().toLowerCase())) {
+            name = b.trim() + " " + name;
+        }
+        return name.isEmpty() ? "Android" : name;
     }
 }

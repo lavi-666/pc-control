@@ -553,18 +553,21 @@ async function submitLoginForm(){
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.ok){
-      _memoryToken = pwd;
+      // Plan 5.2 / QA R-10: keep the revocable device token, not the password (older servers
+      // have no "session" -> the password as before).
+      const tok = (typeof data.session === 'string' && data.session.indexOf('pcs1_') === 0) ? data.session : pwd;
+      _memoryToken = tok;
       try {
         if (remCheck && remCheck.checked){
-          localStorage.setItem('pc_token', pwd);
+          localStorage.setItem('pc_token', tok);
         } else {
           localStorage.removeItem('pc_token');
         }
-        sessionStorage.setItem('pc_token', pwd);
+        sessionStorage.setItem('pc_token', tok);
       } catch(e){}
       closeLoginModal();
       if (loginPromiseResolver){
-        loginPromiseResolver(pwd);
+        loginPromiseResolver(tok);
         loginPromiseResolver = null;
         promptTokenPromise = null;
       }

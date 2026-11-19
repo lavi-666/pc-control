@@ -2061,6 +2061,13 @@
         <div class="action-box-title" id="txtActNetTitle" data-i18n="act_net_title">Network Settings</div>
         <div class="action-box-desc" id="txtActNetDesc" data-i18n="act_net_desc">Port, IP binding & firewall rules</div>
       </div>
+      <div class="action-box" onclick="openDevicesModal()" title="Phones and browsers that are signed in" data-i18n-title="tip_devices">
+        <div class="action-box-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2"><rect x="7" y="2" width="10" height="20" rx="2"></rect><line x1="11" y1="18" x2="13" y2="18"></line></svg>
+        </div>
+        <div class="action-box-title" data-i18n="act_devices_title">Devices</div>
+        <div class="action-box-desc" data-i18n="act_devices_desc">Signed-in phones · revoke access</div>
+      </div>
       <div class="action-box" onclick="openCorsModal()">
         <div class="action-box-icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
@@ -2295,6 +2302,18 @@
       <button type="submit" class="btn btn-primary" data-i18n="btn_save">Save</button>
     </div>
   </form>
+</div>
+<div class="modal-backdrop" id="devicesModal" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="modal-dialog" style="max-height:90vh;overflow-y:auto">
+    <h2 data-i18n="devices_title">Devices</h2>
+    <p data-i18n="devices_hint">Every phone or browser that signs in gets its own key. Revoke a lost phone here: it is signed out at once (open streams stop), the password stays the same.</p>
+    <div id="devicesList" style="display:grid;gap:8px;margin:12px 0"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-secondary" onclick="revokeAllDevices()" data-i18n="devices_revoke_all">Revoke all</button>
+      <button type="button" class="btn btn-secondary" onclick="openDevicesModal()" data-i18n="devices_refresh">Refresh</button>
+      <button type="button" class="btn btn-primary" onclick="document.getElementById('devicesModal').classList.remove('open')" data-i18n="btn_close">Close</button>
+    </div>
+  </div>
 </div>
 <div class="modal-backdrop" id="corsModal" onclick="if(event.target===this)closeCorsModal()">
   <div class="modal-dialog">
@@ -3270,6 +3289,9 @@
     openSetupWizard(true);
   }
 
+  Object.assign(I18N.en, {act_devices_title: 'Devices', act_devices_desc: 'Signed-in phones · revoke access', tip_devices: 'Phones and browsers that are signed in', devices_title: 'Devices', devices_hint: 'Every phone or browser that signs in gets its own key. Revoke a lost phone here: it is signed out at once (open streams stop), the password stays the same.', devices_revoke_all: 'Revoke all', devices_refresh: 'Refresh', devices_empty: 'No signed-in devices yet. Phones that still use the password directly (older app versions) are not listed.', devices_last_seen: 'Last used', devices_revoke: 'Revoke', devices_confirm: 'Sign out "{name}"? It will have to log in again.', devices_confirm_all: 'Sign out ALL devices? Each phone will have to log in again.', btn_close: I18N.en.btn_close || 'Close'});
+  Object.assign(I18N.ru, {act_devices_title: 'Устройства', act_devices_desc: 'Вошедшие телефоны · отозвать доступ', tip_devices: 'Телефоны и браузеры, выполнившие вход', devices_title: 'Устройства', devices_hint: 'Каждый телефон или браузер при входе получает собственный ключ. Отзовите потерянный телефон здесь: он сразу выйдет (открытые трансляции остановятся), пароль не меняется.', devices_revoke_all: 'Отозвать все', devices_refresh: 'Обновить', devices_empty: 'Пока нет вошедших устройств. Телефоны, которые ещё используют сам пароль (старые версии приложения), здесь не показаны.', devices_last_seen: 'Последнее использование', devices_revoke: 'Отозвать', devices_confirm: 'Выйти на устройстве «{name}»? Ему придётся войти заново.', devices_confirm_all: 'Выйти на ВСЕХ устройствах? Каждому телефону придётся войти заново.', btn_close: I18N.ru.btn_close || 'Закрыть'});
+  Object.assign(I18N.uk, {act_devices_title: 'Пристрої', act_devices_desc: 'Телефони, що увійшли · відкликати доступ', tip_devices: 'Телефони й браузери, які виконали вхід', devices_title: 'Пристрої', devices_hint: 'Кожен телефон або браузер під час входу отримує власний ключ. Відкличте загублений телефон тут: він одразу вийде (відкриті трансляції зупиняться), пароль не змінюється.', devices_revoke_all: 'Відкликати всі', devices_refresh: 'Оновити', devices_empty: 'Ще немає пристроїв, що увійшли. Телефони, які досі використовують сам пароль (старі версії застосунку), тут не показано.', devices_last_seen: 'Останнє використання', devices_revoke: 'Відкликати', devices_confirm: 'Вийти на пристрої «{name}»? Йому доведеться увійти знову.', devices_confirm_all: 'Вийти на ВСІХ пристроях? Кожному телефону доведеться увійти знову.', btn_close: I18N.uk.btn_close || 'Закрити'});
   Object.assign(I18N.en, {network_settings: 'Network settings', network_reload: 'Reload saved', network_hint: 'Stop the server before changing its port. Apply the firewall rule again after saving.', btn_auto_setup_wol: 'Auto-Setup (Startup + Wake-on-LAN + Autologon)', toast_port_fw_title: 'Port changed to {port}', toast_port_fw: 'The Windows Firewall rule still allows the old port. Click \u201cApply Rule\u201d in the Windows Defender Firewall step, otherwise the phone will not connect over Wi-Fi.', toast_port_qr: 'The phone remembers the old address: scan the QR code again (Connect phone).'});
   Object.assign(I18N.ru, {network_settings: 'Настройки сети', network_reload: 'Вернуть сохранённые', network_hint: 'Перед сменой порта остановите сервер. После сохранения заново примените правило брандмауэра.', btn_auto_setup_wol: 'Автонастройка (Автозапуск + Wake-on-LAN + Автовход)', toast_port_fw_title: 'Порт изменён на {port}', toast_port_fw: 'Правило брандмауэра Windows всё ещё разрешает старый порт. Нажмите «Применить правило» в шаге «Брандмауэр Windows», иначе телефон не подключится по Wi-Fi.', toast_port_qr: 'Телефон помнит старый адрес: заново отсканируйте QR-код («Подключить телефон»).'});
   Object.assign(I18N.uk, {network_settings: 'Налаштування мережі', network_reload: 'Відновити збережені', network_hint: 'Перед зміною порту зупиніть сервер. Після збереження повторно застосуйте правило брандмауера.', btn_auto_setup_wol: 'Автоналаштування (Автозапуск + Wake-on-LAN + Автовхід)', toast_port_fw_title: 'Порт змінено на {port}', toast_port_fw: 'Правило брандмауера Windows досі дозволяє старий порт. Натисніть «Застосувати правило» у кроці «Брандмауер Windows», інакше телефон не підключиться через Wi-Fi.', toast_port_qr: 'Телефон пам\'ятає стару адресу: повторно відскануйте QR-код («Підключити телефон»).'});
@@ -3554,6 +3576,59 @@
       fields.appendChild(label);
     }
     document.getElementById('networkModal').classList.add('open');
+  }
+
+  // Device sessions (plan 5.2): list + revoke. Data comes from logs/sessions.json via the panel.
+  function renderDevices(data) {
+    const d = I18N[currentLang] || I18N.en;
+    const box = document.getElementById('devicesList');
+    box.textContent = '';
+    const list = (data && data.sessions) || [];
+    if (!list.length) {
+      const p = document.createElement('p');
+      p.style.color = 'var(--text-muted)';
+      p.textContent = d.devices_empty || I18N.en.devices_empty;
+      box.appendChild(p);
+      return;
+    }
+    const fmt = (ts) => { try { return new Date(ts * 1000).toLocaleString(); } catch (e) { return String(ts); } };
+    for (const s of list) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--border, rgba(255,255,255,0.1));border-radius:8px';
+      const info = document.createElement('div');
+      const name = document.createElement('div');
+      name.style.fontWeight = '600';
+      name.textContent = s.name + (s.kind === 'pairing' ? ' · QR' : '');
+      const meta = document.createElement('div');
+      meta.style.cssText = 'font-size:12px;color:var(--text-muted)';
+      meta.textContent = (d.devices_last_seen || I18N.en.devices_last_seen) + ': ' + fmt(s.last_seen) + (s.last_ip ? ' · ' + s.last_ip : '');
+      info.appendChild(name);
+      info.appendChild(meta);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-secondary';
+      btn.textContent = d.devices_revoke || I18N.en.devices_revoke;
+      btn.onclick = async () => {
+        if (!confirm((d.devices_confirm || I18N.en.devices_confirm).replace('{name}', s.name))) return;
+        btn.disabled = true;
+        renderDevices(await runAction('revoke_session', {id: s.id}));
+      };
+      row.appendChild(info);
+      row.appendChild(btn);
+      box.appendChild(row);
+    }
+  }
+
+  async function openDevicesModal() {
+    const data = await runAction('list_sessions');
+    renderDevices(data);
+    document.getElementById('devicesModal').classList.add('open');
+  }
+
+  async function revokeAllDevices() {
+    const d = I18N[currentLang] || I18N.en;
+    if (!confirm(d.devices_confirm_all || I18N.en.devices_confirm_all)) return;
+    renderDevices(await runAction('revoke_all_sessions'));
   }
 
   async function saveNetworkSettings(form) {

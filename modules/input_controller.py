@@ -20,7 +20,8 @@ from typing import Any
 from flask import Blueprint, Response, jsonify, request
 from werkzeug.wsgi import get_input_stream
 
-from core.auth import check_token
+from core.auth import check_token, current_session_id
+from core import sessions as _sessions
 from core.config import is_safe_test_mode
 from core.logger import log_action, log_error
 from modules.system import _attach_input_desktop
@@ -595,6 +596,36 @@ def _release_all_input_sessions():
 
 atexit.register(_release_all_input_sessions)
 
+# Open control / microphone streams of a device session: revoking the session closes them (plan 5.2).
+_stream_sockets: dict = {}  # key -> (session_id, socket)
+_stream_sockets_lock = threading.Lock()
+
+
+def _register_stream_socket(key, sid, sock):
+    if sid and sock is not None:
+        with _stream_sockets_lock:
+            _stream_sockets[key] = (sid, sock)
+
+
+def _unregister_stream_socket(key):
+    with _stream_sockets_lock:
+        _stream_sockets.pop(key, None)
+
+
+def _close_revoked_streams(revoked_ids: set):
+    with _stream_sockets_lock:
+        hit = [(k, s) for k, (sid, s) in _stream_sockets.items() if sid in revoked_ids]
+    for _key, sock in hit:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+    if hit:
+        log_action("session_streams_closed", {"count": len(hit)})
+
+
+_sessions.on_revoked(_close_revoked_streams)
+
 
 @input_bp.route("/api/input/info", methods=["GET"])
 def api_input_info():
@@ -677,6 +708,8 @@ def api_input_stream():
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except Exception:
             pass
+    stream_key = object()
+    _register_stream_socket(stream_key, current_session_id(), sock)
 
     def read_exact(n: int):
         nonlocal remaining
@@ -730,6 +763,7 @@ def api_input_stream():
     except (OSError, ValueError) as e:  # socket timeout / reset / closed stream
         reason = f"connection: {type(e).__name__}"
     finally:
+        _unregister_stream_socket(stream_key)
         session.close()
         ticker.stop()
         with _active_input_sessions_lock:
@@ -1040,10 +1074,16 @@ def api_mic_stream():
         # при chunked-передаче поток обрывался через ~30 с. Микрофон — бесконечный поток,
         # поэтому читаем тело без этого ограничения (доступ к эндпоинту — только с паролем).
         body = get_input_stream(request.environ, safe_fallback=False, max_content_length=None)
+        sid = current_session_id()
+        next_check = 0.0
         while my_session == _mic_session:
             chunk = body.read(4096)
             if not chunk:
                 break
+            if sid and time.monotonic() >= next_check:  # revoked device session (plan 5.2)
+                next_check = time.monotonic() + 0.5
+                if _sessions.is_revoked(sid):
+                    break
             # Чанки сети не выровнены по сэмплам: нечётный хвост раньше отбрасывался
             # PyAudio, и все последующие сэмплы сдвигались на байт — громкий шум вместо голоса.
             data = pending + chunk

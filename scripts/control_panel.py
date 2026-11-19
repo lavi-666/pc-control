@@ -1639,6 +1639,29 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "settings": {key: cfg.get(key, "") for key in keys}, "interfaces": interfaces})
                 return
 
+            if action in ("list_sessions", "revoke_session", "revoke_all_sessions"):
+                # Device sessions (plan 5.2): the panel works on logs/sessions.json directly; the
+                # server notices revocations within ~2 s and closes that device's open streams.
+                from core import sessions as _sessions
+                try:
+                    if action == "revoke_session":
+                        sid = str(req_data.get("id") or "").strip()
+                        if not sid or len(sid) > 64:
+                            self.send_json({"ok": False, "message": "Bad session id"}, 400)
+                            return
+                        n = _sessions.revoke(sid)
+                        append_log(f"[SECURITY] Device session {sid} revoked ({n}).")
+                    elif action == "revoke_all_sessions":
+                        n = _sessions.revoke(all_sessions=True)
+                        append_log(f"[SECURITY] All device sessions revoked ({n}).")
+                    cfg_s = load_config_data()
+                    self.send_json({"ok": True, "sessions": _sessions.list_sessions(),
+                                    "idle_expiry_days": _sessions.IDLE_EXPIRY_DAYS,
+                                    "legacy_password_auth": cfg_s.get("legacy_password_auth", True) is not False})
+                except Exception as e:
+                    self.send_json({"ok": False, "message": str(e)}, 500)
+                return
+
             if action == "save_settings":
                 try:
                     settings = validate_network_settings(req_data.get("settings", {}))

@@ -13,7 +13,8 @@ import time
 import atexit
 import urllib.request
 from flask import Blueprint, Response, jsonify, request
-from core.auth import check_token
+from core.auth import check_token, current_session_id
+from core.sessions import revocable as _revocable
 from core.config import BASE_DIR, MIC_DEVICE, NO_WINDOW, is_safe_test_mode, load_app_config, update_config_section
 from core.logger import log_action, log_error
 from modules.system import _attach_input_desktop
@@ -1009,7 +1010,7 @@ def audio():
                 log_error("rust_audio_proxy", e)
 
         return Response(
-            proxy_rust_audio(),
+            _revocable(proxy_rust_audio(), current_session_id()),
             mimetype="audio/wav",
             headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
         )
@@ -1132,7 +1133,7 @@ def audio():
             _release_lease()
 
         resp = Response(
-            generate_wasapi_wav(),
+            _revocable(generate_wasapi_wav(), current_session_id()),
             mimetype="audio/wav",
             headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
         )
@@ -1171,7 +1172,7 @@ def audio():
         finally:
             proc.kill()
 
-    return Response(generate(), mimetype="audio/mpeg")
+    return Response(_revocable(generate(), current_session_id()), mimetype="audio/mpeg")
 
 
 @streaming_bp.route("/screen/monitors")
@@ -1727,7 +1728,7 @@ def screen_h264_stream():
                 except Exception:
                     pass
 
-    resp = Response(generate_h264_stream(), mimetype="video/x-h264")
+    resp = Response(_revocable(generate_h264_stream(), current_session_id()), mimetype="video/x-h264")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
@@ -1797,7 +1798,7 @@ def screen_stream():
                 log_error("rust_mjpeg_proxy", e)
 
         return Response(
-            proxy_rust_mjpeg(),
+            _revocable(proxy_rust_mjpeg(), current_session_id()),
             mimetype="multipart/x-mixed-replace; boundary=frame",
             headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
         )
@@ -1883,7 +1884,7 @@ def screen_stream():
                     time.sleep(interval - elapsed)
 
     return Response(
-        generate_mjpeg(),
+        _revocable(generate_mjpeg(), current_session_id()),
         mimetype="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
     )

@@ -9,7 +9,8 @@ import threading
 import time
 from typing import Any
 from pathlib import Path
-from flask import request
+from flask import g, request
+from core import sessions
 from core.config import LOGS_DIR, get_auth_token, is_safe_test_mode, load_app_config
 from core.logger import log_action
 
@@ -245,7 +246,7 @@ def clear_lockout(ip: str | None = None):
         _save_persisted_lockouts()
 
 
-def check_token(allow_stream_query: bool = False) -> bool:
+def check_token(allow_stream_query: bool = False, count_failure: bool = True) -> bool:
     """Проверка токена из безопасных источников (X-Auth-Token, Authorization, Cookie, JSON body).
     Использует secrets.compare_digest для защиты от атак по времени (timing attacks).
     Клиентский заголовок X-Safe-Mode полностью удалён и не может влиять на аутентификацию.
@@ -287,6 +288,27 @@ def check_token(allow_stream_query: bool = False) -> bool:
     if not token:
         return False
 
+    token_str = str(token).strip()
+    # Per-device session token (plan 5.2): pcs1_…, checked against logs/sessions.json.
+    if token_str.startswith(sessions.PREFIX):
+        rec = sessions.lookup(token_str, ip)
+        if rec is not None:
+            try:
+                g.pcc_session_id = rec.get("id")
+            except Exception:
+                pass
+            clear_lockout(ip)
+            return True
+        if count_failure and not (safe_test and ip in ("127.0.0.1", "::1", "localhost")):
+            register_failure(ip)
+        return False
+
+    if not legacy_password_allowed():
+        # Only device tokens are accepted (config "legacy_password_auth": false).
+        if count_failure and not (safe_test and ip in ("127.0.0.1", "::1", "localhost")):
+            register_failure(ip)
+        return False
+
     expected = get_auth_token()
     token_str = str(token)
     if expected and secrets.compare_digest(token_str.encode("utf-8"), expected.encode("utf-8")):
@@ -312,10 +334,32 @@ def check_token(allow_stream_query: bool = False) -> bool:
 
     # QA A-9: test mode no longer switches the brute-force protection off for everyone — only for
     # this PC itself (the test harness).
-    if not (safe_test and ip in ("127.0.0.1", "::1", "localhost")):
+    if count_failure and not (safe_test and ip in ("127.0.0.1", "::1", "localhost")):
         register_failure(ip)
 
     return False
+
+
+def legacy_password_allowed() -> bool:
+    """The password itself is accepted as an access token (old APKs / scripts) unless
+    config.json "legacy_password_auth" is false."""
+    try:
+        return (load_app_config() or {}).get("legacy_password_auth", True) is not False
+    except Exception:
+        return True
+
+
+def current_session_id() -> str | None:
+    """Session id of the request that passed check_token() with a device token, else None."""
+    try:
+        return getattr(g, "pcc_session_id", None)
+    except Exception:
+        return None
+
+
+def password_matches(pwd: str) -> bool:
+    expected = get_auth_token()
+    return bool(pwd) and bool(expected) and secrets.compare_digest(str(pwd).encode("utf-8"), expected.encode("utf-8"))
 
 
 # ---------- Одноразовые билеты сопряжения (Pairing Tickets) ----------
