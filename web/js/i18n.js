@@ -260,6 +260,10 @@ const TRANSLATIONS = {
     hello_modal_disable_title: "Отключение Windows Hello",
     hello_modal_disable_desc: "Отключить требование входа через Windows Hello для учетных записей Microsoft на этом устройстве? Это вернёт отображение параметра отключения пароля в утилите netplwiz.",
     btn_continue: "Продолжить",
+    link_switch_title: "Сменить сервер?",
+    link_switch_text: "Ссылка предлагает подключаться к {new} вместо {old}. Продолжайте, только если вы сами отсканировали QR-код своего ПК. Сохранённый пароль заменится, лишь когда новый сервер его примет.",
+    link_switch_btn: "Сменить",
+    link_rejected: "Сервер из ссылки не принял данные входа. Ничего не изменено.",
     btn_cancel: "Отмена",
 
     lang_select_heading: "Язык интерфейса приложения",
@@ -819,6 +823,10 @@ const TRANSLATIONS = {
     hello_modal_disable_title: "Вимкнення Windows Hello",
     hello_modal_disable_desc: "Вимкнути вимогу входу через Windows Hello для облікових записів Microsoft на цьому пристрої? Це поверне відображення параметра відключення пароля в утиліті netplwiz.",
     btn_continue: "Продовжити",
+    link_switch_title: "Змінити сервер?",
+    link_switch_text: "Посилання пропонує підключатися до {new} замість {old}. Продовжуйте, лише якщо ви самі відсканували QR-код свого ПК. Збережений пароль заміниться, лише коли новий сервер його прийме.",
+    link_switch_btn: "Змінити",
+    link_rejected: "Сервер із посилання не прийняв дані входу. Нічого не змінено.",
     btn_cancel: "Скасувати",
 
     lang_select_heading: "Мова інтерфейсу програми",
@@ -1378,6 +1386,10 @@ const TRANSLATIONS = {
     hello_modal_disable_title: "Disable Windows Hello",
     hello_modal_disable_desc: "Disable the Windows Hello sign-in requirement for Microsoft accounts on this device? This restores the password requirement checkbox in the netplwiz utility.",
     btn_continue: "Continue",
+    link_switch_title: "Switch server?",
+    link_switch_text: "The link wants to connect to {new} instead of {old}. Continue only if you scanned the QR code of your own PC yourself. The saved password is replaced only after the new server accepts it.",
+    link_switch_btn: "Switch",
+    link_rejected: "The server from the link did not accept the sign-in data. Nothing was changed.",
     btn_cancel: "Cancel",
 
     lang_select_heading: "Application Interface Language",

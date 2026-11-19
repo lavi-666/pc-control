@@ -1060,14 +1060,36 @@ public class MainActivity extends Activity {
         if (intent == null || intent.getData() == null) return false;
         Uri u = intent.getData();
         if (!"pccontrol".equalsIgnoreCase(u.getScheme())) return false;
-        Map<String, String> q = PcConn.parseQuery(u.getEncodedQuery());
-        final String ticket = conn.applyConnectParams(q);
+        final Map<String, String> q = PcConn.parseQuery(u.getEncodedQuery());
         intent.setData(null);
+        // QA R-3: a link that carries credentials (token / ticket) must not silently replace the saved
+        // server and password: a foreign address is confirmed first, and nothing is saved until that
+        // server has accepted the credentials.
+        String linkTok = PcConn.firstParam(q, "token");
+        String linkTicket = PcConn.firstParam(q, "ticket");
+        if (conn.hasToken() && (!linkTok.isEmpty() || !linkTicket.isEmpty())) {
+            String lan = PcConn.firstParam(q, "lan", "lan_host");
+            String vpn = PcConn.firstParam(q, "vpn", "vpn_host");
+            String linkBase = !lan.isEmpty() ? PcConn.normalizeHostUrl(lan) : (!vpn.isEmpty() ? PcConn.normalizeHostUrl(vpn) : "");
+            final String current = conn.apiBase();
+            final String target = linkBase.isEmpty() ? current : linkBase;
+            if (!linkBase.isEmpty() && !PcConn.stripSlash(linkBase).equalsIgnoreCase(PcConn.stripSlash(current))) {
+                confirm(t("link_switch_title"),
+                        t("link_switch_text").replace("{old}", PcConn.hostOnly(current)).replace("{new}", PcConn.hostOnly(linkBase)),
+                        new String[]{t("btn_cancel"), t("link_switch_btn")},
+                        new int[]{PcViews.B_SEC, PcViews.B_RED},
+                        choice -> { if (choice == 1) verifyLinkThenApply(q, target, linkTok, linkTicket); });
+            } else {
+                verifyLinkThenApply(q, target, linkTok, linkTicket);
+            }
+            return true;
+        }
+        final String ticket = conn.applyConnectParams(q);
         if (!ticket.isEmpty()) {
             pendingPair = true;
             final String base = conn.apiBase();
             bg(() -> {
-                final PcHttp.Resp r = PcHttp.request(base, "POST", "/api/pair/exchange", null, PcJson.map("ticket", ticket), 4000, 8000, null);
+                final PcHttp.Resp r = PcHttp.request(base, "POST", "/api/pair/exchange", null, PcJson.map("ticket", ticket, "device_name", PcLogin.deviceName()), 4000, 8000, null);
                 ui(() -> {
                     pendingPair = false;
                     if (r.ok() && !r.json().str("token").isEmpty()) {
@@ -1085,6 +1107,40 @@ public class MainActivity extends Activity {
             login.close();
         }
         return true;
+    }
+
+    /** QA R-3: credentials from a link are checked on the link's server BEFORE anything is saved. */
+    private void verifyLinkThenApply(final Map<String, String> q, final String base, final String tok, final String ticket) {
+        pendingPair = true;
+        bg(() -> {
+            String newToken = "";
+            if (!ticket.isEmpty()) {
+                PcHttp.Resp r = PcHttp.request(base, "POST", "/api/pair/exchange", null,
+                        PcJson.map("ticket", ticket, "device_name", PcLogin.deviceName()), 4000, 8000, null);
+                if (r.ok()) newToken = r.json().str("token");
+            } else {
+                PcHttp.Resp r = PcHttp.request(base, "GET", "/api/auth/verify", tok, null, 4000, 8000, null);
+                if (r.ok() && r.json().bool("authenticated", false)) newToken = tok;
+            }
+            final String accepted = newToken;
+            ui(() -> {
+                pendingPair = false;
+                if (accepted.isEmpty()) {
+                    toast(t("link_rejected")); // the saved server and password stay as they were
+                    return;
+                }
+                Map<String, String> rest = new java.util.LinkedHashMap<>(q);
+                rest.remove("token");
+                rest.remove("ticket");
+                conn.applyConnectParams(rest);
+                conn.setActiveServer(base);
+                conn.markTrusted(base);
+                conn.setToken(accepted, true);
+                toast(t("msg_pair_ok"));
+                login.close();
+                fetchRouteKeyThen(base, conn.token(), () -> reconnect(true));
+            });
+        });
     }
 
     private void registerNetworkCallback() {

@@ -296,6 +296,11 @@ public final class PcConn {
         return ticket;
     }
 
+    /** First non-empty value of the given query keys ("" if none). */
+    public static String firstParam(Map<String, String> q, String... keys) {
+        return first(q, keys);
+    }
+
     private static String first(Map<String, String> q, String... keys) {
         for (String k : keys) {
             String v = q.get(k);
