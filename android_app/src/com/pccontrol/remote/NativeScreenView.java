@@ -678,7 +678,14 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             @Override public void run() { closeStreamAndExit(); }
         });
         floatingExitBtn.setState(PcUi.ST_DANGER);
-        View[] items = {floatingExitBtn, floatingSoundBtn, floatingMicBtn, floatingFsBtn, floatingKbdBtn, floatingMouseBtn};
+        // QA U-27: a short caption under every icon of the drawer (the icons alone were not clear)
+        View[] items = {
+                labeledMenuItem(context, floatingExitBtn, T("nsv_lbl_exit", "Выход")),
+                labeledMenuItem(context, floatingSoundBtn, T("nsv_lbl_sound", "Звук")),
+                labeledMenuItem(context, floatingMicBtn, T("nsv_lbl_mic", "Голос")),
+                labeledMenuItem(context, floatingFsBtn, T("nsv_lbl_fullscreen", "Экран")),
+                labeledMenuItem(context, floatingKbdBtn, T("nsv_lbl_keyboard", "Клавиши")),
+                labeledMenuItem(context, floatingMouseBtn, T("nsv_lbl_mouse", "Мышь"))};
         for (View b : items) {
             floatingMenuStrip.addView(b);
             addToolbarSpacer(context, floatingMenuStrip, 8);
@@ -762,6 +769,40 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         updateQuickActionStates();
     }
 
+    private static final String MENU_ITEM_TAG = "pcc_menu_item";
+
+    /** Icon button with a one-line caption under it; a tap on the caption acts like the button. */
+    private View labeledMenuItem(Context context, final PcUi.IconBtn btn, String caption) {
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER_HORIZONTAL);
+        box.setClipChildren(false);
+        box.setTag(MENU_ITEM_TAG);
+        box.addView(btn);
+        TextView lbl = new TextView(context);
+        lbl.setText(caption);
+        lbl.setTextColor(PcUi.TEXT);
+        lbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        lbl.setSingleLine(true);
+        lbl.setEllipsize(TextUtils.TruncateAt.END);
+        lbl.setMaxWidth(dpToPx(64));
+        lbl.setGravity(Gravity.CENTER);
+        lbl.setIncludeFontPadding(false);
+        lbl.setShadowLayer(dpToPx(2), 0, 0, 0xCC000000); // readable over any video
+        lbl.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); // the button has its description
+        lbl.setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) { btn.performClick(); }
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dpToPx(3);
+        box.addView(lbl, lp);
+        return box;
+    }
+
+    private static boolean isMenuItem(View c) {
+        return c instanceof PcUi.IconBtn || MENU_ITEM_TAG.equals(c.getTag());
+    }
+
     private PcUi.IconBtn menuButton(Context context, String[] icon, String description, final Runnable action) {
         PcUi.IconBtn b = new PcUi.IconBtn(context, icon, 44, 20, true, description);
         b.setOnClickListener(new OnClickListener() {
@@ -823,7 +864,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             int k = 0;
             for (int i = n - 1; i >= 0; i--) {
                 View c = floatingMenuStrip.getChildAt(i);
-                if (!(c instanceof PcUi.IconBtn)) continue;
+                if (!isMenuItem(c)) continue;
                 c.animate().cancel();
                 // выезжает из-под стрелки: чем дальше кнопка, тем больше путь
                 c.setTranslationX(step * (k + 1));
@@ -838,7 +879,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
             int k = 0;
             for (int i = n - 1; i >= 0; i--) {
                 View c = floatingMenuStrip.getChildAt(i);
-                if (!(c instanceof PcUi.IconBtn)) continue;
+                if (!isMenuItem(c)) continue;
                 c.animate().cancel();
                 c.animate().translationX(step * (k + 1)).scaleX(0.6f).scaleY(0.6f)
                         .setStartDelay(0).setDuration(200)
@@ -3855,11 +3896,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
         tbParams.topMargin = dpToPx(16);
         topToolbar.setLayoutParams(tbParams);
 
-        PcUi.IconBtn backBtn = new PcUi.IconBtn(context, PcIcons.ARROW_BACK, 40, 20, false, T("nsv_back", "Назад"));
-        backBtn.setOnClickListener(new OnClickListener() {
-            @Override public void onClick(View v) { closeStreamAndExit(); }
-        });
-        topToolbar.addView(backBtn);
+        // QA U-33a: "←" here did exactly what the red "✕" at the right end does (close the stream),
+        // so it was removed; the system Back gesture still leaves the stream.
 
         LinearLayout titleBox = new LinearLayout(context);
         titleBox.setOrientation(LinearLayout.VERTICAL);
