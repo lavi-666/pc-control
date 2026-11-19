@@ -47,7 +47,8 @@ class PresetRunContext:
         self.cancel_event = threading.Event()
         self.cancel_handled = False
         self.cancel_lock = threading.Lock()
-        self.launched_pids: Set[int] = set()
+        # (pid, create_time): a PID alone may belong to another program by the time of the cancel (QA R-11)
+        self.launched_pids: Set[tuple] = set()
         self.start_time = time.time()
         self.error_message = ""
 
@@ -331,7 +332,7 @@ def _execute_preset_worker(preset: Dict[str, Any], ctx: PresetRunContext, safe_r
                             try:
                                 proc = subprocess.Popen([resolved_target], cwd=cwd)
                                 if proc.pid != my_pid:
-                                    ctx.launched_pids.add(proc.pid)
+                                    _remember_launched(ctx, proc.pid)
                             except OSError:
                                 # UAC elevation (WinError 740) или системная ошибка -> запускаем через ShellExecute
                                 os.startfile(resolved_target)
@@ -349,6 +350,7 @@ def _execute_preset_worker(preset: Dict[str, Any], ctx: PresetRunContext, safe_r
                     after_pids = set(psutil.pids())
                     new_pids = after_pids - before_pids
                     target_stem = Path(resolved_target).stem.lower() if not resolved_target.startswith("steam://") else "steam"
+                    own = {pid for pid, _ct in ctx.launched_pids}
                     for p in new_pids:
                         try:
                             if p <= 4 or p == my_pid:
@@ -357,8 +359,13 @@ def _execute_preset_worker(preset: Dict[str, Any], ctx: PresetRunContext, safe_r
                             p_name = p_obj.name().lower()
                             if p_name in HIDDEN_PROCESSES or p_name in ("python.exe", "pythonw.exe", "streamer.exe"):
                                 continue
-                            if p_obj.ppid() == my_pid or (target_stem and target_stem[:4] in p_name):
-                                ctx.launched_pids.add(p)
+                            # QA R-11: our children, or a program whose exe name starts with the
+                            # launched target's name (shortcuts / launchers start it themselves) —
+                            # no longer any process sharing 4 letters with it.
+                            p_stem = Path(p_name).stem
+                            if (p_obj.ppid() == my_pid or p_obj.ppid() in own
+                                    or (len(target_stem) >= 3 and (p_stem.startswith(target_stem) or target_stem.startswith(p_stem) and len(p_stem) >= 4))):
+                                _remember_launched(ctx, p)
                         except Exception:
                             pass
 
@@ -374,6 +381,13 @@ def _execute_preset_worker(preset: Dict[str, Any], ctx: PresetRunContext, safe_r
         log_error("preset_run_exception", e)
 
 
+def _remember_launched(ctx, pid: int) -> None:
+    try:
+        ctx.launched_pids.add((pid, psutil.Process(pid).create_time()))
+    except Exception:
+        pass
+
+
 def _handle_preset_cancellation(ctx: PresetRunContext):
     """Экстренная отмена: принудительно убивает дерево процессов, запущенных в этом сценарии."""
     with ctx.cancel_lock:
@@ -386,18 +400,25 @@ def _handle_preset_cancellation(ctx: PresetRunContext):
     log_action("preset_cancelling", {"id": ctx.preset_id, "name": ctx.name, "pids": pids_to_kill})
     my_pid = os.getpid()
 
-    for pid in pids_to_kill:
+    for entry in pids_to_kill:
+        pid, ctime = entry if isinstance(entry, tuple) else (entry, None)
         if pid <= 4 or pid == my_pid:
             continue
+        # QA R-11: the cancel can come minutes or hours later — the PID must still be the process
+        # this preset started (same create_time), and only its own descendants are killed.
         try:
-            # taskkill /T /F гарантирует убийство процесса и всех его дочерних процессов
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                capture_output=True,
-                creationflags=NO_WINDOW
-            )
+            proc = psutil.Process(pid)
+            if ctime is not None and abs(proc.create_time() - ctime) > 0.5:
+                continue  # PID reused by another program
+            victims = proc.children(recursive=True) + [proc]
         except Exception:
-            pass
+            continue
+        for v in victims:
+            try:
+                if v.pid != my_pid:
+                    v.kill()
+            except Exception:
+                pass
 
     ctx.status = "cancelled"
     log_action("preset_cancelled", {"id": ctx.preset_id, "name": ctx.name})
