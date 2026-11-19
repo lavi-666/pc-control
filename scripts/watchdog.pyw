@@ -16,6 +16,14 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+try:  # QA R-14: full System32 paths (this file can also run as a standalone script)
+    from core.winpaths import sys_exe
+except ImportError:  # pragma: no cover
+    def sys_exe(name):
+        import os as _os
+        _sub = r"WindowsPowerShell\v1.0\powershell.exe" if name.lower().startswith("powershell") else (name if name.lower().endswith(".exe") else name + ".exe")
+        _full = _os.path.join(_os.environ.get("SystemRoot", r"C:\Windows"), "System32", _sub)
+        return _full if _os.path.isfile(_full) else name
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOGS_DIR = BASE_DIR / "logs"
@@ -109,7 +117,7 @@ def ping_server() -> tuple[bool, str]:
 def find_server_pid_on_port(port: int | None = None) -> int | None:
     try:
         out = subprocess.check_output(
-            ["netstat", "-ano", "-p", "tcp"],
+            [sys_exe("netstat"), "-ano", "-p", "tcp"],
             creationflags=NO_WINDOW,
             text=True,
             timeout=3,
@@ -137,7 +145,7 @@ def terminate_pid(pid: int):
             log(f"Refusing to terminate unrelated process {pid}.")
             return
         subprocess.run(
-            ["taskkill", "/PID", str(pid), "/F"],
+            [sys_exe("taskkill"), "/PID", str(pid), "/F"],
             creationflags=NO_WINDOW,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

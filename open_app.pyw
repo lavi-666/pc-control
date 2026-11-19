@@ -15,6 +15,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from scripts import control_panel as panel
+from core.winpaths import sys_exe  # QA R-14: full System32 paths
 
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 ICON_FILE = BASE_DIR / "pc_control.ico"
@@ -80,7 +81,7 @@ def create_shortcuts():
             "$s.Description = 'PC Control — Панель управления ПК'; "
             "$s.Save()"
         )
-        subprocess.run(["powershell.exe", "-NoProfile", "-Command", ps], check=False, env=env, creationflags=NO_WINDOW)
+        subprocess.run([sys_exe("powershell.exe"), "-NoProfile", "-Command", ps], check=False, env=env, creationflags=NO_WINDOW)
 
 
 def open_app_window():

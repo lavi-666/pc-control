@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import platform
 import subprocess
+from core.winpaths import sys_exe  # QA R-14: full System32 paths
 
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
 
@@ -67,7 +68,7 @@ def run_elevated_command(target: str, params: str = "", work_dir: str = "", show
     )
     try:
         proc = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", ps_script],
+            [sys_exe("powershell.exe"), "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", ps_script],
             capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW,
         )
         out = proc.stdout.strip()

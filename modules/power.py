@@ -13,6 +13,7 @@ from flask import Blueprint, jsonify, request
 from core.auth import check_token
 from core.config import NO_WINDOW, is_safe_test_mode, load_app_config
 from core.logger import log_action, log_error
+from core.winpaths import sys_exe  # QA R-14: full System32 paths
 
 power_bp = Blueprint("power", __name__)
 
@@ -31,7 +32,7 @@ def do_shutdown_now():
     if system == "Windows":
         # /t 5 without /f: open apps can still save / ask the user (no forced data loss), and a mistaken
         # tap can still be undone on the PC with "shutdown /a".
-        subprocess.run(["shutdown", "/s", "/t", str(POWER_DELAY_SEC)], check=False, creationflags=NO_WINDOW)
+        subprocess.run([sys_exe("shutdown"), "/s", "/t", str(POWER_DELAY_SEC)], check=False, creationflags=NO_WINDOW)
     elif system == "Darwin":
         subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'], check=False)
     else:
@@ -127,7 +128,7 @@ def action():
         elif act == "sleep":
             if system == "Windows":
                 subprocess.run(
-                    ["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"],
+                    [sys_exe("rundll32.exe"), "powrprof.dll,SetSuspendState", "0,1,0"],
                     check=False, creationflags=NO_WINDOW,
                 )
             elif system == "Darwin":
@@ -139,7 +140,7 @@ def action():
 
         elif act == "reboot":
             if system == "Windows":
-                subprocess.run(["shutdown", "/r", "/t", str(POWER_DELAY_SEC)], check=False, creationflags=NO_WINDOW)
+                subprocess.run([sys_exe("shutdown"), "/r", "/t", str(POWER_DELAY_SEC)], check=False, creationflags=NO_WINDOW)
             elif system == "Darwin":
                 subprocess.run(["osascript", "-e", 'tell app "System Events" to restart'], check=False)
             else:
@@ -150,7 +151,7 @@ def action():
         elif act == "lock":
             if system == "Windows":
                 subprocess.run(
-                    ["rundll32.exe", "user32.dll,LockWorkStation"],
+                    [sys_exe("rundll32.exe"), "user32.dll,LockWorkStation"],
                     check=False, creationflags=NO_WINDOW,
                 )
             elif system == "Darwin":

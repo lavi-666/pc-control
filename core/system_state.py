@@ -32,6 +32,14 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+try:  # QA R-14: full System32 paths (this file can also run as a standalone script)
+    from core.winpaths import sys_exe
+except ImportError:  # pragma: no cover
+    def sys_exe(name):
+        import os as _os
+        _sub = r"WindowsPowerShell\v1.0\powershell.exe" if name.lower().startswith("powershell") else (name if name.lower().endswith(".exe") else name + ".exe")
+        _full = _os.path.join(_os.environ.get("SystemRoot", r"C:\Windows"), "System32", _sub)
+        return _full if _os.path.isfile(_full) else name
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 # PC_CONTROL_DATA_DIR — изолированная папка данных для тестов (см. core/config.py)
@@ -588,7 +596,7 @@ def query_wol_adapter(adapter_name: str, interface_desc: str) -> Dict[str, Any]:
             f"Write-Output \"$m|$p\""
         )
         ps_res = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            [sys_exe("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True,
             text=True,
             creationflags=NO_WINDOW,

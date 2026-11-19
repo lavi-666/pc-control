@@ -10,6 +10,7 @@ import platform
 import time
 
 from core.launcher.elevation import run_elevated_and_wait
+from core.winpaths import sys_exe  # QA R-14: full System32 paths
 
 _HELLO_KEY = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device"
 
@@ -59,7 +60,7 @@ def set_windows_hello_state(enabled: bool) -> tuple[bool, str]:
     # Ждём завершения команды: раньше запуск шёл без ожидания, и если пользователь подтверждал окно UAC
     # дольше 3 секунд, панель сообщала «значение реестра не изменилось», хотя изменение потом проходило.
     ok, code, msg, _exit = run_elevated_and_wait(
-        "powershell.exe", f'-NoProfile -NonInteractive -WindowStyle Hidden -Command "{ps_cmd}"', "", timeout=120
+        sys_exe("powershell.exe"), f'-NoProfile -NonInteractive -WindowStyle Hidden -Command "{ps_cmd}"', "", timeout=120
     )
     if not ok and code in ("ERR_UAC_DENIED", "ERR_UAC_FAILED", "ERR_NOT_SUPPORTED"):
         return False, msg

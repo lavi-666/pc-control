@@ -60,6 +60,7 @@ RESERVED_PORTS = INTERNAL_PORTS | {5050}
 MIN_USER_PORT = 1024  # system ports need administrator rights / belong to Windows services
 # Общая с сервером блокировка config.json (между процессами) — см. core/config.py
 from core.config import CONFIG_LOCK as _settings_lock  # noqa: E402
+from core.winpaths import sys_exe  # QA R-14: full System32 paths
 
 
 def save_config_data(cfg):
@@ -970,7 +971,7 @@ def get_pids_on_port(port: int = 5000) -> list:
         return pids
     try:
         out = subprocess.check_output(
-            ["netstat", "-ano", "-p", "tcp"],
+            [sys_exe("netstat"), "-ano", "-p", "tcp"],
             creationflags=NO_WINDOW,
             text=True,
             timeout=2.0
@@ -1038,7 +1039,7 @@ def kill_pid(pid: int):
         return
     try:
         subprocess.run(
-            ["taskkill", "/PID", str(pid), "/F", "/T"],
+            [sys_exe("taskkill"), "/PID", str(pid), "/F", "/T"],
             creationflags=NO_WINDOW,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -1780,7 +1781,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                 # Ждём завершения сценария и проверяем, что правило действительно появилось:
                 # раньше ответ «успех» приходил сразу после запуска окна UAC.
                 ok, code, msg, exit_code = run_elevated_and_wait(
-                    "cmd.exe",
+                    sys_exe("cmd.exe"),
                     f'/d /s /c "set PC_CONTROL_NO_PAUSE=1&& "{script_path}" > "{fw_log}" 2>&1"',
                     str(BASE_DIR),
                 )
@@ -1905,7 +1906,7 @@ class ControlPanelHandler(http.server.BaseHTTPRequestHandler):
                     pass
 
                 ok, code, msg = run_elevated_command(
-                    "powershell.exe",
+                    sys_exe("powershell.exe"),
                     f'-NoProfile -ExecutionPolicy Bypass -File "{ps_script}"',
                     str(SCRIPTS_DIR),
                     show=True

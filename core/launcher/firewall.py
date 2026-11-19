@@ -15,6 +15,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from core.winpaths import sys_exe  # QA R-14: full System32 paths
 
 FIREWALL_POLICY_KEY = r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy"
 FIREWALL_RULES_KEY = FIREWALL_POLICY_KEY + r"\FirewallRules"
@@ -157,7 +158,7 @@ def active_network_profiles(ttl: float = 60.0) -> frozenset | None:
     result = None
     try:
         proc = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            [sys_exe("powershell.exe"), "-NoProfile", "-NonInteractive", "-Command",
              "Get-NetConnectionProfile | Select-Object InterfaceAlias,@{n='Category';e={[string]$_.NetworkCategory}} "
              "| ConvertTo-Json -Compress"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, creationflags=NO_WINDOW)

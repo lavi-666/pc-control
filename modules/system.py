@@ -17,6 +17,7 @@ from flask import Blueprint, jsonify, request, send_file
 from core.auth import check_token
 from core.config import CHROME, NO_WINDOW, SCREENSHOTS_DIR, is_safe_test_mode
 from core.logger import log_action, log_error
+from core.winpaths import sys_exe  # QA R-14: full System32 paths
 
 system_bp = Blueprint("system", __name__)
 
@@ -439,7 +440,7 @@ def processes():
     except Exception as e:
         # Резервный фоллбэк на tasklist, если psutil дал сбой
         result = subprocess.run(
-            ["tasklist", "/FO", "CSV", "/NH"],
+            [sys_exe("tasklist"), "/FO", "CSV", "/NH"],
             capture_output=True, text=True, creationflags=NO_WINDOW,
         )
         for row in csv.reader(result.stdout.strip().splitlines()):
@@ -539,7 +540,7 @@ def kill_process():
                 proc.wait(timeout=0.3)
             except Exception:
                 # Если psutil не справился из-за привилегий, используем taskkill
-                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True, creationflags=NO_WINDOW)
+                subprocess.run([sys_exe("taskkill"), "/PID", str(pid), "/F"], capture_output=True, text=True, creationflags=NO_WINDOW)
 
         is_alive = False
         try:
@@ -587,7 +588,7 @@ def kill_process():
             return jsonify({"ok": True, "message": f"[SAFE_MODE] Завершение процесса {pid} сымитировано"})
         # Резервный вызов taskkill
         result = subprocess.run(
-            ["taskkill", "/PID", str(pid), "/F"],
+            [sys_exe("taskkill"), "/PID", str(pid), "/F"],
             capture_output=True, text=True, creationflags=NO_WINDOW,
         )
         with _procs_lock:
@@ -667,7 +668,7 @@ def set_windows_hello_state(enabled: bool) -> tuple[bool, str]:
     )
 
     ok, code, msg = run_elevated_command(
-        "powershell.exe",
+        sys_exe("powershell.exe"),
         f'-NoProfile -NonInteractive -WindowStyle Hidden -Command "{ps_cmd}"',
         show=False
     )

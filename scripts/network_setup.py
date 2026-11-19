@@ -9,6 +9,14 @@ import sys
 import tempfile
 import urllib.request
 import psutil
+try:  # QA R-14: full System32 paths (this file can also run as a standalone script)
+    from core.winpaths import sys_exe
+except ImportError:  # pragma: no cover
+    def sys_exe(name):
+        import os as _os
+        _sub = r"WindowsPowerShell\v1.0\powershell.exe" if name.lower().startswith("powershell") else (name if name.lower().endswith(".exe") else name + ".exe")
+        _full = _os.path.join(_os.environ.get("SystemRoot", r"C:\Windows"), "System32", _sub)
+        return _full if _os.path.isfile(_full) else name
 
 TAILSCALE_NET = ip_network('100.64.0.0/10')
 RFC1918_NETS = (
@@ -216,7 +224,7 @@ def verify_tailscale_signature(path: Path) -> None:
     )
     env = powershell_env()
     env['TS_INSTALLER'] = str(path)
-    res = subprocess.run([str(ps if ps.is_file() else 'powershell.exe'), '-NoProfile', '-Command', cmd],
+    res = subprocess.run([str(ps if ps.is_file() else sys_exe('powershell.exe')), '-NoProfile', '-Command', cmd],
                          capture_output=True, text=True, timeout=30, env=env,
                          creationflags=subprocess.CREATE_NO_WINDOW)
     if res.returncode != 0:
