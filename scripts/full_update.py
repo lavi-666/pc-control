@@ -475,7 +475,7 @@ def launch_and_verify(base, plan):
             time.sleep(.3)
     else:
         raise RuntimeError('Updated panel did not confirm health')
-    subprocess.run([str(base / 'runtime/python.exe'), '-I', '-c', 'import flask, PIL, psutil, aiortc, winsdk.windows.media.control'], cwd=base, timeout=45, check=True, creationflags=NO_WINDOW)
+    subprocess.run([str(base / 'runtime/python.exe'), '-I', '-c', 'import flask, cheroot.wsgi, PIL, psutil, aiortc, winsdk.windows.media.control'], cwd=base, timeout=45, check=True, creationflags=NO_WINDOW)
     if plan['restart_server']:
         request = urllib.request.Request(f"http://127.0.0.1:{plan['port']}/api/action", data=b'{"action":"start_server"}', headers={'Content-Type': 'application/json'})
         try:
