@@ -22,7 +22,8 @@ PENDING = '.pccontrol-update.pending'
 REPOSITORY = 'https://github.com/lavi-666/pc-control'
 API = 'https://api.github.com/repos/lavi-666/pc-control/releases/latest'
 DIRECTORIES = {'core', 'modules', 'scripts', 'web', 'tools', 'runtime', 'docs', 'chrome_extension'}
-# unstaller.exe: legacy name, remove from the package in 2.5.2; keep in full_update.ROOT_FILES
+# unstaller.exe: legacy name of Uninstall.exe, not shipped since 2.5.2. It stays here so that updates
+# from / to releases that still contain it pass validate_manifest().
 ROOT_FILES = {'Launcher.exe', 'Uninstall.exe', 'unstaller.exe', 'version.json', 'PC_Control.apk', 'pc_control.ico', 'server.py', 'open_app.pyw',
               'requirements.txt', 'requirements-runtime.lock', 'runtime-source.json', 'config.example.json',
               'README.md', 'README.ru.md', 'LICENSE', 'launcher.bat', 'start_server.bat',
@@ -336,6 +337,7 @@ def prepare(base, port, restart_server=False, log=lambda message: None, open_bro
             return {'ok': False, 'error_code': 'ERR_LOCAL_NEWER',
                     'message': 'Установлена более новая версия, чем опубликованный релиз — обновление отменено, '
                                'чтобы не откатить программу на старую версию.'}
+        removed = keep_registered_uninstaller(base, removed, log)
         if shutil.disk_usage(base.parent).free < 3 * 1024**3:
             raise RuntimeError('Для безопасного обновления нужно не менее 3 ГБ свободного места.')
         job = base.parent / ('.pccontrol-update-' + uuid.uuid4().hex)
@@ -613,6 +615,32 @@ def repoint_uninstall_entry(base, registry=None, log=lambda message: None):
         except Exception:
             pass
         return False
+
+
+def uninstall_entry_uses(base, name, registry=None):
+    """The Apps & features entry of THIS install still starts / shows <base>/<name>."""
+    try:
+        registry = registry or _WinRegUninstallKey()
+        data = registry.read()
+        if not data or _norm_dir(data.get('InstallLocation') or '') != _norm_dir(base):
+            return False
+        target = _norm_dir(Path(base) / name)
+        return any(_norm_dir(_command_exe(data.get(v))) == target for v in _UNINSTALL_VALUES if data.get(v))
+    except Exception:
+        return True  # unknown -> treat as used: the file is kept
+
+
+def keep_registered_uninstaller(base, removed, log=lambda message: None, registry=None):
+    """2.5.2 dropped unstaller.exe from the release. Before an update deletes it, the entry of this
+    install is repointed to Uninstall.exe; if it still uses unstaller.exe afterwards (no rights,
+    unknown state), the file is NOT deleted (a harmless leftover; the uninstaller removes it)."""
+    if LEGACY_UNINSTALLER not in removed:
+        return removed
+    repoint_uninstall_entry(base, registry=registry, log=log)
+    if uninstall_entry_uses(base, LEGACY_UNINSTALLER, registry=registry):
+        log('unstaller.exe kept: Apps & features still uses it')
+        return [name for name in removed if name != LEGACY_UNINSTALLER]
+    return removed
 
 
 def worker(job, recover=False):
