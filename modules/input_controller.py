@@ -1119,7 +1119,12 @@ def api_mic_status():
         if not enable:
             _close_mic_playback()
         else:
-            rate = int(data.get("rate", 16000))
+            try:  # QA R-9: a non-numeric rate was a 500 with a traceback in the log
+                rate = int(data.get("rate", 16000))
+            except (TypeError, ValueError, OverflowError):
+                return jsonify({"ok": False, "message": "rate must be an integer"}), 400
+            if rate not in _MIC_RATES:
+                return jsonify({"ok": False, "message": "Unsupported rate"}), 400
             _ensure_mic_playback_open(sample_rate=rate, channels=1)
     else:
         # При GET запросе обновляем статус обнаружения виртуального кабеля
