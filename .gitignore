@@ -86,6 +86,7 @@ PC-Control.apk
 /scripts/package_windows.py
 /scripts/verify_zip.py
 /scripts/verify_release_consistency.py
+/scripts/release_check.py
 /scripts/test_streaming_pipeline.py
 /scripts/benchmark_*.py
 /scripts/build_launcher.bat

@@ -25,7 +25,10 @@ DIRECTORIES = {'core', 'modules', 'scripts', 'web', 'tools', 'runtime', 'docs', 
 ROOT_FILES = {'Launcher.exe', 'Uninstall.exe', 'unstaller.exe', 'version.json', 'PC_Control.apk', 'pc_control.ico', 'server.py', 'open_app.pyw',
               'requirements.txt', 'requirements-runtime.lock', 'runtime-source.json', 'config.example.json',
               'README.md', 'README.ru.md', 'LICENSE', 'launcher.bat', 'start_server.bat',
-              'stop_server.bat', 'change_password.bat', 'uninstall.bat', 'START_HERE.txt', 'build-info.json'}
+              'stop_server.bat', 'change_password.bat', 'uninstall.bat', 'START_HERE.txt', 'build-info.json',
+              # QA R-6 step 1: accepted by the updater now; a LATER release may put it into the ZIP
+              # (a ZIP with an unknown root file is rejected by every installed older updater).
+              'LICENSE-THIRD-PARTY.md'}
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _lock = threading.Lock()
 _check_lock = threading.Lock()
