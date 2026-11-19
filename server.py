@@ -586,7 +586,7 @@ def api_pair_exchange():
         max_age=sessions.IDLE_EXPIRY,
         path="/",
         httponly=True,  # QA A-10: page scripts never read it; HttpOnly keeps it from injected JS
-        samesite="Lax",
+        samesite="Strict",  # QA R-10: only this server's own pages send it
     )
     return resp
 

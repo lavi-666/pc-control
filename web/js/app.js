@@ -59,7 +59,8 @@ let _memoryToken = '';
       _memoryToken = urlTok;
       try { sessionStorage.setItem('pc_token', urlTok); } catch(e){}
       try { localStorage.setItem('pc_token', urlTok); } catch(e){}
-      try { document.cookie = 'token=' + encodeURIComponent(urlTok) + '; path=/; max-age=31536000; SameSite=Lax'; } catch(e){}
+      // QA R-10: no document.cookie from scripts - requests send X-Auth-Token, stream URLs ?token=,
+      // and the login cookies are set by the server (HttpOnly, SameSite=Strict).
       params.delete('token');
       changed = true;
     }
@@ -95,7 +96,6 @@ let _memoryToken = '';
           _memoryToken = data.token;
           try { sessionStorage.setItem('pc_token', data.token); } catch(e){}
           try { localStorage.setItem('pc_token', data.token); } catch(e){}
-          try { document.cookie = 'token=' + encodeURIComponent(data.token) + '; path=/; max-age=31536000; SameSite=Lax'; } catch(e){}
           if (typeof checkStatus === 'function') checkStatus(false);
         }
       }).catch(() => {});
@@ -446,9 +446,6 @@ function getToken(){
       _memoryToken = urlTok;
       try { sessionStorage.setItem('pc_token', urlTok); } catch(e){}
       try { localStorage.setItem('pc_token', urlTok); } catch(e){}
-      try {
-        document.cookie = 'token=' + encodeURIComponent(urlTok) + '; path=/; max-age=31536000; SameSite=Lax';
-      } catch(e){}
       // Очищаем токен из адресной строки для безопасности и эстетики
       try {
         const cleanUrl = new URL(window.location.href);
@@ -626,13 +623,17 @@ async function logoutApp(){
   });
   if (ok !== true) return;
   // the login cookies are HttpOnly (QA A-10): only the server can remove them
-  try { fetch(getApiBase() + '/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {}); } catch (e) {}
+  // X-Auth-Token: the server also revokes this device session when the page talks to another host
+  // (the cookies are only sent to the server that set them).
+  try {
+    const curTok = getToken();
+    const hdrs = curTok ? {'X-Auth-Token': encodeURIComponent(curTok)} : {};
+    fetch(getApiBase() + '/api/auth/logout', { method: 'POST', credentials: 'include', headers: hdrs }).catch(() => {});
+  } catch (e) {}
   _memoryToken = '';
   try {
     localStorage.removeItem('pc_token');
     sessionStorage.removeItem('pc_token');
-    document.cookie = 'token=; path=/; max-age=0; SameSite=Lax';
-    document.cookie = 'pc_token=; path=/; max-age=0; SameSite=Strict';
   } catch (e) {}
   closeSettingsModal();
   requestNewToken(t('msg_logged_out'));
@@ -922,7 +923,6 @@ function saveCustomConn(){
       try {
         localStorage.setItem('pc_token', tok);
         sessionStorage.setItem('pc_token', tok);
-        document.cookie = 'token=' + encodeURIComponent(tok) + '; path=/; max-age=31536000; SameSite=Lax';
       } catch(e){}
     }
   }
