@@ -15,6 +15,8 @@ import urllib.request
 from flask import Blueprint, Response, jsonify, request
 from core.auth import check_token, current_session_id
 from core.sessions import revocable as _revocable
+from core import stream_registry as _streams
+from core.stream_registry import guarded as _guarded
 from core.config import BASE_DIR, MIC_DEVICE, NO_WINDOW, is_safe_test_mode, load_app_config, update_config_section
 from core.logger import log_action, log_error
 from modules.system import _attach_input_desktop
@@ -180,6 +182,14 @@ def _ensure_rust_streamer() -> bool:
             return False
 
     return False
+
+
+def _stream_guard(kind: str, session_fallback: bool):
+    """QA R-4: socket write timeout for this stream + registration under its client key."""
+    sock = _streams.request_socket(request.environ)
+    _streams.set_write_timeout(sock)
+    key = _streams.stream_key(kind, request.headers.get("X-Stream-Client"), current_session_id(), session_fallback)
+    return _streams.claim(key, sock)
 
 
 def _cleanup_rust_streamer():
@@ -1073,6 +1083,8 @@ def audio():
         return jsonify({"status": "safe_mode", "stream": "audio_simulated"})
 
     log_action("listen_mic")
+    # QA R-4: write timeout + "a newer /audio of the same app stops this one" (X-Stream-Client only)
+    guard = _stream_guard("audio:mic" if request.args.get("mic") == "1" else "audio:pc", session_fallback=False)
 
     # Звук ПК по умолчанию захватывается здесь же (WASAPI loopback, pyaudiowpatch): первые
     # данные через ~0,1 с, ровно реальное время. Внешний tools/streamer.exe отвечал на
@@ -1095,11 +1107,13 @@ def audio():
             except Exception as e:
                 log_error("rust_audio_proxy", e)
 
-        return Response(
-            _revocable(proxy_rust_audio(), current_session_id()),
+        resp = Response(
+            _revocable(_guarded(proxy_rust_audio(), guard), current_session_id()),
             mimetype="audio/wav",
             headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
         )
+        resp.call_on_close(guard.release)
+        return resp
 
     system = platform.system()
 
@@ -1112,6 +1126,7 @@ def audio():
             import pyaudiowpatch as pyaudio
             pa = _pyaudio_lease(refresh=True)
         except Exception as e:
+            guard.release()
             return jsonify({"message": f"Не удалось открыть аудиоустройство: {e}"}), 500
 
         released = [False]
@@ -1148,6 +1163,7 @@ def audio():
             stream.start_stream()
         except Exception as e:
             _release_lease()
+            guard.release()
             log_error("wasapi_open", e)
             what = "Микрофон ПК недоступен" if use_mic else "Звук ПК недоступен"
             return jsonify({"message": f"{what}: {e}", "error": "audio_device"}), 503
@@ -1219,14 +1235,16 @@ def audio():
             _release_lease()
 
         resp = Response(
-            _revocable(generate_wasapi_wav(), current_session_id()),
+            _revocable(_guarded(generate_wasapi_wav(), guard), current_session_id()),
             mimetype="audio/wav",
             headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
         )
         resp.call_on_close(_close_stream)
+        resp.call_on_close(guard.release)
         return resp
 
     if not MIC_DEVICE:
+        guard.release()
         return jsonify({"message": "Микрофон не настроен (MIC_DEVICE_NAME)"}), 400
 
     if system == "Windows":
@@ -1258,7 +1276,9 @@ def audio():
         finally:
             proc.kill()
 
-    return Response(_revocable(generate(), current_session_id()), mimetype="audio/mpeg")
+    resp = Response(_revocable(_guarded(generate(), guard), current_session_id()), mimetype="audio/mpeg")
+    resp.call_on_close(guard.release)
+    return resp
 
 
 @streaming_bp.route("/screen/monitors")
@@ -1582,6 +1602,9 @@ def screen_h264_stream():
     is_framed = (request.args.get("format") != "raw")
 
     enc_name, profile, enc_opts = pick_best_encoder("auto")
+    # QA R-4: a new H.264 stream of the same app (X-Stream-Client, else the device session) stops the
+    # previous one at once; a dead client is detected by the socket write timeout (~10 s).
+    guard = _stream_guard("h264", session_fallback=True)
 
     def generate_h264_stream():
         _attach_input_desktop()
@@ -1814,7 +1837,8 @@ def screen_h264_stream():
                 except Exception:
                     pass
 
-    resp = Response(_revocable(generate_h264_stream(), current_session_id()), mimetype="video/x-h264")
+    resp = Response(_revocable(_guarded(generate_h264_stream(), guard), current_session_id()), mimetype="video/x-h264")
+    resp.call_on_close(guard.release)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"

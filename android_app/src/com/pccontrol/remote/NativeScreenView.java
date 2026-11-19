@@ -2936,6 +2936,7 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                         c.setConnectTimeout(4000);
                         c.setReadTimeout(10000);
                         c.setRequestProperty("Accept", "audio/wav");
+                        c.setRequestProperty("X-Stream-Client", PcInputClient.CLIENT_ID + "-screen-audio"); // QA R-4
                         int code = c.getResponseCode();
                         if (code == 401) {
                             updateAudioStatusOnMain(T("nsv_password_error", "Ошибка пароля"), PcUi.DANGER);
@@ -3631,6 +3632,8 @@ public class NativeScreenView extends FrameLayout implements SurfaceHolder.Callb
                 conn.setRequestProperty("Accept", "video/x-h264");
                 conn.setRequestProperty("Cache-Control", "no-cache");
                 conn.setRequestProperty("Connection", "keep-alive");
+                // QA R-4: the server stops this app's previous H.264 stream (old route) at once
+                conn.setRequestProperty("X-Stream-Client", PcInputClient.CLIENT_ID + "-video");
                 if (!authToken.isEmpty()) conn.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(authToken));
 
                 activeConn = conn;

@@ -96,6 +96,8 @@ final class PcAudioStream {
                         c.setConnectTimeout(4000);
                         c.setReadTimeout(10000);
                         c.setRequestProperty("Accept", "audio/wav");
+                        // QA R-4: per player (PC sound / PC mic) - a reconnect stops the stream of the old route
+                        c.setRequestProperty("X-Stream-Client", PcInputClient.CLIENT_ID + (mic ? "-mic" : "-pc-audio"));
                         if (!PcHttp.acceptLanguage.isEmpty()) c.setRequestProperty("Accept-Language", PcHttp.acceptLanguage);
                         if (!token.isEmpty()) c.setRequestProperty("X-Auth-Token", PcConn.encodeURIComponent(token));
                         int code = c.getResponseCode();
